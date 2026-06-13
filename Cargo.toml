@@ -1,0 +1,36 @@
+[package]
+name = "ai-usage"
+version = "0.1.0"
+edition = "2024"
+description = "Unified Claude + Codex usage limits (5-hour / weekly) across Chrome profiles"
+license = "GPL-3.0"
+
+[dependencies]
+# crypto: RustCrypto — AES-128-CBC + PBKDF2-HMAC-SHA1 (Chrome macOS "v10" cookie scheme)
+aes = "0.9.1"
+cbc = { version = "0.2.1", features = ["alloc", "block-padding"] }
+pbkdf2 = "0.13.0"
+sha1 = "0.11.0"
+
+# storage / encoding
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+base64 = "0.22.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+
+# HTTP with Chrome TLS/HTTP2 emulation (to pass Cloudflare with a replayed cf_clearance)
+wreq = { version = "5.3.0", features = ["gzip", "brotli", "zstd", "deflate"] }
+wreq-util = "2.2.6"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "time"] }
+
+# CLI / output
+clap = { version = "4.6.1", features = ["derive"] }
+comfy-table = "7.2.2"
+chrono = "0.4.45"
+dirs = "6"
+anyhow = "1.0.102"
+toml = "1.1.2"
+
+[profile.release]
+strip = true
+lto = true

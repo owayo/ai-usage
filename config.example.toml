@@ -1,0 +1,35 @@
+# ai-usage configuration — copy to ~/.config/ai-usage/config.toml
+# (or $XDG_CONFIG_HOME/ai-usage/config.toml)
+#
+# OPTIONAL. With no config file, ai-usage auto-discovers every Chrome profile
+# that has a Claude or Codex session and shows them all (the default behavior).
+#
+# Precedence: CLI flags (--profile / --only / --active-email) override this file,
+# which overrides auto-detection.
+#
+# Tip: run `ai-usage --init-config` to generate this file from your current
+# signed-in profiles, then edit to taste.
+
+# Highlight this account as "active" (red+bold on its Claude row in the statusline).
+# Default: auto-detected from CLAUDE_CONFIG_DIR/.claude.json (this Claude Code
+# session's account), so you normally don't need to set this.
+# active_email = "work@example.com"
+
+# Pick which profiles to show, in this order. As soon as you list any [[profiles]],
+# ONLY the listed profiles are shown. Match by Chrome display name OR on-disk dir.
+[[profiles]]
+match = "Work"                    # Chrome profile display name, or dir e.g. "Default"
+label = "work"                    # optional: shown instead of the account email username
+# providers = ["claude", "codex"] # optional: subset to show; default = both
+
+[[profiles]]
+match = "Home"
+label = "home"
+
+# Antigravity (Google `agy`) usage. Auto-discovered when a ~/.gemini OAuth token
+# or a running `agy` is found — no config needed. Add this only to relabel it,
+# point at a non-default token, or turn it off.
+[antigravity]
+# enabled = true          # set false to hide Antigravity even when present
+label = "antigravity"     # optional: label shown on its rows
+# token_path = "~/.gemini/antigravity-cli/antigravity-oauth-token"  # non-default token
