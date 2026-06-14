@@ -164,7 +164,7 @@ async fn fetch_reports(
             let Ok(pc) = cookies::load(&db, &key) else {
                 continue;
             };
-            if t.want_claude && pc.claude.contains_key("sessionKey") {
+            if t.want_claude && claude::has_session(&pc.claude) {
                 jobs.push(Job {
                     profile_name: t.profile.name.clone(),
                     profile_email: t.profile.email.clone(),
@@ -173,12 +173,7 @@ async fn fetch_reports(
                     auth: AuthMaterial::BrowserCookies(pc.claude),
                 });
             }
-            if t.want_codex
-                && (pc
-                    .chatgpt
-                    .contains_key("__Secure-next-auth.session-token.0")
-                    || pc.chatgpt.contains_key("__Secure-next-auth.session-token"))
-            {
+            if t.want_codex && codex::has_session(&pc.chatgpt) {
                 jobs.push(Job {
                     profile_name: t.profile.name.clone(),
                     profile_email: t.profile.email.clone(),
@@ -346,7 +341,20 @@ fn resolve_wants(cli: &Cli, cfg: Option<&config::ProfileCfg>) -> (bool, bool) {
 /// Resolve which profiles to show (with labels + provider filters).
 /// Precedence: `--profile` > config `[[profiles]]` > auto-discover all.
 fn build_targets(all: Vec<Profile>, cli: &Cli, cfg: &config::Config) -> Vec<Target> {
+    // Construction is identical across the three selection strategies; only which
+    // profiles are chosen, in what order, and with which config row differs.
+    let make = |profile: Profile, c: Option<&config::ProfileCfg>| {
+        let (want_claude, want_codex) = resolve_wants(cli, c);
+        Target {
+            label: c.and_then(|c| c.label.clone()),
+            want_claude,
+            want_codex,
+            profile,
+        }
+    };
+
     if !cli.profile.is_empty() {
+        // --profile: discovery order, filtered to the named profiles.
         all.into_iter()
             .filter(|p| {
                 cli.profile
@@ -355,51 +363,97 @@ fn build_targets(all: Vec<Profile>, cli: &Cli, cfg: &config::Config) -> Vec<Targ
             })
             .map(|p| {
                 let c = cfg.profiles.iter().find(|c| c.matches(&p.name, &p.dir));
-                let (want_claude, want_codex) = resolve_wants(cli, c);
-                Target {
-                    label: c.and_then(|c| c.label.clone()),
-                    want_claude,
-                    want_codex,
-                    profile: p,
-                }
+                make(p, c)
             })
             .collect()
     } else if !cfg.profiles.is_empty() {
+        // Config order: each [[profiles]] row, matched against a discovered profile.
         cfg.profiles
             .iter()
             .filter_map(|c| {
                 all.iter()
                     .find(|p| c.matches(&p.name, &p.dir))
                     .cloned()
-                    .map(|p| {
-                        let (want_claude, want_codex) = resolve_wants(cli, Some(c));
-                        Target {
-                            label: c.label.clone(),
-                            want_claude,
-                            want_codex,
-                            profile: p,
-                        }
-                    })
+                    .map(|p| make(p, Some(c)))
             })
             .collect()
     } else {
-        all.into_iter()
-            .map(|p| {
-                let (want_claude, want_codex) = resolve_wants(cli, None);
-                Target {
-                    label: None,
-                    want_claude,
-                    want_codex,
-                    profile: p,
-                }
-            })
-            .collect()
+        // Auto: every discovered profile, in discovery order.
+        all.into_iter().map(|p| make(p, None)).collect()
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
+/// `--list-profiles`: print discovered profiles and whether each has a cookie store.
+fn list_profiles(root: &std::path::Path, all: &[Profile]) {
+    for p in all {
+        let note = if profiles::cookies_db(root, &p.dir).is_some() {
+            ""
+        } else {
+            "  (no cookie store)"
+        };
+        println!(
+            "{:<18} dir={:<12} {}{}",
+            p.name,
+            p.dir,
+            p.email.as_deref().unwrap_or(""),
+            note
+        );
+    }
+}
+
+/// `--init-config`: write a starter config, or print it to stdout if one exists.
+fn write_init_config(root: &std::path::Path, all: &[Profile]) -> Result<()> {
+    let text = generate_config(root, all);
+    match config::default_path() {
+        Some(p) if !p.exists() => {
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            std::fs::write(&p, &text)?;
+            eprintln!("Wrote starter config to {}", p.display());
+        }
+        Some(p) => {
+            eprintln!(
+                "Config already exists at {} — printing a fresh one to stdout (redirect to overwrite).",
+                p.display()
+            );
+            print!("{text}");
+        }
+        None => print!("{text}"),
+    }
+    Ok(())
+}
+
+/// Render the statusline from a cached `--json` file. A missing or invalid cache
+/// prints nothing — the next draw repopulates it.
+fn render_cached_statusline(path: &std::path::Path, cli: &Cli, active: Option<&str>) {
+    let Ok(data) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(report) = serde_json::from_str::<report::Report>(&data) else {
+        return;
+    };
+    render::statusline(&report, active, color_enabled(cli.no_color), cli.logos);
+}
+
+/// Render freshly fetched reports in the format selected by the CLI flags.
+fn render_reports(cli: &Cli, reports: &[AccountReport], active: Option<&str>) {
+    if cli.statusline {
+        render::statusline(
+            &report::Report::build(reports),
+            active,
+            color_enabled(cli.no_color),
+            cli.logos,
+        );
+    } else if cli.json {
+        render::json(&report::Report::build(reports));
+    } else {
+        render::table(reports, active);
+    }
+}
+
+/// Discover profiles, dispatch the info-only flags, then fetch and render usage.
+async fn run(cli: Cli) -> Result<()> {
     let cfg = config::load(cli.config.as_deref());
     let root = profiles::chrome_root()?;
     // `--only antigravity` never touches Chrome — skip profile discovery (and,
@@ -411,43 +465,11 @@ async fn main() -> Result<()> {
     };
 
     if cli.list_profiles {
-        for p in &all {
-            let note = if profiles::cookies_db(&root, &p.dir).is_some() {
-                ""
-            } else {
-                "  (no cookie store)"
-            };
-            println!(
-                "{:<18} dir={:<12} {}{}",
-                p.name,
-                p.dir,
-                p.email.as_deref().unwrap_or(""),
-                note
-            );
-        }
+        list_profiles(&root, &all);
         return Ok(());
     }
-
     if cli.init_config {
-        let text = generate_config(&root, &all);
-        match config::default_path() {
-            Some(p) if !p.exists() => {
-                if let Some(parent) = p.parent() {
-                    std::fs::create_dir_all(parent).ok();
-                }
-                std::fs::write(&p, &text)?;
-                eprintln!("Wrote starter config to {}", p.display());
-            }
-            Some(p) => {
-                eprintln!(
-                    "Config already exists at {} — printing a fresh one to stdout (redirect to overwrite).",
-                    p.display()
-                );
-                print!("{text}");
-            }
-            None => print!("{text}"),
-        }
-        return Ok(());
+        return write_init_config(&root, &all);
     }
 
     let active = cli
@@ -460,18 +482,7 @@ async fn main() -> Result<()> {
     if cli.statusline
         && let Some(path) = cli.input.as_deref()
     {
-        let Ok(data) = std::fs::read_to_string(path) else {
-            return Ok(()); // cache not populated yet → print nothing
-        };
-        let Ok(report) = serde_json::from_str::<report::Report>(&data) else {
-            return Ok(());
-        };
-        render::statusline(
-            &report,
-            active.as_deref(),
-            color_enabled(cli.no_color),
-            cli.logos,
-        );
+        render_cached_statusline(path, &cli, active.as_deref());
         return Ok(());
     }
 
@@ -484,17 +495,11 @@ async fn main() -> Result<()> {
     let reports =
         fetch_reports(&root, &targets, want_antigravity, cfg.antigravity.as_ref()).await?;
 
-    if cli.statusline {
-        render::statusline(
-            &report::Report::build(&reports),
-            active.as_deref(),
-            color_enabled(cli.no_color),
-            cli.logos,
-        );
-    } else if cli.json {
-        render::json(&report::Report::build(&reports));
-    } else {
-        render::table(&reports, active.as_deref());
-    }
+    render_reports(&cli, &reports, active.as_deref());
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    run(Cli::parse()).await
 }

@@ -30,7 +30,7 @@ impl WindowOut {
 #[derive(Serialize, Deserialize)]
 pub struct AccountOut {
     pub profile: String,
-    pub provider: String,
+    pub provider: Provider,
     pub ok: bool,
     pub plan: Option<String>,
     pub email: Option<String>,
@@ -55,41 +55,33 @@ impl Report {
         let now = Utc::now();
         let accounts = reports
             .iter()
-            .map(|r| {
-                let provider = match r.provider {
-                    Provider::Claude => "claude",
-                    Provider::Codex => "codex",
-                    Provider::Antigravity => "antigravity",
-                }
-                .to_string();
-                match &r.usage {
-                    Ok(u) => AccountOut {
-                        profile: r.profile_name.clone(),
-                        provider,
-                        ok: true,
-                        plan: u.plan.clone(),
-                        email: u.email.clone(),
-                        profile_email: r.profile_email.clone(),
-                        label: r.label.clone(),
-                        group_label: r.group_label.clone(),
-                        five_hour: u.five_hour.as_ref().map(|w| WindowOut::new(w, now)),
-                        weekly: u.weekly.as_ref().map(|w| WindowOut::new(w, now)),
-                        error: None,
-                    },
-                    Err(e) => AccountOut {
-                        profile: r.profile_name.clone(),
-                        provider,
-                        ok: false,
-                        plan: None,
-                        email: None,
-                        profile_email: r.profile_email.clone(),
-                        label: r.label.clone(),
-                        group_label: r.group_label.clone(),
-                        five_hour: None,
-                        weekly: None,
-                        error: Some(format!("{e:#}")),
-                    },
-                }
+            .map(|r| match &r.usage {
+                Ok(u) => AccountOut {
+                    profile: r.profile_name.clone(),
+                    provider: r.provider,
+                    ok: true,
+                    plan: u.plan.clone(),
+                    email: u.email.clone(),
+                    profile_email: r.profile_email.clone(),
+                    label: r.label.clone(),
+                    group_label: r.group_label.clone(),
+                    five_hour: u.five_hour.as_ref().map(|w| WindowOut::new(w, now)),
+                    weekly: u.weekly.as_ref().map(|w| WindowOut::new(w, now)),
+                    error: None,
+                },
+                Err(e) => AccountOut {
+                    profile: r.profile_name.clone(),
+                    provider: r.provider,
+                    ok: false,
+                    plan: None,
+                    email: None,
+                    profile_email: r.profile_email.clone(),
+                    label: r.label.clone(),
+                    group_label: r.group_label.clone(),
+                    five_hour: None,
+                    weekly: None,
+                    error: Some(format!("{e:#}")),
+                },
             })
             .collect();
         Report {

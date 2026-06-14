@@ -13,16 +13,21 @@ use wreq::Client;
 use crate::http::get_json;
 use crate::model::{Usage, UsageRow, Window};
 
+/// chatgpt.com's session-token cookie. Large tokens are split across `…token.0`
+/// and `…token.1`; a small one stays in the unsuffixed `…session-token`. Defined
+/// once so `cookie_header` (sends it) and `has_session` (detects it) can't drift.
+const SESSION_TOKEN: &str = "__Secure-next-auth.session-token";
+
 fn cookie_header(cookies: &HashMap<String, String>) -> Result<String> {
-    let mut header = if let Some(t0) = cookies.get("__Secure-next-auth.session-token.0") {
-        format!("__Secure-next-auth.session-token.0={t0}")
-    } else if let Some(t) = cookies.get("__Secure-next-auth.session-token") {
-        format!("__Secure-next-auth.session-token={t}")
+    let mut header = if let Some(t0) = cookies.get(&format!("{SESSION_TOKEN}.0")) {
+        format!("{SESSION_TOKEN}.0={t0}")
+    } else if let Some(t) = cookies.get(SESSION_TOKEN) {
+        format!("{SESSION_TOKEN}={t}")
     } else {
         anyhow::bail!("not signed in to chatgpt.com in this profile");
     };
-    if let Some(t1) = cookies.get("__Secure-next-auth.session-token.1") {
-        header.push_str(&format!("; __Secure-next-auth.session-token.1={t1}"));
+    if let Some(t1) = cookies.get(&format!("{SESSION_TOKEN}.1")) {
+        header.push_str(&format!("; {SESSION_TOKEN}.1={t1}"));
     }
     for name in ["cf_clearance", "__cf_bm", "_puid"] {
         if let Some(v) = cookies.get(name) {
@@ -30,6 +35,13 @@ fn cookie_header(cookies: &HashMap<String, String>) -> Result<String> {
         }
     }
     Ok(header)
+}
+
+/// Whether this profile carries a chatgpt.com session-token cookie (either the
+/// split `…token.0` form or the unsuffixed one). Mirrors `cookie_header`'s
+/// requirement so the caller never has to know the cookie names.
+pub fn has_session(cookies: &HashMap<String, String>) -> bool {
+    cookies.contains_key(&format!("{SESSION_TOKEN}.0")) || cookies.contains_key(SESSION_TOKEN)
 }
 
 pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result<Vec<UsageRow>> {

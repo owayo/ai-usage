@@ -33,25 +33,26 @@ fn matches_active(active: Option<&str>, row_email: Option<&str>) -> bool {
         .is_some_and(|(want, got)| want.eq_ignore_ascii_case(got))
 }
 
+/// Brand RGB per provider — the single source for both the table (comfy-table
+/// `Color::Rgb`) and the statusline (`brand_sgr`'s ANSI truecolor).
+fn brand_rgb(p: Provider) -> (u8, u8, u8) {
+    match p {
+        Provider::Claude => (217, 119, 87), // Anthropic coral #D97757
+        Provider::Codex => (16, 163, 127),  // OpenAI teal #10A37F
+        Provider::Antigravity => (66, 133, 244), // Google blue #4285F4
+    }
+}
+
 /// Brand color for a provider, as a comfy-table truecolor (table use).
 fn provider_color(p: Provider) -> Color {
-    match p {
-        Provider::Claude => Color::Rgb {
-            r: 217,
-            g: 119,
-            b: 87,
-        }, // Anthropic coral #D97757
-        Provider::Codex => Color::Rgb {
-            r: 16,
-            g: 163,
-            b: 127,
-        }, // OpenAI teal #10A37F
-        Provider::Antigravity => Color::Rgb {
-            r: 66,
-            g: 133,
-            b: 244,
-        }, // Google blue #4285F4
-    }
+    let (r, g, b) = brand_rgb(p);
+    Color::Rgb { r, g, b }
+}
+
+/// Brand color as an ANSI SGR truecolor parameter (statusline use).
+fn brand_sgr(p: Provider) -> String {
+    let (r, g, b) = brand_rgb(p);
+    format!("38;2;{r};{g};{b}")
 }
 
 /// Service-column text: the provider, plus the model-group for Antigravity rows.
@@ -197,11 +198,7 @@ pub fn json(report: &Report) {
 // ===== Statusline (compact, colored, one account per line) ==================
 
 // 256-color ANSI codes (parameter portion, no SGR wrapper).
-const ACCOUNT: &str = "38;5;147"; // lavender — fallback provider label
-const CLAUDE_BRAND: &str = "38;2;217;119;87"; // Anthropic coral #D97757
-const CODEX_BRAND: &str = "38;2;16;163;127"; // OpenAI teal #10A37F
-const ANTIGRAVITY_BRAND: &str = "38;2;66;133;244"; // Google blue #4285F4
-const CODEX_LOGO_COLOR: &str = "38;2;255;255;255"; // white — Codex brand logo
+const CODEX_LOGO_COLOR: &str = "38;2;255;255;255"; // white — Codex logo glyph
 // Brand-logo glyphs in PUA-B (BrandLogos font), used with `--logos`.
 const CLAUDE_LOGO: &str = "\u{100002}"; // Claude sunburst
 const CODEX_LOGO: &str = "\u{100000}"; // OpenAI mark
@@ -220,8 +217,9 @@ pub fn statusline(report: &Report, active_email: Option<&str>, color: bool, logo
     let now = Utc::now();
     let mut rows: Vec<&AccountOut> = report.accounts.iter().collect();
     rows.sort_by(|a, b| {
-        prov_rank(&a.provider)
-            .cmp(&prov_rank(&b.provider))
+        a.provider
+            .rank()
+            .cmp(&b.provider.rank())
             .then_with(|| a.profile.cmp(&b.profile))
     });
     let lines: Vec<String> = rows
@@ -230,19 +228,11 @@ pub fn statusline(report: &Report, active_email: Option<&str>, color: bool, logo
             let row_email = a.email.as_deref().or(a.profile_email.as_deref());
             // This is the Claude-side statusline, so only the active Claude
             // account is highlighted; the Codex row of the same email stays neutral.
-            let active = a.provider == "claude" && matches_active(active_email, row_email);
+            let active = a.provider == Provider::Claude && matches_active(active_email, row_email);
             render_row(a, row_email, active, color, logos, now)
         })
         .collect();
     print!("{}", lines.join("\n"));
-}
-
-fn prov_rank(p: &str) -> u8 {
-    match p {
-        "claude" => 0,
-        "codex" => 1,
-        _ => 2,
-    }
 }
 
 fn render_row(
@@ -253,11 +243,10 @@ fn render_row(
     logos: bool,
     now: DateTime<Utc>,
 ) -> String {
-    let prov = match a.provider.as_str() {
-        "claude" => "Claude",
-        "codex" => "Codex",
-        "antigravity" => "AGY",
-        other => other,
+    let prov = match a.provider {
+        Provider::Claude => "Claude",
+        Provider::Codex => "Codex",
+        Provider::Antigravity => "AGY",
     };
     let name = display_name(
         a.label.as_deref(),
@@ -268,21 +257,15 @@ fn render_row(
     let mut s = String::from("  ");
     // Provider marker: a brand-logo glyph with `--logos`, otherwise the text label.
     if logos {
-        let (logo, logo_color) = match a.provider.as_str() {
-            "claude" => (CLAUDE_LOGO, CLAUDE_BRAND),
-            "codex" => (CODEX_LOGO, CODEX_LOGO_COLOR),
-            "antigravity" => (ANTIGRAVITY_LOGO, ANTIGRAVITY_BRAND),
-            _ => ("", ACCOUNT),
+        let (logo, logo_color) = match a.provider {
+            Provider::Claude => (CLAUDE_LOGO, brand_sgr(a.provider)),
+            // Codex's mark reads better in white than its teal brand color.
+            Provider::Codex => (CODEX_LOGO, CODEX_LOGO_COLOR.to_string()),
+            Provider::Antigravity => (ANTIGRAVITY_LOGO, brand_sgr(a.provider)),
         };
-        s += &paint(color, logo_color, &format!("{logo}  "));
+        s += &paint(color, &logo_color, &format!("{logo}  "));
     } else {
-        let brand = match a.provider.as_str() {
-            "claude" => CLAUDE_BRAND,
-            "codex" => CODEX_BRAND,
-            "antigravity" => ANTIGRAVITY_BRAND,
-            _ => ACCOUNT,
-        };
-        s += &paint(color, brand, &format!("{prov:<6} "));
+        s += &paint(color, &brand_sgr(a.provider), &format!("{prov:<6} "));
     }
     // Antigravity rows show their model-group (the account name is redundant for
     // a single token); others show the account name. Pad to a width that fits

@@ -1,8 +1,10 @@
 //! Shared data model for usage reporting.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Provider {
     Claude,
     Codex,
@@ -15,6 +17,15 @@ impl Provider {
             Provider::Claude => "Claude",
             Provider::Codex => "Codex",
             Provider::Antigravity => "Antigravity",
+        }
+    }
+
+    /// Sort rank for the statusline: Claude first, then Codex, then others.
+    pub fn rank(self) -> u8 {
+        match self {
+            Provider::Claude => 0,
+            Provider::Codex => 1,
+            Provider::Antigravity => 2,
         }
     }
 }

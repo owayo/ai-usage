@@ -25,6 +25,14 @@ fn cookie_header(cookies: &HashMap<String, String>) -> Result<String> {
     Ok(header)
 }
 
+/// Whether this profile carries a claude.ai session cookie. A cheap presence
+/// check (no decryption beyond what's already loaded, no network) used to decide
+/// whether to spawn a Claude fetch — keeps the cookie-name knowledge here rather
+/// than in the caller.
+pub fn has_session(cookies: &HashMap<String, String>) -> bool {
+    cookies.contains_key("sessionKey")
+}
+
 pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result<Vec<UsageRow>> {
     let cookie = cookie_header(cookies)?;
 
