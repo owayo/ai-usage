@@ -27,10 +27,71 @@ fn display_name<'a>(
         .unwrap_or_else(|| profile.to_string())
 }
 
-fn matches_active(active: Option<&str>, row_email: Option<&str>) -> bool {
-    active
-        .zip(row_email)
-        .is_some_and(|(want, got)| want.eq_ignore_ascii_case(got))
+/// How the highlighted ("active") account is specified. The default path
+/// resolves a signed-in email (from `.claude.json`); callers that drive a
+/// specific account instead pin it by profile name (+ optional provider),
+/// independent of which account the host tool is currently signed in as.
+pub struct ActiveTarget {
+    pub email: Option<String>,
+    pub profile: Option<String>,
+    pub provider: Option<Provider>,
+}
+
+/// Decide whether a row is the active one, returning `(matched, reason)`. The
+/// reason explains a non-match for `--debug`. Profile targeting takes priority
+/// and can address any provider; email targeting keeps the original behaviour
+/// of highlighting only the matching Claude row.
+fn is_active_row(
+    target: &ActiveTarget,
+    provider: Provider,
+    profile: &str,
+    row_email: Option<&str>,
+) -> (bool, &'static str) {
+    if let Some(want) = target.profile.as_deref() {
+        if !profile.eq_ignore_ascii_case(want) {
+            return (false, "profile_mismatch");
+        }
+        return match target.provider {
+            Some(pv) if provider != pv => (false, "provider_mismatch"),
+            Some(_) => (true, "profile_provider_match"),
+            None if provider == Provider::Claude => (true, "profile_match_claude"),
+            None => (false, "provider_not_claude"),
+        };
+    }
+    if let Some(want) = target.email.as_deref() {
+        if provider != Provider::Claude {
+            return (false, "provider_not_claude");
+        }
+        return match row_email {
+            Some(got) if got.eq_ignore_ascii_case(want) => (true, "email_match"),
+            Some(_) => (false, "email_mismatch"),
+            None => (false, "no_row_email"),
+        };
+    }
+    (false, "no_active_target")
+}
+
+/// Emit one JSONL diagnostic line per row to stderr for `--debug`. stdout is
+/// reserved for rendered output, so this never corrupts a piped statusline/JSON.
+/// Only non-secret fields (provider/profile/email/decision) are logged.
+fn debug_row(
+    provider: Provider,
+    profile: &str,
+    row_email: Option<&str>,
+    matched: bool,
+    reason: &str,
+) {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "event": "row_match",
+            "provider": provider.label(),
+            "profile": profile,
+            "row_email": row_email,
+            "matched": matched,
+            "reason": reason,
+        })
+    );
 }
 
 /// Brand RGB per provider — the single source for both the table (comfy-table
@@ -65,7 +126,7 @@ fn service_label(p: Provider, group: Option<&str>) -> String {
 
 // ===== Human-readable table =================================================
 
-pub fn table(reports: &[AccountReport], active_email: Option<&str>) {
+pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, debug: bool) {
     let now = Utc::now();
     let mut table = Table::new();
     table
@@ -91,10 +152,15 @@ pub fn table(reports: &[AccountReport], active_email: Option<&str>) {
             r.profile_email.as_deref(),
             &r.profile_name,
         );
-        let active =
-            matches!(r.provider, Provider::Claude) && matches_active(active_email, row_email);
+        let (is_active, reason) = match active {
+            Some(t) => is_active_row(t, r.provider, &r.profile_name, row_email),
+            None => (false, "no_active_target"),
+        };
+        if debug {
+            debug_row(r.provider, &r.profile_name, row_email, is_active, reason);
+        }
         let mut name_cell = Cell::new(&name);
-        if active {
+        if is_active {
             name_cell = name_cell.fg(Color::Red).add_attribute(Attribute::Bold);
         }
 
@@ -213,7 +279,13 @@ const WEEK_TH: [i64; 3] = [86400, 172800, 259200];
 /// Render one row per account (grouped Claude-then-Codex), each with 5h and 1w
 /// gauges + percentage + reset countdown. The account matching `active_email`
 /// (this session's account) is shown in red+bold.
-pub fn statusline(report: &Report, active_email: Option<&str>, color: bool, logos: bool) {
+pub fn statusline(
+    report: &Report,
+    active: Option<&ActiveTarget>,
+    color: bool,
+    logos: bool,
+    debug: bool,
+) {
     let now = Utc::now();
     let mut rows: Vec<&AccountOut> = report.accounts.iter().collect();
     rows.sort_by(|a, b| {
@@ -226,10 +298,16 @@ pub fn statusline(report: &Report, active_email: Option<&str>, color: bool, logo
         .iter()
         .map(|a| {
             let row_email = a.email.as_deref().or(a.profile_email.as_deref());
-            // This is the Claude-side statusline, so only the active Claude
-            // account is highlighted; the Codex row of the same email stays neutral.
-            let active = a.provider == Provider::Claude && matches_active(active_email, row_email);
-            render_row(a, row_email, active, color, logos, now)
+            // Profile targeting can highlight any provider's row; email targeting
+            // keeps the original Claude-only behaviour. `--debug` explains each row.
+            let (is_active, reason) = match active {
+                Some(t) => is_active_row(t, a.provider, &a.profile, row_email),
+                None => (false, "no_active_target"),
+            };
+            if debug {
+                debug_row(a.provider, &a.profile, row_email, is_active, reason);
+            }
+            render_row(a, row_email, is_active, color, logos, now)
         })
         .collect();
     print!("{}", lines.join("\n"));

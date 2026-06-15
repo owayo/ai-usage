@@ -60,6 +60,19 @@ struct Cli {
     #[arg(long, value_name = "EMAIL")]
     active_email: Option<String>,
 
+    /// Highlight the account with this profile name as active, matched against
+    /// `accounts[].profile` (case-insensitive). Takes precedence over
+    /// --active-email and the .claude.json fallback. Useful for tools that
+    /// drive a specific account by profile rather than by signed-in email.
+    #[arg(long, value_name = "NAME")]
+    active_profile: Option<String>,
+
+    /// With --active-profile, restrict the highlight to this provider's row
+    /// (claude/codex/antigravity). Without it, the matching profile's Claude
+    /// row is highlighted.
+    #[arg(long, value_enum)]
+    active_provider: Option<ProviderArg>,
+
     /// Disable ANSI color.
     #[arg(long)]
     no_color: bool,
@@ -75,6 +88,11 @@ struct Cli {
     /// List discovered Chrome profiles and exit
     #[arg(long)]
     list_profiles: bool,
+
+    /// Print active-account resolution and per-row match decisions to stderr as
+    /// JSONL (stdout stays clean). For diagnosing why a row is or isn't active.
+    #[arg(long)]
+    debug: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -82,6 +100,16 @@ enum ProviderArg {
     Claude,
     Codex,
     Antigravity,
+}
+
+impl ProviderArg {
+    fn to_provider(self) -> Provider {
+        match self {
+            ProviderArg::Claude => Provider::Claude,
+            ProviderArg::Codex => Provider::Codex,
+            ProviderArg::Antigravity => Provider::Antigravity,
+        }
+    }
 }
 
 /// What a job authenticates with: Chrome cookies (Claude/Codex) or the local
@@ -262,18 +290,93 @@ async fn fetch_reports(
     Ok(results.into_iter().map(|(_, r)| r).collect())
 }
 
-/// The account email this session is signed in as (for active-row highlighting).
-fn active_claude_email() -> Option<String> {
-    // Claude Code stores settings in `$CLAUDE_CONFIG_DIR/.claude.json`, or
-    // `~/.claude.json` at the home root when that variable is unset.
-    let path = std::env::var_os("CLAUDE_CONFIG_DIR")
+/// Path to Claude Code's settings file: `$CLAUDE_CONFIG_DIR/.claude.json`, or
+/// `~/.claude.json` at the home root when that variable is unset.
+fn claude_config_path() -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(|d| PathBuf::from(d).join(".claude.json"))
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude.json"));
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude.json"))
+}
+
+/// Read the signed-in account email (`oauthAccount.emailAddress`) from a Claude
+/// Code settings file. `None` if the file is missing, unparseable, or — as with
+/// some auth methods — simply has no such field.
+fn read_claude_email(path: &std::path::Path) -> Option<String> {
     let data = std::fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&data).ok()?;
     v.pointer("/oauthAccount/emailAddress")
         .and_then(|e| e.as_str())
         .map(str::to_string)
+}
+
+/// The account email this session is signed in as (for active-row highlighting).
+fn active_claude_email() -> Option<String> {
+    read_claude_email(&claude_config_path())
+}
+
+/// Resolve which account to highlight. `--active-profile` (optionally narrowed
+/// by `--active-provider`) wins and is matched by profile name; otherwise fall
+/// back to the email chain (`--active-email` → config → `.claude.json`), which
+/// highlights the matching Claude row. With `--debug`, the decision is logged to
+/// stderr as JSONL.
+fn active_target(cli: &Cli, cfg: &config::Config) -> Option<render::ActiveTarget> {
+    if let Some(profile) = cli.active_profile.clone() {
+        let provider = cli.active_provider.map(ProviderArg::to_provider);
+        if cli.debug {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "event": "active",
+                    "source": "active_profile_flag",
+                    "profile": profile,
+                    "provider": provider.map(|p| p.label()),
+                })
+            );
+        }
+        return Some(render::ActiveTarget {
+            email: None,
+            profile: Some(profile),
+            provider,
+        });
+    }
+    let (email, source, path) = resolve_active_email(cli, cfg);
+    if cli.debug {
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "event": "active",
+                "source": source,
+                "path": path,
+                "email": email,
+            })
+        );
+    }
+    email.map(|e| render::ActiveTarget {
+        email: Some(e),
+        profile: None,
+        provider: None,
+    })
+}
+
+/// The email-based active resolution chain, returning the chosen email with its
+/// source (and the `.claude.json` path when consulted) for `--debug`.
+fn resolve_active_email(
+    cli: &Cli,
+    cfg: &config::Config,
+) -> (Option<String>, &'static str, Option<String>) {
+    if let Some(e) = cli.active_email.clone() {
+        return (Some(e), "active_email_flag", None);
+    }
+    if let Some(e) = cfg.active_email.clone() {
+        return (Some(e), "config", None);
+    }
+    let path = claude_config_path();
+    let email = read_claude_email(&path);
+    (
+        email,
+        "claude_config",
+        Some(path.to_string_lossy().into_owned()),
+    )
 }
 
 fn color_enabled(no_color_flag: bool) -> bool {
@@ -426,29 +529,40 @@ fn write_init_config(root: &std::path::Path, all: &[Profile]) -> Result<()> {
 
 /// Render the statusline from a cached `--json` file. A missing or invalid cache
 /// prints nothing — the next draw repopulates it.
-fn render_cached_statusline(path: &std::path::Path, cli: &Cli, active: Option<&str>) {
+fn render_cached_statusline(
+    path: &std::path::Path,
+    cli: &Cli,
+    active: Option<&render::ActiveTarget>,
+) {
     let Ok(data) = std::fs::read_to_string(path) else {
         return;
     };
     let Ok(report) = serde_json::from_str::<report::Report>(&data) else {
         return;
     };
-    render::statusline(&report, active, color_enabled(cli.no_color), cli.logos);
+    render::statusline(
+        &report,
+        active,
+        color_enabled(cli.no_color),
+        cli.logos,
+        cli.debug,
+    );
 }
 
 /// Render freshly fetched reports in the format selected by the CLI flags.
-fn render_reports(cli: &Cli, reports: &[AccountReport], active: Option<&str>) {
+fn render_reports(cli: &Cli, reports: &[AccountReport], active: Option<&render::ActiveTarget>) {
     if cli.statusline {
         render::statusline(
             &report::Report::build(reports),
             active,
             color_enabled(cli.no_color),
             cli.logos,
+            cli.debug,
         );
     } else if cli.json {
         render::json(&report::Report::build(reports));
     } else {
-        render::table(reports, active);
+        render::table(reports, active, cli.debug);
     }
 }
 
@@ -472,17 +586,13 @@ async fn run(cli: Cli) -> Result<()> {
         return write_init_config(&root, &all);
     }
 
-    let active = cli
-        .active_email
-        .clone()
-        .or_else(|| cfg.active_email.clone())
-        .or_else(active_claude_email);
+    let active = active_target(&cli, &cfg);
 
     // Statusline rendered from a cached file: no network, no Keychain.
     if cli.statusline
         && let Some(path) = cli.input.as_deref()
     {
-        render_cached_statusline(path, &cli, active.as_deref());
+        render_cached_statusline(path, &cli, active.as_ref());
         return Ok(());
     }
 
@@ -495,7 +605,7 @@ async fn run(cli: Cli) -> Result<()> {
     let reports =
         fetch_reports(&root, &targets, want_antigravity, cfg.antigravity.as_ref()).await?;
 
-    render_reports(&cli, &reports, active.as_deref());
+    render_reports(&cli, &reports, active.as_ref());
     Ok(())
 }
 
