@@ -93,6 +93,11 @@ struct Cli {
     /// JSONL (stdout stays clean). For diagnosing why a row is or isn't active.
     #[arg(long)]
     debug: bool,
+
+    /// In the statusline, halve the gauge width (8 instead of 16) for narrow
+    /// panes. Affects `--statusline` rendering only.
+    #[arg(long)]
+    compact: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -546,6 +551,7 @@ fn render_cached_statusline(
         color_enabled(cli.no_color),
         cli.logos,
         cli.debug,
+        cli.compact,
     );
 }
 
@@ -558,6 +564,7 @@ fn render_reports(cli: &Cli, reports: &[AccountReport], active: Option<&render::
             color_enabled(cli.no_color),
             cli.logos,
             cli.debug,
+            cli.compact,
         );
     } else if cli.json {
         render::json(&report::Report::build(reports));

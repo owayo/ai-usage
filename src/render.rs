@@ -285,6 +285,7 @@ pub fn statusline(
     color: bool,
     logos: bool,
     debug: bool,
+    compact: bool,
 ) {
     let now = Utc::now();
     let mut rows: Vec<&AccountOut> = report.accounts.iter().collect();
@@ -307,7 +308,7 @@ pub fn statusline(
             if debug {
                 debug_row(a.provider, &a.profile, row_email, is_active, reason);
             }
-            render_row(a, row_email, is_active, color, logos, now)
+            render_row(a, row_email, is_active, color, logos, now, compact)
         })
         .collect();
     print!("{}", lines.join("\n"));
@@ -320,6 +321,7 @@ fn render_row(
     color: bool,
     logos: bool,
     now: DateTime<Utc>,
+    compact: bool,
 ) -> String {
     let prov = match a.provider {
         Provider::Claude => "Claude",
@@ -357,14 +359,14 @@ fn render_row(
     if !a.ok {
         // データ取得に失敗したアカウントも、データ有り行と桁位置を揃える。
         // window_seg の None 分岐(空ゲージ + "--")を 5h / 1w 双方で再利用する。
-        s += &window_seg(color, "5h", None, now, FIVE_H_TH);
+        s += &window_seg(color, "5h", None, now, FIVE_H_TH, compact);
         s += "   ";
-        s += &window_seg(color, "1w", None, now, WEEK_TH);
+        s += &window_seg(color, "1w", None, now, WEEK_TH, compact);
         return s;
     }
-    s += &window_seg(color, "5h", a.five_hour.as_ref(), now, FIVE_H_TH);
+    s += &window_seg(color, "5h", a.five_hour.as_ref(), now, FIVE_H_TH, compact);
     s += "   ";
-    s += &window_seg(color, "1w", a.weekly.as_ref(), now, WEEK_TH);
+    s += &window_seg(color, "1w", a.weekly.as_ref(), now, WEEK_TH, compact);
     s
 }
 
@@ -374,20 +376,23 @@ fn window_seg(
     w: Option<&WindowOut>,
     now: DateTime<Utc>,
     th: [i64; 3],
+    compact: bool,
 ) -> String {
+    // --compact 時はゲージ幅を半分(8)にする。空ゲージ・実ゲージとも同じ幅で揃える。
+    let gauge_width = if compact { 8 } else { 16 };
     let mut s = paint(color, GRAY, &format!("{label} "));
     match w {
         None => {
             // データ無し: 空ゲージ + "--"(% なし) + "--"(残り時間)。
-            // Some 分岐と同じ桁幅(16 + 1 + 4 + 2 + 5 = 28)に揃える。
-            s += &paint(color, DIM, &"░".repeat(16));
+            // Some 分岐と同じ桁幅(gauge_width + 1 + 4 + 2 + 5)に揃える。
+            s += &paint(color, DIM, &"░".repeat(gauge_width));
             s += " ";
             s += &paint(color, DIM, &format!("{:>4}", "--"));
             s += "  ";
             s += &paint(color, DIM, &format!("{:<5}", "--"));
         }
         Some(w) => {
-            s += &gauge(color, w.used_percent, 16);
+            s += &gauge(color, w.used_percent, gauge_width);
             s += " ";
             s += &paint(
                 color,
