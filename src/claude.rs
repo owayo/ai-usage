@@ -121,3 +121,115 @@ fn parse_window(v: Option<&serde_json::Value>) -> Option<Window> {
         resets_at,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn cookie_header_includes_required_session_key() {
+        let mut c = HashMap::new();
+        c.insert("sessionKey".to_string(), "abc".to_string());
+        let h = cookie_header(&c).unwrap();
+        assert!(h.starts_with("sessionKey=abc"));
+    }
+
+    #[test]
+    fn cookie_header_appends_cloudflare_cookies() {
+        // cf_clearance / __cf_bm / _cfuvid は付加される(順序は登場順)。
+        let mut c = HashMap::new();
+        c.insert("sessionKey".to_string(), "abc".to_string());
+        c.insert("cf_clearance".to_string(), "x".to_string());
+        c.insert("__cf_bm".to_string(), "y".to_string());
+        c.insert("_cfuvid".to_string(), "z".to_string());
+        let h = cookie_header(&c).unwrap();
+        assert!(h.contains("; cf_clearance=x"));
+        assert!(h.contains("; __cf_bm=y"));
+        assert!(h.contains("; _cfuvid=z"));
+    }
+
+    #[test]
+    fn cookie_header_errors_without_session() {
+        // sessionKey が無いと未ログインと判定されてエラーになる。
+        let c = HashMap::<String, String>::new();
+        assert!(cookie_header(&c).is_err());
+    }
+
+    #[test]
+    fn has_session_checks_key() {
+        let mut c = HashMap::new();
+        assert!(!has_session(&c));
+        c.insert("sessionKey".to_string(), "x".to_string());
+        assert!(has_session(&c));
+    }
+
+    #[test]
+    fn pick_org_prefers_chat_capability() {
+        // capabilities に "chat" を含む組織を最優先で選ぶ。
+        let v = json!([
+            {"uuid": "u1", "capabilities": ["admin"]},
+            {"uuid": "u2", "capabilities": ["chat", "admin"]},
+        ]);
+        assert_eq!(pick_org(&v).as_deref(), Some("u2"));
+    }
+
+    #[test]
+    fn pick_org_falls_back_to_first() {
+        // 該当なしなら先頭を返す。
+        let v = json!([
+            {"uuid": "u1", "capabilities": ["admin"]},
+            {"uuid": "u2", "capabilities": []},
+        ]);
+        assert_eq!(pick_org(&v).as_deref(), Some("u1"));
+    }
+
+    #[test]
+    fn pick_org_returns_none_for_empty_or_invalid() {
+        assert_eq!(pick_org(&json!([])), None);
+        assert_eq!(pick_org(&json!({})), None);
+    }
+
+    #[test]
+    fn account_email_reads_known_shapes() {
+        // /api/account の応答は形が複数あるためそれぞれカバー。
+        assert_eq!(
+            account_email(&json!({"email_address": "a@x.test"})).as_deref(),
+            Some("a@x.test")
+        );
+        assert_eq!(
+            account_email(&json!({"email": "b@x.test"})).as_deref(),
+            Some("b@x.test")
+        );
+        assert_eq!(
+            account_email(&json!({"account": {"email_address": "c@x.test"}})).as_deref(),
+            Some("c@x.test")
+        );
+        assert_eq!(account_email(&json!({})), None);
+    }
+
+    #[test]
+    fn parse_window_reads_utilization_and_reset() {
+        let v = json!({"utilization": 42.5, "resets_at": "2026-06-15T06:28:32Z"});
+        let w = parse_window(Some(&v)).unwrap();
+        assert_eq!(w.used_percent, 42.5);
+        assert!(w.resets_at.is_some());
+    }
+
+    #[test]
+    fn parse_window_handles_null_and_missing() {
+        // None / Null / utilization 欠落 は None を返す。
+        assert!(parse_window(None).is_none());
+        assert!(parse_window(Some(&json!(null))).is_none());
+        assert!(parse_window(Some(&json!({}))).is_none());
+    }
+
+    #[test]
+    fn parse_window_tolerates_invalid_reset_time() {
+        // 不正な resets_at は None で握りつぶす(used_percent は維持)。
+        let v = json!({"utilization": 10.0, "resets_at": "not a date"});
+        let w = parse_window(Some(&v)).unwrap();
+        assert_eq!(w.used_percent, 10.0);
+        assert!(w.resets_at.is_none());
+    }
+}

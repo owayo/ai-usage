@@ -498,3 +498,172 @@ fn parse_utc(s: &str) -> Option<DateTime<Utc>> {
         .ok()
         .map(|d| d.with_timezone(&Utc))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_name_uses_label_first() {
+        // ラベルが空でなければラベルが最優先される。
+        let n = display_name(Some("work"), Some("a@b.test"), Some("c@d.test"), "Work");
+        assert_eq!(n, "work");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_email_username() {
+        // ラベル無し → 行メール(プロバイダ側のメール) → username 部のみ。
+        let n = display_name(None, Some("alice@example.com"), None, "Work");
+        assert_eq!(n, "alice");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_profile_email() {
+        // 行メール無し → プロファイルメール。
+        let n = display_name(None, None, Some("bob@example.com"), "Work");
+        assert_eq!(n, "bob");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_profile_name() {
+        // どれも使えなければプロファイル名(@ 区切りで空になる場合も含む)。
+        let n = display_name(None, Some("@example.com"), None, "Work");
+        assert_eq!(n, "Work");
+        let n = display_name(None, None, None, "Home");
+        assert_eq!(n, "Home");
+    }
+
+    #[test]
+    fn display_name_ignores_empty_label() {
+        // 空文字ラベルは無視してフォールバックへ。
+        let n = display_name(Some(""), Some("carol@example.com"), None, "Work");
+        assert_eq!(n, "carol");
+    }
+
+    #[test]
+    fn active_row_profile_match_targets_claude_by_default() {
+        // プロファイル名一致 + provider 指定なし → Claude 行のみアクティブ。
+        let t = ActiveTarget {
+            email: None,
+            profile: Some("Work".into()),
+            provider: None,
+        };
+        let (m, r) = is_active_row(&t, Provider::Claude, "work", None);
+        assert!(m);
+        assert_eq!(r, "profile_match_claude");
+        let (m, r) = is_active_row(&t, Provider::Codex, "work", None);
+        assert!(!m);
+        assert_eq!(r, "provider_not_claude");
+    }
+
+    #[test]
+    fn active_row_profile_with_provider_pins_row() {
+        // profile + provider 指定で対応する行のみアクティブ。
+        let t = ActiveTarget {
+            email: None,
+            profile: Some("Work".into()),
+            provider: Some(Provider::Codex),
+        };
+        assert_eq!(
+            is_active_row(&t, Provider::Codex, "Work", None),
+            (true, "profile_provider_match")
+        );
+        assert_eq!(
+            is_active_row(&t, Provider::Claude, "Work", None),
+            (false, "provider_mismatch")
+        );
+        assert_eq!(
+            is_active_row(&t, Provider::Codex, "Home", None),
+            (false, "profile_mismatch")
+        );
+    }
+
+    #[test]
+    fn active_row_email_targets_claude_only() {
+        // email 指定は Claude 行のみマッチ対象。
+        let t = ActiveTarget {
+            email: Some("alice@example.com".into()),
+            profile: None,
+            provider: None,
+        };
+        assert_eq!(
+            is_active_row(&t, Provider::Claude, "Work", Some("ALICE@example.com")),
+            (true, "email_match")
+        );
+        assert_eq!(
+            is_active_row(&t, Provider::Claude, "Work", Some("bob@example.com")),
+            (false, "email_mismatch")
+        );
+        assert_eq!(
+            is_active_row(&t, Provider::Claude, "Work", None),
+            (false, "no_row_email")
+        );
+        assert_eq!(
+            is_active_row(&t, Provider::Codex, "Work", Some("alice@example.com")),
+            (false, "provider_not_claude")
+        );
+    }
+
+    #[test]
+    fn active_row_no_target() {
+        let t = ActiveTarget {
+            email: None,
+            profile: None,
+            provider: None,
+        };
+        assert_eq!(
+            is_active_row(&t, Provider::Claude, "Work", None),
+            (false, "no_active_target")
+        );
+    }
+
+    #[test]
+    fn compact_dur_units() {
+        // 単位の境界(分→時間→日)を確認。1分未満は1m に丸める。
+        assert_eq!(compact_dur(0), "0m");
+        assert_eq!(compact_dur(1), "1m");
+        assert_eq!(compact_dur(59), "1m");
+        assert_eq!(compact_dur(60), "1m");
+        assert_eq!(compact_dur(61), "2m");
+        assert_eq!(compact_dur(59 * 60), "59m");
+        assert_eq!(compact_dur(60 * 60), "1h00m");
+        assert_eq!(compact_dur(3 * 3600 + 7 * 60), "3h07m");
+        assert_eq!(compact_dur(24 * 3600), "1d00h");
+        assert_eq!(compact_dur(4 * 86400 + 3 * 3600), "4d03h");
+    }
+
+    #[test]
+    fn humanize_rounds_appropriately() {
+        // 0以下 は "now"、それ以上は単位ごとに丸める。
+        assert_eq!(humanize(Duration::seconds(0)), "now");
+        assert_eq!(humanize(Duration::seconds(-100)), "now");
+        assert_eq!(humanize(Duration::minutes(5)), "in 5m");
+        assert_eq!(humanize(Duration::minutes(125)), "in 2h 5m");
+        assert_eq!(humanize(Duration::hours(25)), "in 1d 1h");
+    }
+
+    #[test]
+    fn tbar_clamps_extremes() {
+        // 0% は全 ░、100% は全 █、超過/欠損もパニックせず clamp される。
+        assert_eq!(tbar(0.0), "░".repeat(10));
+        assert_eq!(tbar(100.0), "█".repeat(10));
+        assert_eq!(tbar(150.0), "█".repeat(10));
+        assert_eq!(tbar(-10.0), "░".repeat(10));
+    }
+
+    #[test]
+    fn parse_utc_accepts_rfc3339() {
+        assert!(parse_utc("2026-06-15T06:28:32Z").is_some());
+        assert!(parse_utc("2026-06-12T15:06:32.244+09:00").is_some());
+        assert!(parse_utc("not a date").is_none());
+    }
+
+    #[test]
+    fn service_label_appends_group() {
+        assert_eq!(service_label(Provider::Claude, None), "Claude");
+        assert_eq!(
+            service_label(Provider::Antigravity, Some("Gemini")),
+            "Antigravity · Gemini"
+        );
+    }
+}

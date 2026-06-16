@@ -70,15 +70,53 @@ cargo install --path .    # または: make install (~/.local/bin へ)
 
 ```sh
 ai-usage                      # サインイン済みの全プロファイル・両サービス
-ai-usage -p Work,Home        # プロファイル指定
+ai-usage -p Work,Home         # プロファイル指定
 ai-usage --only claude        # サービス指定(claude / codex / antigravity)
 ai-usage --json               # JSON で出力(機械可読)
 ai-usage --statusline         # 1行/アカウントのコンパクト表示(ステータスバー向け)
+ai-usage --statusline --logos # ↑ をブランドロゴ字形で表示(BrandLogos フォントが必要)
+ai-usage --statusline --compact   # ↑ で狭いペイン向けにゲージ幅を半分にする
 ai-usage --list-profiles      # 検出した Chrome プロファイル一覧
 ```
 
+アクティブ(赤でハイライト)とみなす行は以下のいずれかで指定できます:
+
+- `--active-email <EMAIL>` — Claude 行のサインイン済みメールと照合します(既定の参照元は
+  `$CLAUDE_CONFIG_DIR/.claude.json`、つまり Claude Code セッションのアカウント)
+- `--active-profile <NAME>` — プロファイル名で照合します。`--active-provider claude|codex|antigravity`
+  を併用すると 1 プロバイダに固定できます
+- `--debug` — 行ごとの判定結果を stderr に JSONL で出力します(stdout はクリーンなままなので
+  パイプ越しの statusline 描画には影響しません)
+
 **初回実行時**は macOS の Keychain ダイアログ(*「"Chrome Safe Storage" キーを使用しようとしています」*)
 が出るので **「常に許可」** を選んでください。
+
+## 設定
+
+`ai-usage` は **設定なしでも動作** します。Claude / Codex セッションを持つ Chrome プロファイルを
+自動検出して全て表示します。表示対象のプロファイルを固定したり、表示名を変更したり、プロバイダを
+絞り込んだりしたい場合は **`~/.config/ai-usage/config.toml`**(または
+`$XDG_CONFIG_HOME/ai-usage/config.toml`)を置いてください:
+
+```toml
+# 任意: アクティブとしてハイライトするアカウント
+# (既定: CLAUDE_CONFIG_DIR/.claude.json から自動検出 = Claude Code セッションのアカウント)
+# active_email = "home@example.com"
+
+# [[profiles]] を1つでも書くと、ここに列挙したものだけが、この順番で表示されます。
+[[profiles]]
+match = "Work"                  # Chrome の表示名、またはディスク上のディレクトリ名 (例 "Default")
+label = "work"                  # 任意: アカウントメールの username 部の代わりに使う表示名
+# providers = ["claude", "codex"] # 任意: 表示するサブセット。省略時は両方
+
+[[profiles]]
+match = "Home"
+label = "home"
+```
+
+現在のセッションから初期設定を生成することもできます: **`ai-usage --init-config`**。
+優先順位は **CLI フラグ > 設定ファイル > 自動検出** です。雛形は
+[`config.example.toml`](config.example.toml) にもあります。
 
 ## 開発
 

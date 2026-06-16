@@ -139,3 +139,96 @@ fn jwt_account_id(jwt: &str) -> Option<String> {
         .and_then(|s| s.as_str())
         .map(str::to_string)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use serde_json::json;
+
+    fn put(c: &mut HashMap<String, String>, k: &str, v: &str) {
+        c.insert(k.to_string(), v.to_string());
+    }
+
+    #[test]
+    fn cookie_header_uses_unsuffixed_when_split_absent() {
+        // 小さいトークンは分割されず、そのままヘッダに乗る。
+        let mut c = HashMap::new();
+        put(&mut c, SESSION_TOKEN, "short");
+        let h = cookie_header(&c).unwrap();
+        assert!(h.starts_with(&format!("{SESSION_TOKEN}=short")));
+    }
+
+    #[test]
+    fn cookie_header_combines_split_tokens() {
+        // 大きいトークンは .0/.1 に分割されるので両方を結合する。
+        let mut c = HashMap::new();
+        put(&mut c, &format!("{SESSION_TOKEN}.0"), "head");
+        put(&mut c, &format!("{SESSION_TOKEN}.1"), "tail");
+        let h = cookie_header(&c).unwrap();
+        assert!(h.contains(&format!("{SESSION_TOKEN}.0=head")));
+        assert!(h.contains(&format!("{SESSION_TOKEN}.1=tail")));
+    }
+
+    #[test]
+    fn cookie_header_attaches_cf_and_puid() {
+        let mut c = HashMap::new();
+        put(&mut c, SESSION_TOKEN, "x");
+        put(&mut c, "cf_clearance", "cf");
+        put(&mut c, "__cf_bm", "bm");
+        put(&mut c, "_puid", "p");
+        let h = cookie_header(&c).unwrap();
+        assert!(h.contains("; cf_clearance=cf"));
+        assert!(h.contains("; __cf_bm=bm"));
+        assert!(h.contains("; _puid=p"));
+    }
+
+    #[test]
+    fn cookie_header_errors_without_session() {
+        let c = HashMap::<String, String>::new();
+        assert!(cookie_header(&c).is_err());
+    }
+
+    #[test]
+    fn has_session_recognizes_both_forms() {
+        // split form / 単一 form どちらでも検出する。
+        let mut c = HashMap::new();
+        assert!(!has_session(&c));
+        put(&mut c, &format!("{SESSION_TOKEN}.0"), "x");
+        assert!(has_session(&c));
+        let mut c2 = HashMap::new();
+        put(&mut c2, SESSION_TOKEN, "x");
+        assert!(has_session(&c2));
+    }
+
+    #[test]
+    fn parse_window_reads_used_percent_and_reset() {
+        let v = json!({"used_percent": 23.5, "reset_at": 1_700_000_000_i64});
+        let w = parse_window(&v).unwrap();
+        assert_eq!(w.used_percent, 23.5);
+        assert!(w.resets_at.is_some());
+    }
+
+    #[test]
+    fn parse_window_missing_percent_returns_none() {
+        assert!(parse_window(&json!({})).is_none());
+    }
+
+    #[test]
+    fn jwt_account_id_extracts_from_claims() {
+        // ペイロード JSON を URL-safe base64 で組み立てて JWT を再現する。
+        let claims = json!({
+            "https://api.openai.com/auth": {"chatgpt_account_id": "acc-123"}
+        });
+        let body = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
+        let jwt = format!("hdr.{body}.sig");
+        assert_eq!(jwt_account_id(&jwt).as_deref(), Some("acc-123"));
+    }
+
+    #[test]
+    fn jwt_account_id_returns_none_for_malformed() {
+        assert_eq!(jwt_account_id(""), None);
+        assert_eq!(jwt_account_id("only_one_segment"), None);
+        assert_eq!(jwt_account_id("a.@@@.c"), None);
+    }
+}

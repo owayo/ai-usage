@@ -122,6 +122,20 @@ pub fn load(db_path: &Path, key: &[u8; 16]) -> Result<ProfileCookies> {
     Ok(out)
 }
 
+/// AES-128-CBC で平文を暗号化して "v10"|"v11" 形式の blob を組み立てるテスト用ヘルパ。
+/// `decrypt` の round-trip を検証するためだけに `#[cfg(test)]` で提供する。
+#[cfg(test)]
+fn encrypt_for_test(key: &[u8; 16], prefix: &[u8], plain: &[u8]) -> Vec<u8> {
+    use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
+    type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
+    let iv = [0x20u8; 16];
+    let ct = Aes128CbcEnc::new(&(*key).into(), &iv.into()).encrypt_padded_vec::<Pkcs7>(plain);
+    let mut out = Vec::with_capacity(prefix.len() + ct.len());
+    out.extend_from_slice(prefix);
+    out.extend_from_slice(&ct);
+    out
+}
+
 /// Cheaply detect which providers a profile is signed into, by cookie *presence*
 /// only — no decryption, no Keychain. Returns `(has_claude, has_codex)`.
 /// Used by `--init-config`.
@@ -142,4 +156,64 @@ pub fn detect_sessions(db_path: &Path) -> (bool, bool) {
         "SELECT 1 FROM cookies WHERE host_key LIKE '%chatgpt.com' AND name LIKE '__Secure-next-auth.session-token%' LIMIT 1",
     );
     (claude, codex)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key() -> [u8; 16] {
+        // derive_key の結果は再現可能だが、テストでは固定のダミー鍵を使うだけで十分。
+        [
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+            0xff, 0x00,
+        ]
+    }
+
+    #[test]
+    fn decrypt_round_trip_v10() {
+        // v10 prefix + AES-128-CBC で暗号化したものを復号できる。
+        let blob = encrypt_for_test(&key(), b"v10", b"hello");
+        assert_eq!(decrypt(&key(), &blob, false).as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn decrypt_strips_sha256_prefix_for_schema_v24() {
+        // schema v24+ は平文の先頭 32 バイト(SHA-256 ハッシュ)を取り除く必要がある。
+        let mut plain = vec![0u8; 32];
+        plain.extend_from_slice(b"value");
+        let blob = encrypt_for_test(&key(), b"v10", &plain);
+        assert_eq!(decrypt(&key(), &blob, true).as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn decrypt_returns_none_for_unknown_prefix() {
+        // v20 など macOS で扱わない方式は明示的に弾く(プロセス全体の失敗にしない)。
+        let blob = encrypt_for_test(&key(), b"v20", b"x");
+        assert!(decrypt(&key(), &blob, false).is_none());
+    }
+
+    #[test]
+    fn decrypt_returns_none_for_too_short_blob() {
+        // 3 バイトの prefix + 16 バイトの IV ブロック未満は無条件に弾く。
+        assert!(decrypt(&key(), b"v10short", false).is_none());
+    }
+
+    #[test]
+    fn decrypt_returns_none_with_wrong_key() {
+        let blob = encrypt_for_test(&key(), b"v10", b"hello");
+        let mut other = key();
+        other[0] ^= 0xff;
+        // 復号自体が padding 不一致で失敗するか、UTF-8 にならず None が返る。
+        assert!(decrypt(&other, &blob, false).is_none());
+    }
+
+    #[test]
+    fn derive_key_is_deterministic() {
+        // 同じパスワードからは常に同じ鍵が得られる(PBKDF2 のソルトと反復回数は固定)。
+        let a = derive_key("password");
+        let b = derive_key("password");
+        assert_eq!(a, b);
+        assert_ne!(derive_key("password"), derive_key("PASSWORD"));
+    }
 }

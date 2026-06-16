@@ -99,3 +99,87 @@ pub fn load(explicit: Option<&Path>) -> Config {
         Config::default()
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(matcher: &str, providers: Option<&[&str]>) -> ProfileCfg {
+        ProfileCfg {
+            matcher: matcher.to_string(),
+            label: None,
+            providers: providers.map(|s| s.iter().map(|x| x.to_string()).collect()),
+        }
+    }
+
+    #[test]
+    fn matches_is_case_insensitive_for_name_and_dir() {
+        let c = cfg("Work", None);
+        assert!(c.matches("work", "Default"));
+        assert!(c.matches("Other", "WORK"));
+        assert!(!c.matches("Home", "Profile 1"));
+    }
+
+    #[test]
+    fn wants_defaults_to_both() {
+        // providers が未指定なら Claude/Codex 両方を表示対象にする。
+        let c = cfg("Work", None);
+        assert_eq!(c.wants(), (true, true));
+    }
+
+    #[test]
+    fn wants_filters_to_listed_providers() {
+        // providers リストに名前があるものだけ表示する(順序・大小無関係)。
+        assert_eq!(cfg("W", Some(&["claude"])).wants(), (true, false));
+        assert_eq!(cfg("W", Some(&["CODEX"])).wants(), (false, true));
+        assert_eq!(cfg("W", Some(&["claude", "codex"])).wants(), (true, true));
+        assert_eq!(cfg("W", Some(&[])).wants(), (false, false));
+    }
+
+    #[test]
+    fn parses_toml_with_profiles_and_antigravity() {
+        let text = r#"
+            active_email = "alice@example.com"
+
+            [[profiles]]
+            match = "Work"
+            label = "work"
+            providers = ["claude"]
+
+            [antigravity]
+            enabled = true
+            label = "agy"
+        "#;
+        let parsed: Config = toml::from_str(text).unwrap();
+        assert_eq!(parsed.active_email.as_deref(), Some("alice@example.com"));
+        assert_eq!(parsed.profiles.len(), 1);
+        assert_eq!(parsed.profiles[0].matcher, "Work");
+        assert_eq!(parsed.profiles[0].label.as_deref(), Some("work"));
+        assert_eq!(parsed.profiles[0].wants(), (true, false));
+        let agy = parsed.antigravity.as_ref().unwrap();
+        assert_eq!(agy.enabled, Some(true));
+        assert_eq!(agy.label.as_deref(), Some("agy"));
+    }
+
+    #[test]
+    fn parses_unknown_fields_gracefully() {
+        // 未知のフィールドはデシリアライズエラーにせず無視する。
+        let text = r#"
+            unknown_field = 1
+
+            [[profiles]]
+            match = "Work"
+            extra = "ignored"
+        "#;
+        let parsed: Config = toml::from_str(text).unwrap();
+        assert_eq!(parsed.profiles.len(), 1);
+    }
+
+    #[test]
+    fn empty_config_yields_defaults() {
+        let parsed: Config = toml::from_str("").unwrap();
+        assert!(parsed.active_email.is_none());
+        assert!(parsed.profiles.is_empty());
+        assert!(parsed.antigravity.is_none());
+    }
+}

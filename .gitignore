@@ -1,1 +1,6 @@
 /target
+/sessions
+/projects
+.last-cleanup
+/shell-snapshots
+/tasks

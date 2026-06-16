@@ -69,12 +69,23 @@ cargo install --path .
 
 ```sh
 ai-usage                      # all signed-in profiles, both services
-ai-usage -p Work,Home        # only these profiles
+ai-usage -p Work,Home         # only these profiles
 ai-usage --only claude        # only Claude (or: --only codex / antigravity)
 ai-usage --json               # machine-readable output
 ai-usage --statusline         # compact one-line-per-account output (for status bars)
+ai-usage --statusline --logos # … with brand-logo glyphs (needs the BrandLogos font)
+ai-usage --statusline --compact   # … with a half-width gauge for narrow panes
 ai-usage --list-profiles      # show discovered Chrome profiles
 ```
+
+Pick which row is shown as "active" (highlighted in red) with one of:
+
+- `--active-email <EMAIL>` — match the signed-in email of a Claude row (default
+  source: `$CLAUDE_CONFIG_DIR/.claude.json`, the Claude Code session account)
+- `--active-profile <NAME>` — match a profile by name; pin to a single provider
+  with `--active-provider claude|codex|antigravity`
+- `--debug` — print per-row match decisions to stderr as JSONL (stdout is left
+  clean so a piped statusline keeps rendering)
 
 The **first run** triggers a macOS Keychain prompt
 (*"… wants to use the 'Chrome Safe Storage' key"*) — choose **Always Allow**.
