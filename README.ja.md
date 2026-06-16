@@ -76,6 +76,7 @@ ai-usage --json               # JSON で出力(機械可読)
 ai-usage --statusline         # 1行/アカウントのコンパクト表示(ステータスバー向け)
 ai-usage --statusline --logos # ↑ をブランドロゴ字形で表示(BrandLogos フォントが必要)
 ai-usage --statusline --compact   # ↑ で狭いペイン向けにゲージ幅を半分にする
+ai-usage --statusline --reset-at  # ↑ で週次リセットの絶対時刻 (例: (06/18 01:10)) を末尾に併記する
 ai-usage --list-profiles      # 検出した Chrome プロファイル一覧
 ```
 

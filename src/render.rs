@@ -286,6 +286,7 @@ pub fn statusline(
     logos: bool,
     debug: bool,
     compact: bool,
+    reset_at: bool,
 ) {
     let now = Utc::now();
     let mut rows: Vec<&AccountOut> = report.accounts.iter().collect();
@@ -308,12 +309,15 @@ pub fn statusline(
             if debug {
                 debug_row(a.provider, &a.profile, row_email, is_active, reason);
             }
-            render_row(a, row_email, is_active, color, logos, now, compact)
+            render_row(
+                a, row_email, is_active, color, logos, now, compact, reset_at,
+            )
         })
         .collect();
     print!("{}", lines.join("\n"));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_row(
     a: &AccountOut,
     row_email: Option<&str>,
@@ -322,6 +326,7 @@ fn render_row(
     logos: bool,
     now: DateTime<Utc>,
     compact: bool,
+    reset_at: bool,
 ) -> String {
     let prov = match a.provider {
         Provider::Claude => "Claude",
@@ -359,14 +364,31 @@ fn render_row(
     if !a.ok {
         // データ取得に失敗したアカウントも、データ有り行と桁位置を揃える。
         // window_seg の None 分岐(空ゲージ + "--")を 5h / 1w 双方で再利用する。
-        s += &window_seg(color, "5h", None, now, FIVE_H_TH, compact);
+        // 5h には reset_at を伝搬しない(1w 限定のため false 固定)。
+        s += &window_seg(color, "5h", None, now, FIVE_H_TH, compact, false);
         s += "   ";
-        s += &window_seg(color, "1w", None, now, WEEK_TH, compact);
+        s += &window_seg(color, "1w", None, now, WEEK_TH, compact, reset_at);
         return s;
     }
-    s += &window_seg(color, "5h", a.five_hour.as_ref(), now, FIVE_H_TH, compact);
+    s += &window_seg(
+        color,
+        "5h",
+        a.five_hour.as_ref(),
+        now,
+        FIVE_H_TH,
+        compact,
+        false,
+    );
     s += "   ";
-    s += &window_seg(color, "1w", a.weekly.as_ref(), now, WEEK_TH, compact);
+    s += &window_seg(
+        color,
+        "1w",
+        a.weekly.as_ref(),
+        now,
+        WEEK_TH,
+        compact,
+        reset_at,
+    );
     s
 }
 
@@ -377,6 +399,7 @@ fn window_seg(
     now: DateTime<Utc>,
     th: [i64; 3],
     compact: bool,
+    show_reset_at: bool,
 ) -> String {
     // --compact 時はゲージ幅を半分(8)にする。空ゲージ・実ゲージとも同じ幅で揃える。
     let gauge_width = if compact { 8 } else { 16 };
@@ -400,18 +423,24 @@ fn window_seg(
                 &format!("{:>3}%", w.used_percent.round() as i64),
             );
             s += "  ";
-            let rem = w
-                .resets_at
-                .as_deref()
-                .and_then(parse_utc)
-                .map(|r| (r - now).num_seconds());
+            let reset = w.resets_at.as_deref().and_then(parse_utc);
+            let rem = reset.map(|r| (r - now).num_seconds());
             match rem {
                 Some(sec) if sec > 0 => {
                     s += &paint(
                         color,
                         reset_code(sec, th),
                         &format!("{:<5}", compact_dur(sec)),
-                    )
+                    );
+                    // --reset-at: 1w 行の残り時間の後ろに (MM/DD HH:MM) をローカル時刻で併記。
+                    // 5h 側は呼び出し元で show_reset_at=false 固定。
+                    if show_reset_at && let Some(r) = reset {
+                        s += &paint(
+                            color,
+                            DIM,
+                            &format!(" ({})", r.with_timezone(&Local).format("%m/%d %H:%M")),
+                        );
+                    }
                 }
                 Some(_) => s += &paint(color, GREEN, &format!("{:<5}", "now")),
                 None => s += &paint(color, DIM, &format!("{:<5}", "--")),
@@ -665,5 +694,56 @@ mod tests {
             service_label(Provider::Antigravity, Some("Gemini")),
             "Antigravity · Gemini"
         );
+    }
+
+    fn fixed_utc(rfc3339: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(rfc3339)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn window_seg_appends_reset_at_only_when_enabled() {
+        // 未来のリセット時刻 + show_reset_at=true → 末尾に "(MM/DD HH:MM)" が付く。
+        // ローカル TZ 依存の具体値は検証せず、括弧の有無で機能を確認。
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let w = WindowOut {
+            used_percent: 54.0,
+            resets_at: Some("2026-06-17T16:10:00Z".to_string()),
+            resets_in_seconds: Some(2 * 86400),
+        };
+        let with_date = window_seg(false, "1w", Some(&w), now, WEEK_TH, false, true);
+        assert!(
+            with_date.contains('(') && with_date.ends_with(')'),
+            "expected date suffix in {with_date:?}"
+        );
+        let without = window_seg(false, "1w", Some(&w), now, WEEK_TH, false, false);
+        assert!(
+            !without.contains('('),
+            "did not expect date suffix in {without:?}"
+        );
+    }
+
+    #[test]
+    fn window_seg_reset_at_skips_when_no_window_or_expired() {
+        // データ無し or 既にリセット済み(now 表示)では、show_reset_at=true でも日時は出さない。
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let none_out = window_seg(false, "1w", None, now, WEEK_TH, false, true);
+        assert!(
+            !none_out.contains('('),
+            "no date for None window: {none_out:?}"
+        );
+
+        let expired = WindowOut {
+            used_percent: 100.0,
+            resets_at: Some("2026-06-10T00:00:00Z".to_string()),
+            resets_in_seconds: Some(0),
+        };
+        let expired_out = window_seg(false, "1w", Some(&expired), now, WEEK_TH, false, true);
+        assert!(
+            !expired_out.contains('('),
+            "no date when already reset: {expired_out:?}"
+        );
+        assert!(expired_out.contains("now"));
     }
 }

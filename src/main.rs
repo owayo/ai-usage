@@ -98,6 +98,12 @@ struct Cli {
     /// panes. Affects `--statusline` rendering only.
     #[arg(long)]
     compact: bool,
+
+    /// In the statusline, append the absolute weekly reset time as
+    /// `(MM/DD HH:MM)` in local time, after the weekly countdown. Affects
+    /// `--statusline` rendering only.
+    #[arg(long)]
+    reset_at: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -552,6 +558,7 @@ fn render_cached_statusline(
         cli.logos,
         cli.debug,
         cli.compact,
+        cli.reset_at,
     );
 }
 
@@ -565,6 +572,7 @@ fn render_reports(cli: &Cli, reports: &[AccountReport], active: Option<&render::
             cli.logos,
             cli.debug,
             cli.compact,
+            cli.reset_at,
         );
     } else if cli.json {
         render::json(&report::Report::build(reports));

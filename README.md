@@ -75,6 +75,7 @@ ai-usage --json               # machine-readable output
 ai-usage --statusline         # compact one-line-per-account output (for status bars)
 ai-usage --statusline --logos # … with brand-logo glyphs (needs the BrandLogos font)
 ai-usage --statusline --compact   # … with a half-width gauge for narrow panes
+ai-usage --statusline --reset-at  # … and append the weekly reset clock-time, e.g. (06/18 01:10)
 ai-usage --list-profiles      # show discovered Chrome profiles
 ```
 
