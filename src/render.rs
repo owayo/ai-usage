@@ -412,7 +412,7 @@ fn window_seg(
             s += " ";
             s += &paint(color, DIM, &format!("{:>4}", "--"));
             s += "  ";
-            s += &paint(color, DIM, &format!("{:<5}", "--"));
+            s += &paint(color, DIM, &format!("{:<6}", "--"));
         }
         Some(w) => {
             s += &gauge(color, w.used_percent, gauge_width);
@@ -430,7 +430,7 @@ fn window_seg(
                     s += &paint(
                         color,
                         reset_code(sec, th),
-                        &format!("{:<5}", compact_dur(sec)),
+                        &format!("{:<6}", compact_dur(sec)),
                     );
                     // --reset-at: 1w 行の残り時間の後ろに (MM/DD HH:MM) をローカル時刻で併記。
                     // 5h 側は呼び出し元で show_reset_at=false 固定。
@@ -442,8 +442,8 @@ fn window_seg(
                         );
                     }
                 }
-                Some(_) => s += &paint(color, GREEN, &format!("{:<5}", "now")),
-                None => s += &paint(color, DIM, &format!("{:<5}", "--")),
+                Some(_) => s += &paint(color, GREEN, &format!("{:<6}", "now")),
+                None => s += &paint(color, DIM, &format!("{:<6}", "--")),
             }
         }
     }
@@ -507,7 +507,9 @@ fn reset_code(sec: i64, th: [i64; 3]) -> &'static str {
 
 fn compact_dur(sec: i64) -> String {
     // Round up so 59s left shows as 1m (not 0m). Zero-pad the lower unit so digit
-    // positions stay aligned (3h07m / 4d03h). window_seg pads the result to width 5.
+    // positions stay aligned (3h07m / 4d03h). window_seg pads the result to width 6
+    // — wide enough for the 1w window's `XXhYYm` (e.g. `12h18m`) so `--reset-at`'s
+    // trailing `(MM/DD HH:MM)` stays column-aligned across rows.
     let minutes = (sec + 59) / 60;
     if minutes < 60 {
         format!("{minutes}m")
