@@ -397,6 +397,13 @@ fn color_enabled(no_color_flag: bool) -> bool {
     std::env::var("TERM").map(|t| t != "dumb").unwrap_or(true)
 }
 
+/// TOML の basic string としてシリアライズした文字列を返す(クオート込み)。
+/// プロファイル名やラベルが `"` や `\` を含んでも生成された TOML が壊れないよう、
+/// すべての値出力でこれを通す。
+fn toml_str(s: &str) -> String {
+    toml::Value::String(s.to_string()).to_string()
+}
+
 /// Build a starter `config.toml` from the profiles currently signed in (detected
 /// by cookie presence — no network, no Keychain).
 fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
@@ -405,7 +412,7 @@ fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
          # reorder, drop profiles you don't want, or change labels.\n\n",
     );
     if let Some(active) = active_claude_email() {
-        out += &format!("active_email = \"{active}\"\n\n");
+        out += &format!("active_email = {}\n\n", toml_str(&active));
     }
     for p in all {
         let Some(db) = profiles::cookies_db(root, &p.dir) else {
@@ -422,15 +429,15 @@ fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
             .filter(|s| !s.is_empty())
             .unwrap_or(&p.name);
         out += "[[profiles]]\n";
-        out += &format!("match = \"{}\"", p.name);
+        out += &format!("match = {}", toml_str(&p.name));
         if !email.is_empty() {
             out += &format!("   # {email}");
         }
         out += "\n";
-        out += &format!("label = \"{label}\"\n");
+        out += &format!("label = {}\n", toml_str(label));
         if !(claude && codex) {
             let only = if claude { "claude" } else { "codex" };
-            out += &format!("providers = [\"{only}\"]\n");
+            out += &format!("providers = [{}]\n", toml_str(only));
         }
         out += "\n";
     }
