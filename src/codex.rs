@@ -19,15 +19,24 @@ use crate::model::{Usage, UsageRow, Window};
 const SESSION_TOKEN: &str = "__Secure-next-auth.session-token";
 
 fn cookie_header(cookies: &HashMap<String, String>) -> Result<String> {
-    let mut header = if let Some(t0) = cookies.get(&format!("{SESSION_TOKEN}.0")) {
-        format!("{SESSION_TOKEN}.0={t0}")
-    } else if let Some(t) = cookies.get(SESSION_TOKEN) {
-        format!("{SESSION_TOKEN}={t}")
-    } else {
-        anyhow::bail!("not signed in to chatgpt.com in this profile");
-    };
-    if let Some(t1) = cookies.get(&format!("{SESSION_TOKEN}.1")) {
-        header.push_str(&format!("; {SESSION_TOKEN}.1={t1}"));
+    // Next.js の cookie chunking は `.0`, `.1`, `.2`, ... と連番で分割する(各 chunk が
+    // 4kB 以下)。`.1` までしか送らないとトークンが大きいときに途中で切れ、サーバ側で
+    // 無効セッション扱いになる。連番が途切れるまで全 chunk を結合する。
+    let mut header = String::new();
+    let mut idx = 0_usize;
+    while let Some(v) = cookies.get(&format!("{SESSION_TOKEN}.{idx}")) {
+        if !header.is_empty() {
+            header.push_str("; ");
+        }
+        header.push_str(&format!("{SESSION_TOKEN}.{idx}={v}"));
+        idx += 1;
+    }
+    if header.is_empty() {
+        if let Some(t) = cookies.get(SESSION_TOKEN) {
+            header.push_str(&format!("{SESSION_TOKEN}={t}"));
+        } else {
+            anyhow::bail!("not signed in to chatgpt.com in this profile");
+        }
     }
     for name in ["cf_clearance", "__cf_bm", "_puid"] {
         if let Some(v) = cookies.get(name) {
@@ -168,6 +177,23 @@ mod tests {
         let h = cookie_header(&c).unwrap();
         assert!(h.contains(&format!("{SESSION_TOKEN}.0=head")));
         assert!(h.contains(&format!("{SESSION_TOKEN}.1=tail")));
+    }
+
+    #[test]
+    fn cookie_header_combines_three_or_more_chunks() {
+        // 3 分割以上に対応(Next.js は chunk 数に上限なし)。
+        // .0/.1/.2 すべてが結合されること、連番途切れの後ろの番号は無視されることを確認。
+        let mut c = HashMap::new();
+        put(&mut c, &format!("{SESSION_TOKEN}.0"), "a");
+        put(&mut c, &format!("{SESSION_TOKEN}.1"), "b");
+        put(&mut c, &format!("{SESSION_TOKEN}.2"), "c");
+        // 連番が一度切れた後の chunk は採用しない(現実には起きない異常データの防御)。
+        put(&mut c, &format!("{SESSION_TOKEN}.4"), "skip");
+        let h = cookie_header(&c).unwrap();
+        assert!(h.contains(&format!("{SESSION_TOKEN}.0=a")));
+        assert!(h.contains(&format!("{SESSION_TOKEN}.1=b")));
+        assert!(h.contains(&format!("{SESSION_TOKEN}.2=c")));
+        assert!(!h.contains("skip"));
     }
 
     #[test]

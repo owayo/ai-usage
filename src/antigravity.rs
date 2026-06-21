@@ -118,11 +118,23 @@ fn parse_summary(v: &Value, email: Option<String>, plan: Option<String>) -> Resu
             .into_iter()
             .flatten()
         {
-            let window = bucket_to_window(b);
-            if is_weekly(b) {
-                usage.weekly = window;
+            let Some(window) = bucket_to_window(b) else {
+                continue;
+            };
+            // 同じ window 種別の bucket が複数返る場合は、最も残量の少ない(used_percent が
+            // 高い)= 最も制約の厳しいものを採用する。先勝ち / 後勝ちだと API のレスポンス
+            // 順序次第で過小表示が起きる。
+            let target = if is_weekly(b) {
+                &mut usage.weekly
             } else {
-                usage.five_hour = window;
+                &mut usage.five_hour
+            };
+            let should_replace = target
+                .as_ref()
+                .map(|cur| window.used_percent > cur.used_percent)
+                .unwrap_or(true);
+            if should_replace {
+                *target = Some(window);
             }
         }
         rows.push(UsageRow {
@@ -170,8 +182,11 @@ fn is_weekly(b: &Value) -> bool {
 }
 
 fn bucket_to_window(b: &Value) -> Option<Window> {
+    // language_server は `{remaining:{remainingFraction}}`、OAuth 経路はトップレベルの
+    // `remainingFraction` を返すことがあるため両形式を許容する。
     let rf = b
-        .get("remainingFraction")
+        .pointer("/remaining/remainingFraction")
+        .or_else(|| b.get("remainingFraction"))
         .and_then(Value::as_f64)
         .unwrap_or(1.0);
     let used = ((1.0 - rf) * 100.0).clamp(0.0, 100.0);
@@ -548,6 +563,43 @@ mod tests {
         assert!(is_weekly(&json!({"window": "weekly"})));
         assert!(is_weekly(&json!({"bucketId": "gemini-weekly"})));
         assert!(!is_weekly(&json!({"bucketId": "gemini-5h"})));
+    }
+
+    #[test]
+    fn bucket_to_window_reads_nested_remaining_shape() {
+        // CLAUDE.md にある `{remaining:{remainingFraction}}` 形を読めること。
+        let b = json!({
+            "remaining": {"remainingFraction": 0.2},
+            "resetTime": "2026-06-15T06:28:32Z"
+        });
+        let w = bucket_to_window(&b).unwrap();
+        assert!(
+            (w.used_percent - 80.0).abs() < 0.01,
+            "used should be 80% got {}",
+            w.used_percent
+        );
+    }
+
+    #[test]
+    fn parse_summary_picks_most_constrained_when_same_window_repeats() {
+        // 同一 group 内に weekly bucket が複数あるとき、最も制約の厳しい
+        // (= remainingFraction の小さい)bucket が採用されること。
+        let v = json!({"response": {"groups": [
+            {"displayName": "Gemini Models", "buckets": [
+                {"bucketId": "loose-weekly", "window": "weekly",
+                 "remainingFraction": 0.9, "resetTime": "2026-06-19T05:06:39Z"},
+                {"bucketId": "tight-weekly", "window": "weekly",
+                 "remainingFraction": 0.2, "resetTime": "2026-06-19T05:06:39Z"}
+            ]}
+        ]}});
+        let rows = parse_summary(&v, None, None).unwrap();
+        let w = rows[0].usage.weekly.as_ref().unwrap();
+        // 0.2 = 80% used が採用される(0.9 = 10% used が後勝ちで上書きされる旧バグの再現確認)。
+        assert!(
+            (w.used_percent - 80.0).abs() < 0.01,
+            "expected 80% (most constrained), got {}",
+            w.used_percent
+        );
     }
 
     #[test]
