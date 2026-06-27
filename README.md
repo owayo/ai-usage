@@ -76,6 +76,8 @@ ai-usage --statusline         # compact one-line-per-account output (for status 
 ai-usage --statusline --logos # … with brand-logo glyphs (needs the BrandLogos font)
 ai-usage --statusline --compact   # … with a half-width gauge for narrow panes
 ai-usage --statusline --reset-at  # … and append the weekly reset clock-time, e.g. (06/18 01:10)
+ai-usage --sort weekly-usage  # rank rows by weekly utilization (closest to the cap first)
+ai-usage --sort weekly-reset  # rank rows by weekly reset time (soonest first)
 ai-usage --list-profiles      # show discovered Chrome profiles
 ```
 

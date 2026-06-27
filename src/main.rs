@@ -104,6 +104,13 @@ struct Cli {
     /// `--statusline` rendering only.
     #[arg(long)]
     reset_at: bool,
+
+    /// 行の並び順。default は `provider`(プロバイダ順 — 既存挙動を維持)。
+    /// `weekly-usage` は週枠の使用率が高い順、`weekly-reset` は週枠のリセット
+    /// 時刻が近い順。データ無し/取得失敗の行は常に末尾に並ぶ。table/json/
+    /// statusline すべてに適用される。
+    #[arg(long, value_enum, default_value_t = SortKey::Provider)]
+    sort: SortKey,
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -111,6 +118,19 @@ enum ProviderArg {
     Claude,
     Codex,
     Antigravity,
+}
+
+/// `--sort` の値。`render` 層もこの enum を参照してレンダラー間で挙動を揃える。
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[value(rename_all = "kebab-case")]
+pub enum SortKey {
+    /// 既存挙動 — table/json はフェッチ順、statusline は provider.rank() → profile 名。
+    #[default]
+    Provider,
+    /// 週枠の使用率が高い順(降順)。リミットに近いアカウントを上に表示する。
+    WeeklyUsage,
+    /// 週枠のリセット時刻が近い順(昇順)。リセット待ちが短いアカウントを上に。
+    WeeklyReset,
 }
 
 impl ProviderArg {
@@ -561,6 +581,7 @@ fn render_cached_statusline(
     render::statusline(
         &report,
         active,
+        cli.sort,
         color_enabled(cli.no_color),
         cli.logos,
         cli.debug,
@@ -575,6 +596,7 @@ fn render_reports(cli: &Cli, reports: &[AccountReport], active: Option<&render::
         render::statusline(
             &report::Report::build(reports),
             active,
+            cli.sort,
             color_enabled(cli.no_color),
             cli.logos,
             cli.debug,
@@ -582,9 +604,9 @@ fn render_reports(cli: &Cli, reports: &[AccountReport], active: Option<&render::
             cli.reset_at,
         );
     } else if cli.json {
-        render::json(&report::Report::build(reports));
+        render::json(&report::Report::build(reports), cli.sort);
     } else {
-        render::table(reports, active, cli.debug);
+        render::table(reports, active, cli.sort, cli.debug);
     }
 }
 

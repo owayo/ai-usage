@@ -77,6 +77,8 @@ ai-usage --statusline         # 1行/アカウントのコンパクト表示(ス
 ai-usage --statusline --logos # ↑ をブランドロゴ字形で表示(BrandLogos フォントが必要)
 ai-usage --statusline --compact   # ↑ で狭いペイン向けにゲージ幅を半分にする
 ai-usage --statusline --reset-at  # ↑ で週次リセットの絶対時刻 (例: (06/18 01:10)) を末尾に併記する
+ai-usage --sort weekly-usage  # 週枠の使用率が高い順(リミットに近いアカウントを上)
+ai-usage --sort weekly-reset  # 週枠のリセット時刻が近い順(リセット待ちが短いアカウントを上)
 ai-usage --list-profiles      # 検出した Chrome プロファイル一覧
 ```
 
