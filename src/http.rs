@@ -1,22 +1,20 @@
-//! Shared HTTP clients.
+//! 共有 HTTP client。
 //!
-//! `browser` uses `wreq` with Chrome TLS/HTTP2 emulation so the replayed
-//! `cf_clearance` cookie is accepted by Cloudflare (a plain client is
-//! fingerprinted and gets a 403 "Just a moment" challenge) — used for claude.ai
-//! and chatgpt.com. `api` is a plain client for Google's `cloudcode-pa`
-//! endpoints, which are not Cloudflare-fronted and need no fingerprint.
+//! `browser` は Chrome TLS/HTTP2 emulation 付きの `wreq` を使い、replay した
+//! `cf_clearance` Cookie を Cloudflare に受け入れさせる。plain client は fingerprint で
+//! 403 "Just a moment" challenge になるため、claude.ai と chatgpt.com では使えない。
+//! `api` は Cloudflare 配下ではない Google `cloudcode-pa` endpoint 用の plain client。
 
 use anyhow::{Context, Result, anyhow};
 use wreq::{Client, StatusCode};
 use wreq_util::Emulation;
 
-/// User-Agent matching the installed Chrome, so the `cf_clearance` cookie
-/// (minted by that Chrome) is honored by Cloudflare.
+/// installed Chrome と合わせた User-Agent。その Chrome で発行された `cf_clearance` Cookie を
+/// Cloudflare に有効と判定させる。
 pub const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
 
-/// Browser-emulating client (Cloudflare-fronted sites) plus a plain client for
-/// Google APIs.
+/// Cloudflare-fronted site 用の browser-emulating client と Google API 用 plain client。
 #[derive(Clone)]
 pub struct Clients {
     pub browser: Client,
@@ -35,8 +33,8 @@ pub fn clients() -> Result<Clients> {
     Ok(Clients { browser, api })
 }
 
-/// GET `url` and parse the JSON body, turning Cloudflare challenges and HTTP
-/// errors into clear messages. Uses the browser (Chrome-emulating) client.
+/// `url` を GET して JSON body を parse する。Cloudflare challenge や HTTP error は
+/// 分かりやすい message に変換する。browser(Chrome-emulating) client 用。
 pub async fn get_json(
     client: &Client,
     url: &str,
@@ -73,11 +71,10 @@ pub async fn get_json(
     serde_json::from_str(&body).with_context(|| format!("parsing JSON from {url}"))
 }
 
-/// POST a JSON body and return `(status, parsed-or-Null)`. The caller inspects
-/// the status itself (e.g. 401 → refresh+retry, 403 → endpoint not permitted for
-/// this token). The body is serialized manually because `wreq`'s `.json()` lives
-/// behind a `json` feature this project does not enable; this also matches the
-/// manual-parse style of `get_json`.
+/// JSON body を POST し、`(status, parsed-or-Null)` を返す。401 → refresh+retry、
+/// 403 → この token では endpoint 不許可、などの判定は caller が行う。
+/// この project では `wreq` の `.json()` が必要とする `json` feature を有効化していないため、
+/// body は手動 serialize する。`get_json` の手動 parse 方針にも揃えている。
 pub async fn post_json(
     api: &Client,
     url: &str,
@@ -99,8 +96,8 @@ pub async fn post_json(
     Ok((status, json))
 }
 
-/// POST an `application/x-www-form-urlencoded` body (the Google OAuth token
-/// endpoint). Returns `(status, parsed-or-Null)`.
+/// `application/x-www-form-urlencoded` body を POST する(Google OAuth token endpoint)。
+/// 戻り値は `(status, parsed-or-Null)`。
 pub async fn post_form(
     api: &Client,
     url: &str,

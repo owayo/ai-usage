@@ -1,4 +1,4 @@
-//! Rendering: human table, JSON, and the compact colored statusline.
+//! human table、JSON、compact colored statusline の rendering。
 
 use std::cmp::Ordering;
 
@@ -117,7 +117,7 @@ fn sorted_refs<T: SortableRow>(
     v
 }
 
-/// statusline のデフォルト順序: provider.rank() → profile 名。
+/// statusline の default 順序: provider.rank() → profile 名。
 fn statusline_default_cmp(a: &AccountOut, b: &AccountOut) -> Ordering {
     a.provider
         .rank()
@@ -125,9 +125,9 @@ fn statusline_default_cmp(a: &AccountOut, b: &AccountOut) -> Ordering {
         .then_with(|| a.profile.cmp(&b.profile))
 }
 
-/// Account label shown to the user: the configured label if set, else the
-/// username part of the provider account email (e.g. `work@example.com` → `work`),
-/// falling back to the Chrome profile email's username, then the profile name.
+/// user に表示する account label。config label があればそれを使い、なければ provider account
+/// email の username 部(例: `work@example.com` → `work`)に fallback する。さらに Chrome
+/// profile email の username、profile 名の順で fallback する。
 fn display_name<'a>(
     label: Option<&'a str>,
     email: Option<&'a str>,
@@ -145,20 +145,18 @@ fn display_name<'a>(
         .unwrap_or_else(|| profile.to_string())
 }
 
-/// How the highlighted ("active") account is specified. The default path
-/// resolves a signed-in email (from `.claude.json`); callers that drive a
-/// specific account instead pin it by profile name (+ optional provider),
-/// independent of which account the host tool is currently signed in as.
+/// highlight する "active" account の指定方法。default path は `.claude.json` から
+/// signed-in email を解決する。特定 account を操作する caller は、host tool が現在
+/// signed-in している account と独立に、profile 名(+任意 provider)で pin できる。
 pub struct ActiveTarget {
     pub email: Option<String>,
     pub profile: Option<String>,
     pub provider: Option<Provider>,
 }
 
-/// Decide whether a row is the active one, returning `(matched, reason)`. The
-/// reason explains a non-match for `--debug`. Profile targeting takes priority
-/// and can address any provider; email targeting keeps the original behaviour
-/// of highlighting only the matching Claude row.
+/// 行が active かどうかを判定し、`(matched, reason)` を返す。reason は `--debug` で
+/// non-match の理由を説明する。profile targeting は優先度が高く任意 provider を指せる。
+/// email targeting は従来どおり、一致する Claude 行だけを highlight する。
 fn is_active_row(
     target: &ActiveTarget,
     provider: Provider,
@@ -189,9 +187,9 @@ fn is_active_row(
     (false, "no_active_target")
 }
 
-/// Emit one JSONL diagnostic line per row to stderr for `--debug`. stdout is
-/// reserved for rendered output, so this never corrupts a piped statusline/JSON.
-/// Only non-secret fields (provider/profile/email/decision) are logged.
+/// `--debug` 用に、行ごとの診断情報を JSONL で stderr に出す。stdout は rendered output 専用の
+/// ため、pipe された statusline/JSON を壊さない。secret ではない field
+/// (provider/profile/email/decision)だけを log する。
 fn debug_row(
     provider: Provider,
     profile: &str,
@@ -212,8 +210,8 @@ fn debug_row(
     );
 }
 
-/// Brand RGB per provider — the single source for both the table (comfy-table
-/// `Color::Rgb`) and the statusline (`brand_sgr`'s ANSI truecolor).
+/// provider ごとの brand RGB。table(comfy-table `Color::Rgb`)と statusline
+/// (`brand_sgr` の ANSI truecolor)で共有する単一 source。
 fn brand_rgb(p: Provider) -> (u8, u8, u8) {
     match p {
         Provider::Claude => (217, 119, 87), // Anthropic coral #D97757
@@ -222,19 +220,19 @@ fn brand_rgb(p: Provider) -> (u8, u8, u8) {
     }
 }
 
-/// Brand color for a provider, as a comfy-table truecolor (table use).
+/// provider の brand color を comfy-table truecolor として返す(table 用)。
 fn provider_color(p: Provider) -> Color {
     let (r, g, b) = brand_rgb(p);
     Color::Rgb { r, g, b }
 }
 
-/// Brand color as an ANSI SGR truecolor parameter (statusline use).
+/// brand color を ANSI SGR truecolor parameter として返す(statusline 用)。
 fn brand_sgr(p: Provider) -> String {
     let (r, g, b) = brand_rgb(p);
     format!("38;2;{r};{g};{b}")
 }
 
-/// Service-column text: the provider, plus the model-group for Antigravity rows.
+/// service column の text。provider に、Antigravity 行では model-group を付ける。
 fn service_label(p: Provider, group: Option<&str>) -> String {
     match group {
         Some(g) => format!("{} · {}", p.label(), g),
@@ -396,14 +394,14 @@ pub fn json(report: &Report, sort: SortKey) {
     println!("{}", serde_json::to_string_pretty(&out).unwrap());
 }
 
-// ===== Statusline (compact, colored, one account per line) ==================
+// ===== Statusline(compact / colored / 1 account 1 line) ======================
 
-// 256-color ANSI codes (parameter portion, no SGR wrapper).
-const CODEX_LOGO_COLOR: &str = "38;2;255;255;255"; // white — Codex logo glyph
-// Brand-logo glyphs in PUA-B (BrandLogos font), used with `--logos`.
-const CLAUDE_LOGO: &str = "\u{100002}"; // Claude sunburst
-const CODEX_LOGO: &str = "\u{100000}"; // OpenAI mark
-const ANTIGRAVITY_LOGO: &str = "\u{100003}"; // Antigravity mark
+// 256-color ANSI code(SGR wrapper なしの parameter 部分)。
+const CODEX_LOGO_COLOR: &str = "38;2;255;255;255"; // white。Codex logo glyph 用。
+// BrandLogos font の PUA-B glyph。`--logos` で使う。
+const CLAUDE_LOGO: &str = "\u{100002}"; // Claude sunburst。
+const CODEX_LOGO: &str = "\u{100000}"; // OpenAI mark。
+const ANTIGRAVITY_LOGO: &str = "\u{100003}"; // Antigravity mark。
 const GRAY: &str = "38;5;245";
 const DIM: &str = "38;5;242";
 const GREEN: &str = "38;5;35";
@@ -411,9 +409,9 @@ const BOLD_RED: &str = "1;38;5;196"; // active account
 const FIVE_H_TH: [i64; 3] = [3600, 7200, 10800];
 const WEEK_TH: [i64; 3] = [86400, 172800, 259200];
 
-/// Render one row per account (grouped Claude-then-Codex), each with 5h and 1w
-/// gauges + percentage + reset countdown. The account matching `active_email`
-/// (this session's account) is shown in red+bold.
+/// account ごとに 1 行を render する(Claude → Codex の group 順)。
+/// 各行は 5h / 1w の gauge、percentage、reset countdown を持つ。
+/// `active_email`(この session の account)に一致する行は赤 bold で表示する。
 #[allow(clippy::too_many_arguments)]
 pub fn statusline(
     report: &Report,
@@ -426,15 +424,15 @@ pub fn statusline(
     reset_at: bool,
 ) {
     let now = Utc::now();
-    // SortKey::Provider のときは従来通り provider.rank() → profile 名で並べる。
+    // SortKey::Provider のときは従来どおり provider.rank() → profile 名で並べる。
     // weekly-usage / weekly-reset のときは sorted_refs 側のロジックで上書き。
     let rows = sorted_refs(&report.accounts, sort, now, Some(statusline_default_cmp));
     let lines: Vec<String> = rows
         .iter()
         .map(|a| {
             let row_email = a.email.as_deref().or(a.profile_email.as_deref());
-            // Profile targeting can highlight any provider's row; email targeting
-            // keeps the original Claude-only behaviour. `--debug` explains each row.
+            // profile targeting は任意 provider 行を highlight できる。
+            // email targeting は従来の Claude-only 挙動を保つ。`--debug` で各行の理由を出す。
             let (is_active, reason) = match active {
                 Some(t) => is_active_row(t, a.provider, &a.profile, row_email),
                 None => (false, "no_active_target"),
@@ -473,11 +471,11 @@ fn render_row(
         &a.profile,
     );
     let mut s = String::from("  ");
-    // Provider marker: a brand-logo glyph with `--logos`, otherwise the text label.
+    // provider marker は `--logos` なら brand-logo glyph、そうでなければ text label。
     if logos {
         let (logo, logo_color) = match a.provider {
             Provider::Claude => (CLAUDE_LOGO, brand_sgr(a.provider)),
-            // Codex's mark reads better in white than its teal brand color.
+            // Codex mark は teal の brand color より white の方が読みやすい。
             Provider::Codex => (CODEX_LOGO, CODEX_LOGO_COLOR.to_string()),
             Provider::Antigravity => (ANTIGRAVITY_LOGO, brand_sgr(a.provider)),
         };
@@ -485,9 +483,8 @@ fn render_row(
     } else {
         s += &paint(color, &brand_sgr(a.provider), &format!("{prov:<6} "));
     }
-    // Antigravity rows show their model-group (the account name is redundant for
-    // a single token); others show the account name. Pad to a width that fits
-    // "Claude&GPT" so every row's gauges line up.
+    // Antigravity 行は単一 token で account name が冗長なため model-group を表示する。
+    // それ以外は account name を表示する。"Claude&GPT" が入る幅で pad し、全行の gauge を揃える。
     let display = a.group_label.as_deref().unwrap_or(&name);
     s += &paint(
         color,
@@ -534,12 +531,12 @@ fn window_seg(
     compact: bool,
     show_reset_at: bool,
 ) -> String {
-    // --compact 時はゲージ幅を半分(8)にする。空ゲージ・実ゲージとも同じ幅で揃える。
+    // --compact 時は gauge 幅を半分(8)にする。空 gauge / 実 gauge とも同じ幅で揃える。
     let gauge_width = if compact { 8 } else { 16 };
     let mut s = paint(color, GRAY, &format!("{label} "));
     match w {
         None => {
-            // データ無し: 空ゲージ + "--"(% なし) + "--"(残り時間)。
+            // データ無し: 空 gauge + "--"(% なし) + "--"(残り時間)。
             // Some 分岐と同じ桁幅(gauge_width + 1 + 4 + 2 + 5)に揃える。
             s += &paint(color, DIM, &"░".repeat(gauge_width));
             s += " ";
@@ -565,7 +562,7 @@ fn window_seg(
                         reset_code(sec, th),
                         &format!("{:<6}", compact_dur(sec)),
                     );
-                    // --reset-at: 1w 行の残り時間の後ろに (MM/DD HH:MM) をローカル時刻で併記。
+                    // --reset-at: 1w 行の残り時間の後ろに (MM/DD HH:MM) を local 時刻で併記。
                     // 5h 側は呼び出し元で show_reset_at=false 固定。
                     if show_reset_at && let Some(r) = reset {
                         s += &paint(
@@ -639,10 +636,10 @@ fn reset_code(sec: i64, th: [i64; 3]) -> &'static str {
 }
 
 fn compact_dur(sec: i64) -> String {
-    // Round up so 59s left shows as 1m (not 0m). Zero-pad the lower unit so digit
-    // positions stay aligned (3h07m / 4d03h). window_seg pads the result to width 6
-    // — wide enough for the 1w window's `XXhYYm` (e.g. `12h18m`) so `--reset-at`'s
-    // trailing `(MM/DD HH:MM)` stays column-aligned across rows.
+    // 59s left は 0m ではなく 1m と表示するため切り上げる。下位 unit は zero-pad し、
+    // digit position を揃える(3h07m / 4d03h)。window_seg は結果を幅 6 に pad する。
+    // 1w window の `XXhYYm`(例: `12h18m`)に十分な幅で、`--reset-at` の trailing
+    // `(MM/DD HH:MM)` も行間で揃う。
     let minutes = (sec + 59) / 60;
     if minutes < 60 {
         format!("{minutes}m")

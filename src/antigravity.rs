@@ -1,15 +1,15 @@
-//! Antigravity (Google's agentic IDE + `agy` CLI) usage.
+//! Antigravity(Google の agentic IDE + `agy` CLI)の使用量取得。
 //!
-//! Two sources, mirroring CodexBar, tried in order:
-//!   1. **Local language_server** — when `agy` (or the app) is running it serves a
-//!      localhost HTTPS Connect-RPC endpoint. `RetrieveUserQuotaSummary` returns the
-//!      full "Gemini Models" / "Claude and GPT models" weekly groups shown by
-//!      `agy /usage`; `GetUserStatus` adds the account email + plan.
-//!   2. **OAuth remote** — `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`,
-//!      authenticated with the `~/.gemini` OAuth token (auto-refreshed). Returns
-//!      Gemini per-model daily quota. Works with no process running.
+//! CodexBar に合わせて、以下の 2 経路を順に試す:
+//!   1. **Local language_server** — `agy`(またはアプリ)実行中に localhost HTTPS の
+//!      Connect-RPC endpoint を提供する。`RetrieveUserQuotaSummary` は `agy /usage`
+//!      に表示される "Gemini Models" / "Claude and GPT models" の週次グループを返し、
+//!      `GetUserStatus` はアカウント email と plan を補う。
+//!   2. **OAuth remote** — `~/.gemini` の OAuth token(必要なら自動 refresh)で
+//!      `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` を呼ぶ。実行中の
+//!      プロセスなしで使えるが、Gemini の per-model 日次 quota に限られる。
 //!
-//! Unlike Claude/Codex this is not a Chrome cookie; see CLAUDE.md and
+//! Claude/Codex と違って Chrome Cookie ではない。詳細は CLAUDE.md と
 //! <https://github.com/steipete/CodexBar/blob/main/docs/antigravity.md>.
 
 use std::path::{Path, PathBuf};
@@ -17,7 +17,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde_json::{Value, json};
 use wreq::{Client, StatusCode};
 
@@ -28,8 +28,8 @@ use crate::model::{Usage, UsageRow, Window};
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const CODE_ASSIST: &str = "https://cloudcode-pa.googleapis.com/v1internal";
 
-/// Fetch Antigravity usage, preferring the richer local source, falling back to
-/// the OAuth remote. Returns one row per model group.
+/// 情報量の多い local 経路を優先し、失敗時は OAuth remote にフォールバックする。
+/// 戻り値は model group ごとに 1 行。
 pub async fn fetch(api: &Client, cfg: Option<&AntigravityCfg>) -> Result<Vec<UsageRow>> {
     if let Ok(rows) = local_fetch().await
         && !rows.is_empty()
@@ -39,8 +39,8 @@ pub async fn fetch(api: &Client, cfg: Option<&AntigravityCfg>) -> Result<Vec<Usa
     oauth_fetch(api, cfg).await
 }
 
-/// Whether Antigravity can be reported at all: a token on disk, or `agy` running.
-/// Honors an explicit `enabled = false`.
+/// Antigravity を表示可能かどうか。token ファイルがあるか、`agy` が起動中なら true。
+/// `enabled = false` が明示されている場合は常に false。
 pub fn available(cfg: Option<&AntigravityCfg>) -> bool {
     if matches!(cfg, Some(c) if c.enabled == Some(false)) {
         return false;
@@ -93,7 +93,7 @@ async fn local_post(local: &Client, url: &str) -> Result<Value> {
     serde_json::from_str(&text).with_context(|| format!("parsing {url}"))
 }
 
-/// `RetrieveUserQuotaSummary` → one `UsageRow` per model group.
+/// `RetrieveUserQuotaSummary` を model group ごとの `UsageRow` に変換する。
 fn parse_summary(v: &Value, email: Option<String>, plan: Option<String>) -> Result<Vec<UsageRow>> {
     let groups = v
         .pointer("/response/groups")
@@ -175,7 +175,7 @@ fn is_weekly(b: &Value) -> bool {
     {
         return true;
     }
-    // Fall back on the reset horizon: > 8h ⇒ treat as the weekly window.
+    // 最後は reset までの時間で判定する。8h 超なら週次 window とみなす。
     bucket_reset(b)
         .map(|r| (r - Utc::now()).num_seconds() > 8 * 3600)
         .unwrap_or(true)
@@ -197,10 +197,18 @@ fn bucket_to_window(b: &Value) -> Option<Window> {
 }
 
 fn bucket_reset(b: &Value) -> Option<DateTime<Utc>> {
-    let s = b.get("resetTime").and_then(|r| r.as_str())?;
-    DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.with_timezone(&Utc))
+    let reset = b.get("resetTime")?;
+    if let Some(s) = reset.as_str() {
+        return DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| d.with_timezone(&Utc))
+            .or_else(|| s.parse::<i64>().ok().and_then(epoch_seconds));
+    }
+    reset.as_i64().and_then(epoch_seconds)
+}
+
+fn epoch_seconds(seconds: i64) -> Option<DateTime<Utc>> {
+    Utc.timestamp_opt(seconds, 0).single()
 }
 
 fn short_group_label(display: &str) -> String {
@@ -309,13 +317,13 @@ async fn oauth_fetch(api: &Client, cfg: Option<&AntigravityCfg>) -> Result<Vec<U
     parse_buckets(&body)
 }
 
-/// `retrieveUserQuota` buckets (Gemini per-model daily) → one representative row.
+/// `retrieveUserQuota` の bucket(Gemini per-model 日次)を代表 1 行に畳み込む。
 fn parse_buckets(v: &Value) -> Result<Vec<UsageRow>> {
     let buckets = v
         .get("buckets")
         .and_then(|b| b.as_array())
         .context("retrieveUserQuota has no buckets")?;
-    // Representative = the most-constrained (lowest remaining) bucket.
+    // 代表値は最も制約の厳しい(remainingFraction が最小の)bucket。
     let mut worst: Option<&Value> = None;
     let mut worst_rf = 2.0_f64;
     for b in buckets {
@@ -329,7 +337,7 @@ fn parse_buckets(v: &Value) -> Result<Vec<UsageRow>> {
         }
     }
     let b = worst.context("retrieveUserQuota returned no buckets")?;
-    // These REQUESTS buckets reset within a day → report as the short window.
+    // REQUESTS bucket は 1 日以内に reset されるため短期 window として出す。
     let usage = Usage {
         email: None,
         plan: None,
@@ -347,7 +355,7 @@ fn parse_buckets(v: &Value) -> Result<Vec<UsageRow>> {
 struct Token {
     access: String,
     refresh: String,
-    /// Unix seconds; 0 if unknown.
+    /// Unix 秒。未知の場合は 0。
     expiry: i64,
 }
 
@@ -396,8 +404,8 @@ fn expand(p: &str) -> PathBuf {
 fn load_token(path: &Path) -> Result<Token> {
     let data = std::fs::read_to_string(path)?;
     let v: Value = serde_json::from_str(&data)?;
-    // Two shapes: {token:{access_token,refresh_token,expiry}} (antigravity-cli)
-    // or flat {access_token,refresh_token,expiry_date} (oauth_creds.json).
+    // 形は 2 種類: antigravity-cli の {token:{access_token,refresh_token,expiry}} と、
+    // oauth_creds.json の flat {access_token,refresh_token,expiry_date}。
     let inner = v.get("token").unwrap_or(&v);
     let access = inner
         .get("access_token")
@@ -417,7 +425,7 @@ fn load_token(path: &Path) -> Result<Token> {
 }
 
 fn parse_expiry(v: &Value) -> i64 {
-    // ISO-8601 "expiry" (antigravity-cli) or epoch-ms "expiry_date" (oauth_creds).
+    // antigravity-cli は ISO-8601 の "expiry"、oauth_creds は epoch-ms の "expiry_date"。
     if let Some(s) = v.get("expiry").and_then(|e| e.as_str())
         && let Ok(d) = DateTime::parse_from_rfc3339(s)
     {
@@ -465,8 +473,8 @@ async fn refresh(api: &Client, tok: &Token) -> Result<Token> {
     })
 }
 
-/// Antigravity's OAuth client id/secret: env override first, else extracted from
-/// the installed `Antigravity.app`. Deliberately not embedded in this public repo.
+/// Antigravity の OAuth client id/secret。env override を優先し、なければ
+/// インストール済み `Antigravity.app` から抽出する。リポジトリには埋め込まない。
 fn oauth_client() -> Option<(String, String)> {
     if let (Ok(id), Ok(secret)) = (
         std::env::var("ANTIGRAVITY_OAUTH_CLIENT_ID"),
@@ -578,6 +586,15 @@ mod tests {
             "used should be 80% got {}",
             w.used_percent
         );
+    }
+
+    #[test]
+    fn bucket_reset_accepts_epoch_seconds() {
+        let numeric = bucket_reset(&json!({"resetTime": 1_700_000_000_i64})).unwrap();
+        assert_eq!(numeric.timestamp(), 1_700_000_000);
+
+        let string = bucket_reset(&json!({"resetTime": "1700000001"})).unwrap();
+        assert_eq!(string.timestamp(), 1_700_000_001);
     }
 
     #[test]

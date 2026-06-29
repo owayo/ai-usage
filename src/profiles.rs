@@ -1,4 +1,4 @@
-//! Discovery of Chrome profiles and their cookie databases on macOS.
+//! macOS の Chrome profile と Cookie database を検出する。
 
 use std::path::{Path, PathBuf};
 
@@ -11,15 +11,15 @@ pub fn chrome_root() -> Result<PathBuf> {
 
 #[derive(Debug, Clone)]
 pub struct Profile {
-    /// On-disk directory name, e.g. `"Default"` or `"Profile 7"`.
+    /// on-disk directory 名。例: `"Default"` / `"Profile 7"`。
     pub dir: String,
-    /// User-visible display name, e.g. `"Work"` or `"Home"`.
+    /// user-visible な表示名。例: `"Work"` / `"Home"`。
     pub name: String,
     pub email: Option<String>,
 }
 
-/// Read Chrome's `Local State` and map each on-disk profile directory to its
-/// display name (the names differ on purpose, so this file is canonical).
+/// Chrome の `Local State` を読み、on-disk profile directory と表示名を対応付ける。
+/// 両者は意図的に異なることがあるため、この file を正とする。
 pub fn discover(root: &Path) -> Result<Vec<Profile>> {
     let local_state = root.join("Local State");
     let data = std::fs::read_to_string(&local_state)
@@ -50,8 +50,7 @@ pub fn discover(root: &Path) -> Result<Vec<Profile>> {
     Ok(profiles)
 }
 
-/// Locate the Cookies SQLite DB for a profile (newer Chrome moved it into a
-/// `Network/` subdirectory).
+/// profile の Cookies SQLite DB を探す。新しい Chrome は `Network/` subdirectory に移動済み。
 pub fn cookies_db(root: &Path, dir: &str) -> Option<PathBuf> {
     for sub in ["Network/Cookies", "Cookies"] {
         let p = root.join(dir).join(sub);

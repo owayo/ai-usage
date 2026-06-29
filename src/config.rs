@@ -1,10 +1,9 @@
-//! Optional config file: `~/.config/ai-usage/config.toml`
-//! (or `$XDG_CONFIG_HOME/ai-usage/config.toml`).
+//! 任意 config file: `~/.config/ai-usage/config.toml`
+//! (または `$XDG_CONFIG_HOME/ai-usage/config.toml`)。
 //!
-//! Without it, ai-usage auto-discovers every Chrome profile that has a Claude
-//! or Codex session. With it, you choose which profiles to show, their order,
-//! their labels, the providers per profile, and which account is "active".
-//! Precedence: CLI flags > config file > auto-detection.
+//! config がない場合、ai-usage は Claude または Codex session を持つ Chrome profile を
+//! 自動検出する。config がある場合は、表示 profile、順序、label、profile ごとの provider、
+//! "active" account を選べる。優先順は CLI flags > config file > auto-detection。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,42 +13,42 @@ use serde::Deserialize;
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
-    /// Account email to highlight as active (overrides CLAUDE_CONFIG_DIR detection).
+    /// active として highlight する account email(CLAUDE_CONFIG_DIR detection を上書き)。
     pub active_email: Option<String>,
 
-    /// Explicit profile selection. When non-empty, ONLY these profiles are shown,
-    /// in this order. When empty/absent, all signed-in profiles are auto-discovered.
+    /// 明示的な profile 選択。空でなければ、この profile だけをこの順序で表示する。
+    /// 空または未指定なら、signed-in 済み profile をすべて auto-discover する。
     pub profiles: Vec<ProfileCfg>,
 
-    /// Antigravity (Google `agy`) usage. Auto-discovered from `~/.gemini` or a
-    /// running `agy` unless disabled here. Not a Chrome profile, so it lives at
-    /// the top level rather than under `[[profiles]]`.
+    /// Antigravity(Google `agy`)使用量。ここで disabled にしない限り、`~/.gemini` または
+    /// 実行中の `agy` から auto-discover する。Chrome profile ではないため、
+    /// `[[profiles]]` 配下ではなく top-level に置く。
     pub antigravity: Option<AntigravityCfg>,
 }
 
-/// Antigravity provider config (top-level `[antigravity]`).
+/// Antigravity provider config(top-level `[antigravity]`)。
 #[derive(Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct AntigravityCfg {
-    /// `None` = auto (show when a token or running `agy` is found); `Some(false)` = off.
+    /// `None` = auto(token または実行中 `agy` があれば表示)、`Some(false)` = off。
     pub enabled: Option<bool>,
-    /// Override the OAuth token path (default: `~/.gemini/...`).
+    /// OAuth token path を上書きする(default: `~/.gemini/...`)。
     pub token_path: Option<String>,
-    /// Display label (default: the account email username).
+    /// 表示 label(default: account email の username)。
     pub label: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct ProfileCfg {
-    /// Chrome profile display name (e.g. "Work") or on-disk dir (e.g. "Default").
+    /// Chrome profile 表示名(例: "Work")または on-disk dir(例: "Default")。
     #[serde(rename = "match")]
     pub matcher: String,
 
-    /// Label shown instead of the account email username (e.g. "work").
+    /// account email の username の代わりに表示する label(例: "work")。
     pub label: Option<String>,
 
-    /// Providers to show for this profile (subset of `["claude", "codex"]`).
-    /// Omitted = both.
+    /// この profile で表示する provider(`["claude", "codex"]` の subset)。
+    /// 省略時は両方。
     pub providers: Option<Vec<String>>,
 }
 
@@ -58,7 +57,7 @@ impl ProfileCfg {
         self.matcher.eq_ignore_ascii_case(name) || self.matcher.eq_ignore_ascii_case(dir)
     }
 
-    /// `(want_claude, want_codex)` from this profile's `providers` list.
+    /// この profile の `providers` list から `(want_claude, want_codex)` を得る。
     pub fn wants(&self) -> (bool, bool) {
         match &self.providers {
             None => (true, true),
@@ -70,9 +69,9 @@ impl ProfileCfg {
     }
 }
 
-/// Resolve the config path: `$XDG_CONFIG_HOME/ai-usage/config.toml`, else
-/// `~/.config/ai-usage/config.toml`. (Not `dirs::config_dir()`, which is
-/// `~/Library/Application Support` on macOS.)
+/// config path を解決する。`$XDG_CONFIG_HOME/ai-usage/config.toml`、なければ
+/// `~/.config/ai-usage/config.toml`。macOS では `dirs::config_dir()` が
+/// `~/Library/Application Support` になるため使わない。
 pub fn default_path() -> Option<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|s| !s.is_empty()) {
         return Some(PathBuf::from(xdg).join("ai-usage").join("config.toml"));
@@ -80,9 +79,9 @@ pub fn default_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".config").join("ai-usage").join("config.toml"))
 }
 
-/// Load the config, falling back to defaults (auto mode) when absent. An invalid
-/// file is reported on stderr and treated as defaults rather than aborting.
-/// Unknown fields are ignored so newer configs stay readable by older binaries.
+/// config を読み込む。存在しない場合は default(auto mode)に fallback する。
+/// 不正な file は stderr に報告し、abort せず default として扱う。
+/// unknown field は無視し、新しい config を古い binary でも読めるようにする。
 pub fn load(explicit: Option<&Path>) -> Config {
     let path = match explicit {
         Some(p) => Some(p.to_path_buf()),
@@ -92,7 +91,7 @@ pub fn load(explicit: Option<&Path>) -> Config {
         return Config::default();
     };
     let Ok(text) = fs::read_to_string(&path) else {
-        return Config::default(); // no file → auto mode
+        return Config::default(); // file なし → auto mode
     };
     toml::from_str(&text).unwrap_or_else(|e| {
         eprintln!("ai-usage: ignoring invalid config {}: {e}", path.display());

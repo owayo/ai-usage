@@ -1,7 +1,6 @@
 # ai-usage
 
-[![CI](https://github.com/owayo/ai-usage/actions/workflows/ci.yml/badge.svg)](https://github.com/owayo/ai-usage/actions/workflows/ci.yml)
-&nbsp;[日本語](README.ja.md)
+[日本語](README.ja.md)
 
 One command to see your **Claude** and **OpenAI Codex (ChatGPT)** usage limits — the
 rolling **5-hour** window and the **weekly** window, plus when each resets —
@@ -35,7 +34,9 @@ For each Chrome profile it finds, `ai-usage`:
 
 1. Decrypts the profile's cookies from `~/Library/Application Support/Google/Chrome/<profile>/Cookies`
    using the **Chrome Safe Storage** key from your macOS Keychain (the standard `v10`
-   AES‑128‑CBC scheme).
+   AES‑128‑CBC scheme). Only cookies that Chrome would send to `claude.ai` or
+   `chatgpt.com` itself are replayed; suffix lookalikes such as `evilclaude.ai`
+   are ignored.
 2. **Claude** — uses the `sessionKey` cookie to call
    `claude.ai/api/organizations/{org}/usage` → `five_hour` / `seven_day` `{utilization, resets_at}`.
 3. **Codex** — uses the `__Secure-next-auth.session-token` cookie to exchange for a Bearer
@@ -131,8 +132,9 @@ make test       # run tests
 make deps       # install build prerequisites (cmake)
 ```
 
-Releases are cut from the GitHub Actions **Release** workflow (`workflow_dispatch`); CI runs
-`clippy` / `fmt` / `test` / build on macOS (Intel + ARM).
+For a local release, run `make release` or `make install`. GitHub Actions workflows are
+not included while this repository is private; run `make check` and `make test` locally
+before committing.
 
 ## Notes & limitations
 

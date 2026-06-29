@@ -1,5 +1,4 @@
-//! Claude usage via the claude.ai web API, authenticated with the profile's
-//! `sessionKey` cookie:
+//! profile の `sessionKey` Cookie で認証し、claude.ai web API から Claude 使用量を取得する:
 //!   GET /api/organizations            -> organization uuid
 //!   GET /api/organizations/{id}/usage -> { five_hour, seven_day, ... }
 
@@ -25,10 +24,8 @@ fn cookie_header(cookies: &HashMap<String, String>) -> Result<String> {
     Ok(header)
 }
 
-/// Whether this profile carries a claude.ai session cookie. A cheap presence
-/// check (no decryption beyond what's already loaded, no network) used to decide
-/// whether to spawn a Claude fetch — keeps the cookie-name knowledge here rather
-/// than in the caller.
+/// この profile が claude.ai session Cookie を持つかどうか。既に読み込み済みの Cookie に対する
+/// 安価な存在確認で、network は使わない。Cookie 名の知識を caller ではなくここに閉じ込める。
 pub fn has_session(cookies: &HashMap<String, String>) -> bool {
     cookies.contains_key("sessionKey")
 }
@@ -59,7 +56,7 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
     .await
     .context("fetching usage")?;
 
-    // The usage endpoint doesn't carry the account email; /api/account does.
+    // usage endpoint は account email を持たないため、/api/account から補う。
     let email = get_json(client, "https://claude.ai/api/account", &cookie, None, None)
         .await
         .ok()
@@ -73,7 +70,7 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
     }))
 }
 
-/// Extract the signed-in account's email from claude.ai's /api/account response.
+/// claude.ai の /api/account response から signed-in account email を取り出す。
 fn account_email(v: &serde_json::Value) -> Option<String> {
     for key in ["email_address", "email"] {
         if let Some(e) = v.get(key).and_then(|x| x.as_str()) {
@@ -90,7 +87,7 @@ fn account_email(v: &serde_json::Value) -> Option<String> {
     None
 }
 
-/// Prefer a chat-capable organization, else the first one.
+/// chat capability を持つ organization を優先し、なければ先頭を使う。
 fn pick_org(orgs: &serde_json::Value) -> Option<String> {
     let arr = orgs.as_array()?;
     let chat = arr.iter().find(|o| {

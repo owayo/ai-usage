@@ -1,11 +1,11 @@
-//! Decryption of Chrome cookies on macOS (the classic `v10` scheme).
+//! macOS Chrome Cookie の復号(macOS で使われる従来の `v10` 方式)。
 //!
-//! macOS Chrome (incl. 149) encrypts `encrypted_value` as
-//! `"v10" + AES-128-CBC(IV = 16 × 0x20)`, with the AES key derived via
-//! `PBKDF2-HMAC-SHA1(keychain "Chrome Safe Storage" secret, "saltysalt", 1003)`.
-//! Cookie-store schema v24+ additionally prepends a 32-byte SHA-256 of the host
-//! key to the plaintext, which must be stripped. (Windows' `v20` app-bound
-//! encryption does not apply on macOS.)
+//! macOS Chrome 149 までの `encrypted_value` は `"v10" +
+//! AES-128-CBC(IV = 16 × 0x20)` で、AES 鍵は Keychain の
+//! `"Chrome Safe Storage"` シークレットから
+//! `PBKDF2-HMAC-SHA1(..., "saltysalt", 1003)` で導出する。Cookie DB の
+//! schema v24+ は平文先頭に host key の SHA-256 32 バイトを付加するため、復号後に
+//! 取り除く必要がある。Windows の `v20` app-bound encryption は macOS では扱わない。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -17,10 +17,13 @@ use sha1::Sha1;
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
-/// Read the "Chrome Safe Storage" secret from the macOS login Keychain.
-///
-/// The first time a given binary requests this, macOS shows an approval dialog;
-/// choosing "Always Allow" prevents future prompts.
+const CLAUDE_DOMAIN: &str = "claude.ai";
+const CHATGPT_DOMAIN: &str = "chatgpt.com";
+const CODEX_SESSION_COOKIE: &str = "__Secure-next-auth.session-token";
+
+/// macOS login Keychain から "Chrome Safe Storage" シークレットを読む。
+/// バイナリごとの初回アクセス時は macOS の許可ダイアログが出るため、
+/// "Always Allow" を選ぶと以後のプロンプトを避けられる。
 pub fn safe_storage_key(service: &str) -> Result<String> {
     let out = Command::new("security")
         .args(["find-generic-password", "-s", service, "-w"])
@@ -41,15 +44,15 @@ pub fn derive_key(password: &str) -> [u8; 16] {
     key
 }
 
-/// Decrypt a single `encrypted_value` blob. Returns `None` for blobs we can't
-/// handle (empty, unknown prefix, or a different key).
+/// 単一の `encrypted_value` blob を復号する。空、未知 prefix、鍵違いなど
+/// この実装で扱えない blob は `None` を返す。
 fn decrypt(key: &[u8; 16], blob: &[u8], strip_sha256_prefix: bool) -> Option<String> {
     if blob.len() < 3 + 16 {
         return None;
     }
     match &blob[0..3] {
         b"v10" | b"v11" => {}
-        _ => return None, // v20 (Windows app-bound) is not used on macOS
+        _ => return None, // v20(Windows app-bound) は macOS 対象外。
     }
     let iv = [0x20u8; 16];
     let plain = Aes128CbcDec::new(&(*key).into(), &iv.into())
@@ -65,18 +68,52 @@ fn decrypt(key: &[u8; 16], blob: &[u8], strip_sha256_prefix: bool) -> Option<Str
 
 #[derive(Default)]
 pub struct ProfileCookies {
-    /// Decrypted claude.ai cookies, keyed by name.
+    /// 復号済み claude.ai Cookie。キーは Cookie 名。
     pub claude: HashMap<String, String>,
-    /// Decrypted chatgpt.com cookies, keyed by name.
+    /// 復号済み chatgpt.com Cookie。キーは Cookie 名。
     pub chatgpt: HashMap<String, String>,
 }
 
-/// Open the (live, locked) Cookies DB read-only and decrypt the claude.ai and
-/// chatgpt.com cookies.
+fn sqlite_immutable_uri(path: &Path) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let path = path.to_string_lossy();
+    let mut uri = String::with_capacity(path.len() + 24);
+    uri.push_str("file:");
+    for &b in path.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                uri.push(b as char);
+            }
+            _ => {
+                uri.push('%');
+                uri.push(HEX[(b >> 4) as usize] as char);
+                uri.push(HEX[(b & 0x0f) as usize] as char);
+            }
+        }
+    }
+    uri.push_str("?immutable=1");
+    uri
+}
+
+fn host_matches_domain(host: &str, domain: &str) -> bool {
+    let host = host.trim_start_matches('.').to_ascii_lowercase();
+    let domain = domain.trim_start_matches('.').to_ascii_lowercase();
+    host == domain
+}
+
+fn is_codex_session_cookie(name: &str) -> bool {
+    name == CODEX_SESSION_COOKIE
+        || name
+            .strip_prefix(CODEX_SESSION_COOKIE)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
+/// live でロックされがちな Cookies DB を read-only + immutable で開き、
+/// claude.ai / chatgpt.com の Cookie だけを復号する。
 pub fn load(db_path: &Path, key: &[u8; 16]) -> Result<ProfileCookies> {
     use rusqlite::{Connection, OpenFlags};
 
-    let uri = format!("file:{}?immutable=1", db_path.to_string_lossy());
+    let uri = sqlite_immutable_uri(db_path);
     let conn = Connection::open_with_flags(
         uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
@@ -107,10 +144,9 @@ pub fn load(db_path: &Path, key: &[u8; 16]) -> Result<ProfileCookies> {
         if enc.is_empty() {
             continue;
         }
-        let host = host.trim_start_matches('.');
-        let bucket = if host.ends_with("claude.ai") {
+        let bucket = if host_matches_domain(&host, CLAUDE_DOMAIN) {
             &mut out.claude
-        } else if host.ends_with("chatgpt.com") {
+        } else if host_matches_domain(&host, CHATGPT_DOMAIN) {
             &mut out.chatgpt
         } else {
             continue;
@@ -136,31 +172,47 @@ fn encrypt_for_test(key: &[u8; 16], prefix: &[u8], plain: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Cheaply detect which providers a profile is signed into, by cookie *presence*
-/// only — no decryption, no Keychain. Returns `(has_claude, has_codex)`.
-/// Used by `--init-config`.
+/// Cookie の存在だけでログイン済みプロバイダを安価に検出する。復号も Keychain 参照も
+/// 行わない。戻り値は `(has_claude, has_codex)`。`--init-config` で使う。
 pub fn detect_sessions(db_path: &Path) -> (bool, bool) {
     use rusqlite::{Connection, OpenFlags};
-    let uri = format!("file:{}?immutable=1", db_path.to_string_lossy());
+    let uri = sqlite_immutable_uri(db_path);
     let Ok(conn) = Connection::open_with_flags(
         uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     ) else {
         return (false, false);
     };
-    let exists = |sql: &str| conn.query_row(sql, [], |_| Ok(())).is_ok();
-    let claude = exists(
-        "SELECT 1 FROM cookies WHERE host_key LIKE '%claude.ai' AND name = 'sessionKey' LIMIT 1",
-    );
-    let codex = exists(
-        "SELECT 1 FROM cookies WHERE host_key LIKE '%chatgpt.com' AND name LIKE '__Secure-next-auth.session-token%' LIMIT 1",
-    );
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT host_key, name FROM cookies \
+         WHERE name = 'sessionKey' OR name GLOB '__Secure-next-auth.session-token*'",
+    ) else {
+        return (false, false);
+    };
+    let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+    else {
+        return (false, false);
+    };
+    let mut claude = false;
+    let mut codex = false;
+    for (host, name) in rows.flatten() {
+        if name == "sessionKey" && host_matches_domain(&host, CLAUDE_DOMAIN) {
+            claude = true;
+        }
+        if is_codex_session_cookie(&name) && host_matches_domain(&host, CHATGPT_DOMAIN) {
+            codex = true;
+        }
+        if claude && codex {
+            break;
+        }
+    }
     (claude, codex)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn key() -> [u8; 16] {
         // derive_key の結果は再現可能だが、テストでは固定のダミー鍵を使うだけで十分。
@@ -168,6 +220,79 @@ mod tests {
             0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
             0xff, 0x00,
         ]
+    }
+
+    fn temp_cookie_db(name: &str, rows: &[(&str, &str)]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "ai-usage-cookies-{name}-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "CREATE TABLE cookies (
+                host_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                encrypted_value BLOB NOT NULL DEFAULT x''
+            )",
+            [],
+        )
+        .unwrap();
+        for (host, cookie_name) in rows {
+            conn.execute(
+                "INSERT INTO cookies (host_key, name) VALUES (?1, ?2)",
+                rusqlite::params![host, cookie_name],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        path
+    }
+
+    #[test]
+    fn sqlite_immutable_uri_escapes_query_delimiters() {
+        let uri = sqlite_immutable_uri(Path::new("/tmp/ai usage?#.sqlite"));
+        assert_eq!(uri, "file:/tmp/ai%20usage%3F%23.sqlite?immutable=1");
+    }
+
+    #[test]
+    fn host_matching_requires_domain_boundary() {
+        assert!(host_matches_domain("claude.ai", CLAUDE_DOMAIN));
+        assert!(host_matches_domain(".claude.ai", CLAUDE_DOMAIN));
+        assert!(!host_matches_domain("console.claude.ai", CLAUDE_DOMAIN));
+        assert!(!host_matches_domain("evilclaude.ai", CLAUDE_DOMAIN));
+        assert!(!host_matches_domain("claude.ai.evil.test", CLAUDE_DOMAIN));
+    }
+
+    #[test]
+    fn detect_sessions_accepts_real_provider_domains() {
+        let path = temp_cookie_db(
+            "real-domains",
+            &[
+                (".claude.ai", "sessionKey"),
+                (".chatgpt.com", &format!("{CODEX_SESSION_COOKIE}.0")),
+            ],
+        );
+        assert_eq!(detect_sessions(&path), (true, true));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn detect_sessions_rejects_suffix_lookalike_domains_and_cookie_names() {
+        let path = temp_cookie_db(
+            "lookalikes",
+            &[
+                ("evilclaude.ai", "sessionKey"),
+                ("evilchatgpt.com", CODEX_SESSION_COOKIE),
+                ("chatgpt.com", "xxSecure-next-auth.session-token"),
+                ("chatgpt.com", "__Secure-next-auth.session-tokenizer"),
+            ],
+        );
+        assert_eq!(detect_sessions(&path), (false, false));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Shared data model for usage reporting.
+//! usage report 用の共有 data model。
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,7 @@ impl Provider {
         }
     }
 
-    /// Sort rank for the statusline: Claude first, then Codex, then others.
+    /// statusline の sort rank。Claude、Codex、その他の順。
     pub fn rank(self) -> u8 {
         match self {
             Provider::Claude => 0,
@@ -30,10 +30,10 @@ impl Provider {
     }
 }
 
-/// A single rate-limit window (e.g. the rolling 5-hour or the weekly window).
+/// 単一の rate-limit window。例: rolling 5-hour window / weekly window。
 #[derive(Clone, Debug)]
 pub struct Window {
-    /// Utilization as a percentage in `0..=100`.
+    /// 使用率。percentage で `0..=100`。
     pub used_percent: f64,
     pub resets_at: Option<DateTime<Utc>>,
 }
@@ -46,18 +46,18 @@ pub struct Usage {
     pub weekly: Option<Window>,
 }
 
-/// One displayable row of usage. A provider fetch returns one or more rows: most
-/// providers return a single ungrouped row (`group_label = None`), but Antigravity
-/// reports one row per model group ("Gemini", "Claude & GPT"), each tagged.
+/// 表示可能な usage 1 行。provider fetch は 1 行以上を返す。多くの provider は
+/// group なしの単一行(`group_label = None`)だが、Antigravity は model group
+/// ("Gemini", "Claude & GPT")ごとに tag 付きの行を返す。
 #[derive(Clone, Debug)]
 pub struct UsageRow {
-    /// Model-group label, for providers that split usage across groups.
+    /// usage を group 分割する provider の model-group label。
     pub group_label: Option<String>,
     pub usage: Usage,
 }
 
 impl UsageRow {
-    /// Wrap a single `Usage` as one ungrouped row (Claude/Codex).
+    /// 単一の `Usage` を group なしの 1 行として包む(Claude/Codex)。
     pub fn single(usage: Usage) -> Vec<UsageRow> {
         vec![UsageRow {
             group_label: None,
@@ -66,17 +66,17 @@ impl UsageRow {
     }
 }
 
-/// The result of querying one account row: one provider — and, for Antigravity,
-/// one model group within it — within one Chrome profile or OAuth token.
+/// account 行 1 件の query 結果。1 つの Chrome profile または OAuth token の中の
+/// 1 provider、Antigravity ではさらにその中の 1 model group を表す。
 pub struct AccountReport {
     pub profile_name: String,
-    /// The Chrome profile's account email (from Local State), used to match the
-    /// currently-active session account for highlighting.
+    /// Chrome profile の account email(Local State 由来)。現在 active な session account の
+    /// highlight 照合に使う。
     pub profile_email: Option<String>,
-    /// Configured display label (from config.toml), if any.
+    /// config.toml 由来の display label。未設定なら None。
     pub label: Option<String>,
     pub provider: Provider,
-    /// Model-group label for multi-group providers (Antigravity); `None` otherwise.
+    /// multi-group provider(Antigravity)の model-group label。それ以外は `None`。
     pub group_label: Option<String>,
     pub usage: anyhow::Result<Usage>,
 }

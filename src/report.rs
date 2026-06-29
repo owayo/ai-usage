@@ -1,6 +1,6 @@
-//! Serializable report DTO, shared by `--json` (serialize) and `--statusline`
-//! (deserialize from a cached file, then render). One schema means the statusline
-//! renders exactly what `--json` emits.
+//! serialize 可能な report DTO。`--json`(serialize)と `--statusline`
+//! (cached file から deserialize して render)で共有する。
+//! schema を 1 つにすることで、statusline は `--json` の出力をそのまま描画する。
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -9,10 +9,10 @@ use crate::model::{AccountReport, Provider, Window};
 
 #[derive(Serialize, Deserialize)]
 pub struct WindowOut {
-    /// Utilization percentage, 0–100.
+    /// 使用率 percentage。0-100。
     pub used_percent: f64,
-    /// Absolute reset time (RFC 3339); the statusline recomputes the countdown
-    /// from this so a stale cache still shows a correct "time until reset".
+    /// 絶対 reset time(RFC 3339)。statusline はここから countdown を再計算するため、
+    /// cache が古くても正しい "reset までの時間" を表示できる。
     pub resets_at: Option<String>,
     pub resets_in_seconds: Option<i64>,
 }
@@ -35,9 +35,9 @@ pub struct AccountOut {
     pub plan: Option<String>,
     pub email: Option<String>,
     pub profile_email: Option<String>,
-    /// Configured display label (from config.toml), if any.
+    /// config.toml 由来の display label。未設定なら None。
     pub label: Option<String>,
-    /// Model-group label for multi-group providers (Antigravity); `None` otherwise.
+    /// multi-group provider(Antigravity)の model-group label。それ以外は `None`。
     pub group_label: Option<String>,
     pub five_hour: Option<WindowOut>,
     pub weekly: Option<WindowOut>,

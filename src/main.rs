@@ -1,5 +1,5 @@
-//! ai-usage — show Claude & Codex usage limits (5-hour / weekly windows and
-//! their reset times) across the Chrome profiles you're signed into.
+//! ai-usage — ログイン済み Chrome profile ごとの Claude / Codex 使用量上限
+//! (5時間枠 / 週次枠とリセット時刻)を表示する。
 
 mod antigravity;
 mod claude;
@@ -29,79 +29,77 @@ use profiles::Profile;
     about = "Show Claude & Codex usage limits across Chrome profiles"
 )]
 struct Cli {
-    /// Limit to these Chrome profile display names (e.g. -p Work,Home)
+    /// 対象を指定した Chrome profile 表示名に絞る(例: -p Work,Home)
     #[arg(short, long, value_delimiter = ',')]
     profile: Vec<String>,
 
-    /// Limit to a single provider
+    /// 対象を単一 provider に絞る
     #[arg(long, value_enum)]
     only: Option<ProviderArg>,
 
-    /// Emit JSON instead of a table
+    /// table ではなく JSON を出力する
     #[arg(long)]
     json: bool,
 
-    /// Emit the compact, colored statusline (one account per line)
+    /// compact な colored statusline を出力する(1 account 1 行)
     #[arg(long)]
     statusline: bool,
 
-    /// In the statusline, replace the "Claude"/"Codex" labels with brand-logo
-    /// glyphs (requires the BrandLogos font; see github.com/owayo/brand-logo-font).
+    /// statusline の "Claude"/"Codex" ラベルを brand-logo glyph に置き換える
+    /// (BrandLogos font が必要。github.com/owayo/brand-logo-font を参照)
     #[arg(long)]
     logos: bool,
 
-    /// Read accounts from this JSON file (a cached `--json` output) instead of
-    /// fetching over the network. Used by the statusline for fast rendering.
+    /// network fetch の代わりに、この JSON file(cached `--json` output)から account を読む
+    /// statusline の高速描画で使う。
     #[arg(long, value_name = "PATH")]
     input: Option<PathBuf>,
 
-    /// Email of the account to highlight as active (default: read from
-    /// CLAUDE_CONFIG_DIR/.claude.json).
+    /// active として highlight する account email
+    /// (default: CLAUDE_CONFIG_DIR/.claude.json から読む)
     #[arg(long, value_name = "EMAIL")]
     active_email: Option<String>,
 
-    /// Highlight the account with this profile name as active, matched against
-    /// `accounts[].profile` (case-insensitive). Takes precedence over
-    /// --active-email and the .claude.json fallback. Useful for tools that
-    /// drive a specific account by profile rather than by signed-in email.
+    /// この profile 名に一致する account を active として highlight する
+    /// `accounts[].profile` に対して case-insensitive に照合し、--active-email と
+    /// .claude.json fallback より優先する。ログイン email ではなく profile で
+    /// account を指定する tool 向け。
     #[arg(long, value_name = "NAME")]
     active_profile: Option<String>,
 
-    /// With --active-profile, restrict the highlight to this provider's row
-    /// (claude/codex/antigravity). Without it, the matching profile's Claude
-    /// row is highlighted.
+    /// --active-profile と併用し、highlight 対象をこの provider 行に限定する
+    /// (claude/codex/antigravity)。未指定なら一致 profile の Claude 行を highlight する。
     #[arg(long, value_enum)]
     active_provider: Option<ProviderArg>,
 
-    /// Disable ANSI color.
+    /// ANSI color を無効化する
     #[arg(long)]
     no_color: bool,
 
-    /// Use this config file instead of ~/.config/ai-usage/config.toml
+    /// ~/.config/ai-usage/config.toml の代わりにこの config file を使う
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
 
-    /// Generate a starter config from the currently signed-in profiles, then exit
+    /// 現在 signed-in 済みの profile から starter config を生成して終了する
     #[arg(long)]
     init_config: bool,
 
-    /// List discovered Chrome profiles and exit
+    /// 検出した Chrome profile を一覧表示して終了する
     #[arg(long)]
     list_profiles: bool,
 
-    /// Print active-account resolution and per-row match decisions to stderr as
-    /// JSONL (stdout stays clean). For diagnosing why a row is or isn't active.
+    /// active account の解決結果と行ごとの match 判定を JSONL で stderr に出す
+    /// (stdout は汚さない)。行が active になる/ならない理由の診断用。
     #[arg(long)]
     debug: bool,
 
-    /// In the statusline, halve the gauge width (8 instead of 16) for narrow
-    /// panes. Affects `--statusline` rendering only.
+    /// statusline の gauge 幅を狭い pane 向けに半分にする(16 ではなく 8)
+    /// `--statusline` rendering にのみ影響する。
     #[arg(long)]
     compact: bool,
 
-    /// In the statusline, append the absolute weekly reset time as
-    /// `(MM/DD HH:MM)` in local time, after the weekly countdown. Affects
-    /// `--statusline` rendering only.
+    /// statusline の weekly countdown 後に、local time の絶対リセット時刻
+    /// `(MM/DD HH:MM)` を付ける。`--statusline` rendering にのみ影響する。
     #[arg(long)]
     reset_at: bool,
 
@@ -143,8 +141,8 @@ impl ProviderArg {
     }
 }
 
-/// What a job authenticates with: Chrome cookies (Claude/Codex) or the local
-/// Google OAuth token / running `agy` (Antigravity).
+/// job の認証材料。Claude/Codex は Chrome Cookie、Antigravity は local Google OAuth
+/// token または実行中の `agy` を使う。
 enum AuthMaterial {
     BrowserCookies(HashMap<String, String>),
     GoogleOAuth(Option<config::AntigravityCfg>),
@@ -158,7 +156,7 @@ struct Job {
     auth: AuthMaterial,
 }
 
-/// A Chrome profile resolved for display: its label and which providers to show.
+/// 表示対象として解決済みの Chrome profile。label と表示 provider を持つ。
 struct Target {
     profile: Profile,
     label: Option<String>,
@@ -166,8 +164,8 @@ struct Target {
     want_codex: bool,
 }
 
-/// Cloudflare occasionally challenges an otherwise-valid request; retry a few
-/// times with backoff before giving up on an account.
+/// Cloudflare は有効な request にも challenge を返すことがあるため、account を失敗扱いに
+/// する前に backoff 付きで数回 retry する。
 async fn fetch_with_retry(
     clients: &http::Clients,
     provider: Provider,
@@ -199,8 +197,8 @@ async fn fetch_with_retry(
     Err(last.expect("at least one attempt was made"))
 }
 
-/// Decrypt cookies for the target profiles and fetch every signed-in account
-/// concurrently. Results preserve the input order.
+/// 対象 profile の Cookie を復号し、signed-in 済み account を並行 fetch する。
+/// 結果は入力順を維持する。
 async fn fetch_reports(
     root: &std::path::Path,
     targets: &[Target],
@@ -210,8 +208,8 @@ async fn fetch_reports(
     let clients = http::clients()?;
     let mut jobs: Vec<Job> = Vec::new();
 
-    // Chrome cookie jobs (Claude/Codex). Touch the Keychain only if something
-    // actually wants them — `--only antigravity` skips the prompt entirely.
+    // Chrome Cookie job(Claude/Codex)。必要な場合だけ Keychain に触る。
+    // `--only antigravity` では prompt 自体を避ける。
     let wants_chrome = targets.iter().any(|t| t.want_claude || t.want_codex);
     if wants_chrome {
         let password = cookies::safe_storage_key("Chrome Safe Storage")?;
@@ -244,7 +242,7 @@ async fn fetch_reports(
         }
     }
 
-    // Antigravity job — a single OAuth/local account, not tied to a Chrome profile.
+    // Antigravity job は Chrome profile に紐づかない単一 OAuth/local account。
     if want_antigravity {
         jobs.push(Job {
             profile_name: "Antigravity".to_string(),
@@ -281,8 +279,8 @@ async fn fetch_reports(
         });
     }
 
-    // A successful fetch yields one or more rows (Antigravity: one per model
-    // group); a failure yields a single error row. Preserve job order.
+    // fetch 成功時は 1 行以上(Antigravity は model group ごと)、失敗時は error 行を
+    // 1 行返す。job 順は維持する。
     let mut results: Vec<(usize, AccountReport)> = Vec::new();
     while let Some(joined) = set.join_next().await {
         let Ok((idx, pname, pemail, label, provider, rows)) = joined else {
@@ -321,17 +319,16 @@ async fn fetch_reports(
     Ok(results.into_iter().map(|(_, r)| r).collect())
 }
 
-/// Path to Claude Code's settings file: `$CLAUDE_CONFIG_DIR/.claude.json`, or
-/// `~/.claude.json` at the home root when that variable is unset.
+/// Claude Code 設定 file の path。`$CLAUDE_CONFIG_DIR/.claude.json`、未設定なら
+/// home 直下の `~/.claude.json`。
 fn claude_config_path() -> PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(|d| PathBuf::from(d).join(".claude.json"))
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude.json"))
 }
 
-/// Read the signed-in account email (`oauthAccount.emailAddress`) from a Claude
-/// Code settings file. `None` if the file is missing, unparseable, or — as with
-/// some auth methods — simply has no such field.
+/// Claude Code 設定 file から signed-in account email(`oauthAccount.emailAddress`)を読む。
+/// file がない、parse できない、一部 auth method のように field 自体がない場合は `None`。
 fn read_claude_email(path: &std::path::Path) -> Option<String> {
     let data = std::fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&data).ok()?;
@@ -340,16 +337,15 @@ fn read_claude_email(path: &std::path::Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The account email this session is signed in as (for active-row highlighting).
+/// この session が signed-in している account email(active row highlight 用)。
 fn active_claude_email() -> Option<String> {
     read_claude_email(&claude_config_path())
 }
 
-/// Resolve which account to highlight. `--active-profile` (optionally narrowed
-/// by `--active-provider`) wins and is matched by profile name; otherwise fall
-/// back to the email chain (`--active-email` → config → `.claude.json`), which
-/// highlights the matching Claude row. With `--debug`, the decision is logged to
-/// stderr as JSONL.
+/// highlight 対象 account を解決する。`--active-profile`(必要なら `--active-provider` で
+/// provider を限定)が最優先で、profile 名で照合する。未指定なら email chain
+/// (`--active-email` → config → `.claude.json`)に fallback し、一致する Claude 行を
+/// highlight する。`--debug` では判定を JSONL で stderr に出す。
 fn active_target(cli: &Cli, cfg: &config::Config) -> Option<render::ActiveTarget> {
     if let Some(profile) = cli.active_profile.clone() {
         let provider = cli.active_provider.map(ProviderArg::to_provider);
@@ -389,8 +385,8 @@ fn active_target(cli: &Cli, cfg: &config::Config) -> Option<render::ActiveTarget
     })
 }
 
-/// The email-based active resolution chain, returning the chosen email with its
-/// source (and the `.claude.json` path when consulted) for `--debug`.
+/// email base の active 解決 chain。`--debug` 用に、選ばれた email と source
+/// (参照した場合は `.claude.json` path)を返す。
 fn resolve_active_email(
     cli: &Cli,
     cfg: &config::Config,
@@ -424,12 +420,12 @@ fn toml_str(s: &str) -> String {
     toml::Value::String(s.to_string()).to_string()
 }
 
-/// Build a starter `config.toml` from the profiles currently signed in (detected
-/// by cookie presence — no network, no Keychain).
+/// 現在 signed-in 済みの profile から starter `config.toml` を組み立てる。
+/// Cookie の存在だけで判定し、network や Keychain は使わない。
 fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
     let mut out = String::from(
         "# Generated by `ai-usage --init-config`. Edit freely:\n\
-         # reorder, drop profiles you don't want, or change labels.\n\n",
+         # 並び替え、不要 profile の削除、label の変更を自由に行えます。\n\n",
     );
     if let Some(active) = active_claude_email() {
         out += &format!("active_email = {}\n\n", toml_str(&active));
@@ -464,8 +460,8 @@ fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
     out
 }
 
-/// Which providers to show for a profile: a global `--only` flag wins; otherwise
-/// the profile's config `providers`; otherwise both.
+/// profile ごとに表示する provider を決める。global `--only` flag が最優先で、
+/// 次に profile config の `providers`、未指定なら両方。
 fn resolve_wants(cli: &Cli, cfg: Option<&config::ProfileCfg>) -> (bool, bool) {
     if cli.only.is_some() {
         (
@@ -479,11 +475,10 @@ fn resolve_wants(cli: &Cli, cfg: Option<&config::ProfileCfg>) -> (bool, bool) {
     }
 }
 
-/// Resolve which profiles to show (with labels + provider filters).
-/// Precedence: `--profile` > config `[[profiles]]` > auto-discover all.
+/// 表示する profile を label / provider filter 付きで解決する。
+/// 優先順は `--profile` > config `[[profiles]]` > 全 auto-discover。
 fn build_targets(all: Vec<Profile>, cli: &Cli, cfg: &config::Config) -> Vec<Target> {
-    // Construction is identical across the three selection strategies; only which
-    // profiles are chosen, in what order, and with which config row differs.
+    // 3 つの選択戦略で構築処理は同じ。選ばれる profile、順序、対応 config row だけが違う。
     let make = |profile: Profile, c: Option<&config::ProfileCfg>| {
         let (want_claude, want_codex) = resolve_wants(cli, c);
         Target {
@@ -495,7 +490,7 @@ fn build_targets(all: Vec<Profile>, cli: &Cli, cfg: &config::Config) -> Vec<Targ
     };
 
     if !cli.profile.is_empty() {
-        // --profile: discovery order, filtered to the named profiles.
+        // --profile: discovery 順を保ち、指定 profile だけに絞る。
         all.into_iter()
             .filter(|p| {
                 cli.profile
@@ -508,7 +503,7 @@ fn build_targets(all: Vec<Profile>, cli: &Cli, cfg: &config::Config) -> Vec<Targ
             })
             .collect()
     } else if !cfg.profiles.is_empty() {
-        // Config order: each [[profiles]] row, matched against a discovered profile.
+        // config 順: 各 [[profiles]] row を検出済み profile に照合する。
         cfg.profiles
             .iter()
             .filter_map(|c| {
@@ -519,12 +514,12 @@ fn build_targets(all: Vec<Profile>, cli: &Cli, cfg: &config::Config) -> Vec<Targ
             })
             .collect()
     } else {
-        // Auto: every discovered profile, in discovery order.
+        // auto: 検出済み profile を discovery 順ですべて使う。
         all.into_iter().map(|p| make(p, None)).collect()
     }
 }
 
-/// `--list-profiles`: print discovered profiles and whether each has a cookie store.
+/// `--list-profiles`: 検出 profile と Cookie store の有無を出力する。
 fn list_profiles(root: &std::path::Path, all: &[Profile]) {
     for p in all {
         let note = if profiles::cookies_db(root, &p.dir).is_some() {
@@ -542,7 +537,7 @@ fn list_profiles(root: &std::path::Path, all: &[Profile]) {
     }
 }
 
-/// `--init-config`: write a starter config, or print it to stdout if one exists.
+/// `--init-config`: starter config を書き込む。既に存在する場合は stdout に出す。
 fn write_init_config(root: &std::path::Path, all: &[Profile]) -> Result<()> {
     let text = generate_config(root, all);
     match config::default_path() {
@@ -565,8 +560,8 @@ fn write_init_config(root: &std::path::Path, all: &[Profile]) -> Result<()> {
     Ok(())
 }
 
-/// Render the statusline from a cached `--json` file. A missing or invalid cache
-/// prints nothing — the next draw repopulates it.
+/// cached `--json` file から statusline を描画する。cache がない/不正な場合は何も出さず、
+/// 次の描画で再生成される。
 fn render_cached_statusline(
     path: &std::path::Path,
     cli: &Cli,
@@ -590,7 +585,7 @@ fn render_cached_statusline(
     );
 }
 
-/// Render freshly fetched reports in the format selected by the CLI flags.
+/// fresh に fetch した report を CLI flag に応じた format で描画する。
 fn render_reports(cli: &Cli, reports: &[AccountReport], active: Option<&render::ActiveTarget>) {
     if cli.statusline {
         render::statusline(
@@ -610,12 +605,12 @@ fn render_reports(cli: &Cli, reports: &[AccountReport], active: Option<&render::
     }
 }
 
-/// Discover profiles, dispatch the info-only flags, then fetch and render usage.
+/// profile を検出し、info-only flag を処理してから usage を fetch/render する。
 async fn run(cli: Cli) -> Result<()> {
     let cfg = config::load(cli.config.as_deref());
     let root = profiles::chrome_root()?;
-    // `--only antigravity` never touches Chrome — skip profile discovery (and,
-    // in fetch_reports, the Keychain prompt).
+    // `--only antigravity` は Chrome に触らないため、profile discovery と
+    // fetch_reports 内の Keychain prompt を避ける。
     let all = if matches!(cli.only, Some(ProviderArg::Antigravity)) {
         Vec::new()
     } else {
@@ -632,7 +627,7 @@ async fn run(cli: Cli) -> Result<()> {
 
     let active = active_target(&cli, &cfg);
 
-    // Statusline rendered from a cached file: no network, no Keychain.
+    // cached file から statusline を描画する場合は network も Keychain も使わない。
     if cli.statusline
         && let Some(path) = cli.input.as_deref()
     {

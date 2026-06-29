@@ -1,5 +1,5 @@
-//! Codex/ChatGPT usage. The profile's `__Secure-next-auth.session-token` cookie
-//! is exchanged for a Bearer token, which then calls the Codex usage endpoint:
+//! Codex/ChatGPT 使用量取得。profile の `__Secure-next-auth.session-token` Cookie を
+//! Bearer token に交換し、その token で Codex usage endpoint を呼ぶ:
 //!   GET /api/auth/session         -> { accessToken, user }
 //!   GET /backend-api/wham/usage   -> { rate_limit: { primary_window, ... } }
 
@@ -13,9 +13,9 @@ use wreq::Client;
 use crate::http::get_json;
 use crate::model::{Usage, UsageRow, Window};
 
-/// chatgpt.com's session-token cookie. Large tokens are split across `…token.0`
-/// and `…token.1`; a small one stays in the unsuffixed `…session-token`. Defined
-/// once so `cookie_header` (sends it) and `has_session` (detects it) can't drift.
+/// chatgpt.com の session-token Cookie。大きい token は `…token.0` と `…token.1` に
+/// 分割され、小さい token は suffix なしの `…session-token` に入る。
+/// 送信側の `cookie_header` と検出側の `has_session` がずれないよう、ここで一元化する。
 const SESSION_TOKEN: &str = "__Secure-next-auth.session-token";
 
 fn cookie_header(cookies: &HashMap<String, String>) -> Result<String> {
@@ -46,9 +46,8 @@ fn cookie_header(cookies: &HashMap<String, String>) -> Result<String> {
     Ok(header)
 }
 
-/// Whether this profile carries a chatgpt.com session-token cookie (either the
-/// split `…token.0` form or the unsuffixed one). Mirrors `cookie_header`'s
-/// requirement so the caller never has to know the cookie names.
+/// この profile が chatgpt.com session-token Cookie を持つかどうか。split `…token.0` 形式と
+/// suffix なし形式の両方を見る。`cookie_header` の要件と揃え、caller が Cookie 名を知らずに済む。
 pub fn has_session(cookies: &HashMap<String, String>) -> bool {
     cookies.contains_key(&format!("{SESSION_TOKEN}.0")) || cookies.contains_key(SESSION_TOKEN)
 }
@@ -93,7 +92,7 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
 
     let mut five = None;
     let mut weekly = None;
-    // Classify by window duration, not by primary/secondary position.
+    // primary/secondary の位置ではなく window duration で分類する。
     for key in ["primary_window", "secondary_window"] {
         let Some(w) = rate.and_then(|r| r.get(key)) else {
             continue;
@@ -133,7 +132,7 @@ fn parse_window(w: &serde_json::Value) -> Option<Window> {
     })
 }
 
-/// Extract `chatgpt_account_id` from the access token's JWT claims.
+/// access token の JWT claims から `chatgpt_account_id` を取り出す。
 fn jwt_account_id(jwt: &str) -> Option<String> {
     let payload = jwt.split('.').nth(1)?;
     let mut b64 = payload.replace('-', "+").replace('_', "/");

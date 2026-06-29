@@ -27,11 +27,12 @@ Storage" Keychain key) and reports Claude and Codex usage limits — the rolling
 `-D warnings` + rustfmt) · `make test`.
 
 Each module ships unit tests next to its source (`#[cfg(test)] mod tests`),
-covering pure logic: cookie decryption round-trips (`cookies.rs`), org/window
-parsing (`claude.rs`/`codex.rs`), TOML config (`config.rs`), active-row
-resolution and statusline formatting (`render.rs`), Antigravity quota parsing
-(`antigravity.rs`). Network code (`http.rs`) is not unit-tested — drive it via
-`make build` + a real run.
+covering pure logic: cookie decryption round-trips plus exact provider-domain
+filtering (`cookies.rs`), org/window parsing (`claude.rs`/`codex.rs`), TOML
+config (`config.rs`), active-row resolution and statusline formatting
+(`render.rs`), Antigravity quota parsing including ISO-8601 and epoch-second
+`resetTime` (`antigravity.rs`). Network code (`http.rs`) is not unit-tested —
+drive it via `make build` + a real run.
 
 ## Adding a provider
 
@@ -102,5 +103,7 @@ path is working (the OAuth fallback collapses to a single Gemini row).
 
 ## Repo hygiene
 
-Public GitHub repo: never commit personal paths, emails, org names, or live
-tokens / secrets. Use `~` / `$HOME` placeholders in docs and examples.
+Current GitHub repo visibility is private; per project policy, GitHub Actions
+workflows are removed while it stays private. Still treat the repo as if it may
+become public: never commit personal paths, emails, org names, or live tokens /
+secrets. Use `~` / `$HOME` placeholders in docs and examples.
