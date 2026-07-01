@@ -652,3 +652,69 @@ async fn run(cli: Cli) -> Result<()> {
 async fn main() -> Result<()> {
     run(Cli::parse()).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toml_str_roundtrips_through_toml_parser() {
+        // 重要な不変条件は「生成した config.toml が壊れず、元の値へ round-trip する」こと。
+        // toml クレートは `"` を含む値を single-quote literal にするなど形式は選ぶため、
+        // 出力の見た目ではなく、TOML として parse し直して元の文字列に戻るかを検証する。
+        for s in [
+            "work",
+            "a\"b",
+            "a\\b",
+            "quote\"and\\slash",
+            "日本語プロファイル",
+            "",
+        ] {
+            let line = format!("v = {}", toml_str(s));
+            let map: HashMap<String, String> = toml::from_str(&line)
+                .unwrap_or_else(|e| panic!("toml_str({s:?}) produced invalid TOML {line:?}: {e}"));
+            assert_eq!(
+                map.get("v").map(String::as_str),
+                Some(s),
+                "round-trip mismatch for {s:?} via {line:?}"
+            );
+        }
+        // bare 値ではなく必ずクオートで囲まれる(TOML の key/value を壊さない)。
+        assert!(toml_str("work").starts_with(['"', '\'']));
+    }
+
+    #[test]
+    fn resolve_wants_only_flag_takes_precedence() {
+        // --only は config より優先され、その provider だけ true になる。
+        let cfg = config::ProfileCfg {
+            matcher: "Work".to_string(),
+            label: None,
+            providers: Some(vec!["claude".to_string(), "codex".to_string()]),
+        };
+        let cli = Cli::parse_from(["ai-usage", "--only", "codex"]);
+        // config が両方 true でも、--only codex なら codex だけ。
+        assert_eq!(resolve_wants(&cli, Some(&cfg)), (false, true));
+
+        let cli = Cli::parse_from(["ai-usage", "--only", "claude"]);
+        assert_eq!(resolve_wants(&cli, Some(&cfg)), (true, false));
+
+        // --only antigravity は Chrome provider を両方 false にする(Antigravity は別経路)。
+        let cli = Cli::parse_from(["ai-usage", "--only", "antigravity"]);
+        assert_eq!(resolve_wants(&cli, Some(&cfg)), (false, false));
+    }
+
+    #[test]
+    fn resolve_wants_falls_back_to_config_then_both() {
+        // --only 無し → config の providers。
+        let cfg = config::ProfileCfg {
+            matcher: "Work".to_string(),
+            label: None,
+            providers: Some(vec!["claude".to_string()]),
+        };
+        let cli = Cli::parse_from(["ai-usage"]);
+        assert_eq!(resolve_wants(&cli, Some(&cfg)), (true, false));
+
+        // config も無ければ両方 true(既定)。
+        assert_eq!(resolve_wants(&cli, None), (true, true));
+    }
+}

@@ -27,12 +27,15 @@ Storage" Keychain key) and reports Claude and Codex usage limits — the rolling
 `-D warnings` + rustfmt) · `make test`.
 
 Each module ships unit tests next to its source (`#[cfg(test)] mod tests`),
-covering pure logic: cookie decryption round-trips plus exact provider-domain
-filtering (`cookies.rs`), org/window parsing (`claude.rs`/`codex.rs`), TOML
-config (`config.rs`), active-row resolution and statusline formatting
-(`render.rs`), Antigravity quota parsing including ISO-8601 and epoch-second
-`resetTime` (`antigravity.rs`). Network code (`http.rs`) is not unit-tested —
-drive it via `make build` + a real run.
+covering pure logic: cookie decryption round-trips, exact provider-domain
+filtering, and session-cookie name matching (`cookies.rs`), org/window parsing
+(`claude.rs`/`codex.rs`), TOML config (`config.rs`), active-row resolution and
+statusline formatting (`render.rs`), Antigravity quota parsing including ISO-8601
+and epoch-second `resetTime` plus wrapped/flat `GetUserStatus` shapes
+(`antigravity.rs`), report-DTO building with reset-countdown clamping
+(`report.rs`), and TOML-value escaping plus provider resolution (`main.rs`).
+Network code (`http.rs`) is not unit-tested — drive it via `make build` + a real
+run.
 
 ## Adding a provider
 

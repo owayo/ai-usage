@@ -149,7 +149,14 @@ fn parse_summary(v: &Value, email: Option<String>, plan: Option<String>) -> Resu
 }
 
 fn user_identity(v: &Value) -> (Option<String>, Option<String>) {
-    let us = v.get("userStatus").unwrap_or(v);
+    // GetUserStatus は RetrieveUserQuotaSummary と同じ Connect-RPC のため、
+    // `response` で包まれた形 ({"response":{"userStatus":{...}}}) と包まない形の
+    // 両方があり得る。parse_summary が `/response/groups` を許容するのに揃え、
+    // ここでも wrapper 付き → top-level → 全体、の順に userStatus を解決する。
+    let us = v
+        .pointer("/response/userStatus")
+        .or_else(|| v.get("userStatus"))
+        .unwrap_or(v);
     let email = us.get("email").and_then(|e| e.as_str()).map(str::to_string);
     let plan = us
         .pointer("/planStatus/planInfo/planName")
@@ -647,5 +654,35 @@ mod tests {
             find_secret(js).as_deref(),
             Some("GOCSPX-0123456789012345678901234567")
         );
+    }
+
+    #[test]
+    fn user_identity_reads_wrapped_and_flat_shapes() {
+        // Connect-RPC の wrapper 付き ({"response":{"userStatus":{...}}}) を読める。
+        let wrapped = json!({"response": {"userStatus": {
+            "email": "u@x.test",
+            "planStatus": {"planInfo": {"planName": "Pro"}}
+        }}});
+        assert_eq!(
+            user_identity(&wrapped),
+            (Some("u@x.test".into()), Some("Pro".into()))
+        );
+
+        // wrapper 無しの top-level `userStatus` 形も従来どおり読める。
+        let flat = json!({"userStatus": {
+            "email": "v@x.test",
+            "planStatus": {"planInfo": {"planName": "Team"}}
+        }});
+        assert_eq!(
+            user_identity(&flat),
+            (Some("v@x.test".into()), Some("Team".into()))
+        );
+
+        // userStatus キーが無い最外殻フラット形は email/plan を直接読む(全体に fallback)。
+        let bare = json!({"email": "w@x.test"});
+        assert_eq!(user_identity(&bare), (Some("w@x.test".into()), None));
+
+        // email も plan も無ければ両方 None。
+        assert_eq!(user_identity(&json!({})), (None, None));
     }
 }

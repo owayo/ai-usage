@@ -268,6 +268,30 @@ mod tests {
     }
 
     #[test]
+    fn is_codex_session_cookie_matches_exact_and_chunk_names_only() {
+        // 完全一致と `.0` / `.1` などの連番 chunk のみ true。
+        assert!(is_codex_session_cookie(CODEX_SESSION_COOKIE));
+        assert!(is_codex_session_cookie(&format!(
+            "{CODEX_SESSION_COOKIE}.0"
+        )));
+        assert!(is_codex_session_cookie(&format!(
+            "{CODEX_SESSION_COOKIE}.1"
+        )));
+        // suffix が `.` 区切りでない類似名は弾く(session-tokenizer 等)。
+        assert!(!is_codex_session_cookie(&format!(
+            "{CODEX_SESSION_COOKIE}izer"
+        )));
+        assert!(!is_codex_session_cookie(&format!(
+            "{CODEX_SESSION_COOKIE}-extra"
+        )));
+        // prefix にゴミが付くと strip_prefix が外れて false。
+        assert!(!is_codex_session_cookie(&format!(
+            "xx{CODEX_SESSION_COOKIE}"
+        )));
+        assert!(!is_codex_session_cookie("sessionKey"));
+    }
+
+    #[test]
     fn detect_sessions_accepts_real_provider_domains() {
         let path = temp_cookie_db(
             "real-domains",
