@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/app.png" width="128" alt="ai-usage">
+</p>
+
 <h1 align="center">ai-usage</h1>
 
 <p align="center">
