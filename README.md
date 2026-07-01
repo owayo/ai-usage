@@ -1,6 +1,30 @@
-# ai-usage
+<h1 align="center">ai-usage</h1>
 
-[日本語](README.ja.md)
+<p align="center">
+  Unified Claude + Codex + Antigravity usage limits across Chrome profiles
+</p>
+
+<p align="center">
+  <a href="https://github.com/owayo/ai-usage/actions/workflows/release.yml">
+    <img alt="Release" src="https://github.com/owayo/ai-usage/actions/workflows/release.yml/badge.svg?branch=main">
+  </a>
+  <a href="https://github.com/owayo/ai-usage/actions/workflows/ci.yml">
+    <img alt="CI" src="https://github.com/owayo/ai-usage/actions/workflows/ci.yml/badge.svg?branch=main">
+  </a>
+  <a href="https://github.com/owayo/ai-usage/releases/latest">
+    <img alt="Version" src="https://img.shields.io/github/v/release/owayo/ai-usage">
+  </a>
+  <a href="LICENSE">
+    <img alt="License" src="https://img.shields.io/github/license/owayo/ai-usage">
+  </a>
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> |
+  <a href="README.ja.md">日本語</a>
+</p>
+
+---
 
 One command to see your **Claude** and **OpenAI Codex (ChatGPT)** usage limits — the
 rolling **5-hour** window and the **weekly** window, plus when each resets —
@@ -22,84 +46,166 @@ Claude and a Codex subscription = four accounts) without you logging anything in
   updated 21:46 · bars = usage, time = until reset
 ```
 
-## Why
+## Features
 
-Claude Code (`/usage`) and Codex (`/status`) each only show the **one** account they're
-logged into. If you switch between work accounts in different Chrome profiles, there's no
-single place to see where you stand on all of them. `ai-usage` is that place.
+- **Multi-Account**: Reports every Chrome profile signed into Claude or Codex — no re-login needed
+- **Multi-Provider**: Claude (`claude.ai`), Codex (`chatgpt.com`), and Antigravity (Google's `agy` CLI/IDE) in one view
+- **Two Windows**: Rolling 5-hour and weekly (7-day) utilization plus reset countdown
+- **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
+- **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars
+- **JSON Output**: Machine-readable output for scripting and dashboards
+- **Zero Config**: Auto-discovers all signed-in profiles by default; optional `~/.config/ai-usage/config.toml` for pinning
+- **Sort Options**: Rank rows by weekly utilization or reset time
+- **Privacy**: Nothing leaves your machine except the same requests your browser already makes to Anthropic/OpenAI/Google
 
-## How it works
+## Requirements
 
-For each Chrome profile it finds, `ai-usage`:
+- **OS**: macOS (Chrome uses macOS `v10` cookie encryption; Windows `v20` app-bound scheme is not handled)
+- **Browser**: Google Chrome (signed into Claude and/or Codex)
+- **Build**: Rust toolchain + **cmake** (required by [`wreq`](https://crates.io/crates/wreq)'s BoringSSL)
+- **Optional**: `agy` CLI or `~/.gemini` OAuth token for Antigravity usage
 
-1. Decrypts the profile's cookies from `~/Library/Application Support/Google/Chrome/<profile>/Cookies`
-   using the **Chrome Safe Storage** key from your macOS Keychain (the standard `v10`
-   AES‑128‑CBC scheme). Only cookies that Chrome would send to `claude.ai` or
-   `chatgpt.com` itself are replayed; suffix lookalikes such as `evilclaude.ai`
-   are ignored.
-2. **Claude** — uses the `sessionKey` cookie to call
-   `claude.ai/api/organizations/{org}/usage` → `five_hour` / `seven_day` `{utilization, resets_at}`.
-3. **Codex** — uses the `__Secure-next-auth.session-token` cookie to exchange for a Bearer
-   token via `chatgpt.com/api/auth/session`, then calls `chatgpt.com/backend-api/wham/usage`
-   → `rate_limit.primary_window` / `secondary_window`.
+## Installation
 
-**Antigravity** (Google's `agy` CLI / IDE) has no Chrome cookie: `ai-usage` reads
-the OAuth token from `~/.gemini` (refreshing it as needed), and when `agy` is
-running it prefers the richer localhost quota server. It reports the **Gemini** and
-**Claude & GPT** model-group weekly limits — the same numbers as `agy`'s `/usage`.
+### From Source
 
-Both `claude.ai` and `chatgpt.com` sit behind Cloudflare, so the HTTP client
-([`wreq`](https://crates.io/crates/wreq)) emulates Chrome's TLS/HTTP2 fingerprint and
-replays the profile's `cf_clearance` cookie — a plain HTTP client just gets a `403`.
+```bash
+git clone https://github.com/owayo/ai-usage.git
+cd ai-usage
+make deps       # install cmake if missing
+make install    # build + install to ~/.local/bin
+```
 
-Nothing leaves your machine except the same authenticated requests your browser already
-makes to Anthropic and OpenAI. No tokens or cookies are printed or stored.
+### From GitHub Releases
 
-## Install
+Download the latest binary from [Releases](https://github.com/owayo/ai-usage/releases).
 
-Requires the Rust toolchain and (to build [`wreq`](https://crates.io/crates/wreq)'s
-BoringSSL) **cmake**:
+#### macOS (Apple Silicon)
 
-```sh
+```bash
+curl -L https://github.com/owayo/ai-usage/releases/latest/download/ai-usage-aarch64-apple-darwin.tar.gz | tar xz
+sudo mv ai-usage /usr/local/bin/
+```
+
+#### macOS (Intel)
+
+```bash
+curl -L https://github.com/owayo/ai-usage/releases/latest/download/ai-usage-x86_64-apple-darwin.tar.gz | tar xz
+sudo mv ai-usage /usr/local/bin/
+```
+
+### With cargo
+
+```bash
 brew install cmake
 cargo install --path .
-# or: cargo build --release  →  ./target/release/ai-usage
+```
+
+The **first run** triggers a macOS Keychain prompt
+(*"… wants to use the 'Chrome Safe Storage' key"*) — choose **Always Allow**.
+
+## Quickstart
+
+```bash
+# All signed-in profiles, all providers
+ai-usage
+
+# Only Claude across all profiles
+ai-usage --only claude
+
+# JSON output for scripts
+ai-usage --json
+
+# Compact statusline for your terminal status bar
+ai-usage --statusline
 ```
 
 ## Usage
 
-```sh
-ai-usage                      # all signed-in profiles, both services
-ai-usage -p Work,Home         # only these profiles
-ai-usage --only claude        # only Claude (or: --only codex / antigravity)
-ai-usage --json               # machine-readable output
-ai-usage --statusline         # compact one-line-per-account output (for status bars)
-ai-usage --statusline --logos # … with brand-logo glyphs (needs the BrandLogos font)
-ai-usage --statusline --compact   # … with a half-width gauge for narrow panes
-ai-usage --statusline --reset-at  # … and append the weekly reset clock-time, e.g. (06/18 01:10)
-ai-usage --sort weekly-usage  # rank rows by weekly utilization (closest to the cap first)
-ai-usage --sort weekly-reset  # rank rows by weekly reset time (soonest first)
-ai-usage --list-profiles      # show discovered Chrome profiles
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `ai-usage` | Show usage for all signed-in profiles and providers |
+| `ai-usage --init-config` | Generate a starter config from currently signed-in sessions |
+| `ai-usage --list-profiles` | List discovered Chrome profiles |
+
+### Options
+
+#### Filtering
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--profile <NAMES>` | `-p` | Comma-separated profile names (Chrome display name or on-disk dir) |
+| `--only <PROVIDER>` | | Show only `claude`, `codex`, or `antigravity` |
+
+#### Output
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Machine-readable JSON output |
+| `--statusline` | Compact one-line-per-account output for status bars |
+| `--statusline --logos` | With brand-logo glyphs (requires the BrandLogos font) |
+| `--statusline --compact` | Half-width gauge for narrow panes |
+| `--statusline --reset-at` | Append the weekly reset clock-time, e.g. `(06/18 01:10)` |
+| `--sort weekly-usage` | Rank rows by weekly utilization (closest to the cap first) |
+| `--sort weekly-reset` | Rank rows by weekly reset time (soonest first) |
+
+#### Active row selection
+
+| Option | Description |
+|--------|-------------|
+| `--active-email <EMAIL>` | Match the signed-in email of a Claude row (default: `$CLAUDE_CONFIG_DIR/.claude.json`) |
+| `--active-profile <NAME>` | Match a profile by name |
+| `--active-provider <NAME>` | Pin to a single provider: `claude`, `codex`, or `antigravity` |
+
+#### Debug & Info
+
+| Option | Description |
+|--------|-------------|
+| `--debug` | Print per-row match decisions to stderr as JSONL (stdout stays clean for pipes) |
+| `--help` | Print help |
+| `--version` | Print version |
+
+### Examples
+
+```bash
+# Basic usage
+ai-usage                          # all profiles, all providers
+ai-usage -p Work,Home             # specific profiles only
+
+# Filter provider
+ai-usage --only claude
+ai-usage --only codex
+ai-usage --only antigravity
+
+# Statusline for terminal status bar
+ai-usage --statusline
+ai-usage --statusline --logos --compact --reset-at
+
+# Sort by urgency
+ai-usage --sort weekly-usage      # closest to the cap first
+ai-usage --sort weekly-reset      # soonest reset first
 ```
-
-Pick which row is shown as "active" (highlighted in red) with one of:
-
-- `--active-email <EMAIL>` — match the signed-in email of a Claude row (default
-  source: `$CLAUDE_CONFIG_DIR/.claude.json`, the Claude Code session account)
-- `--active-profile <NAME>` — match a profile by name; pin to a single provider
-  with `--active-provider claude|codex|antigravity`
-- `--debug` — print per-row match decisions to stderr as JSONL (stdout is left
-  clean so a piped statusline keeps rendering)
-
-The **first run** triggers a macOS Keychain prompt
-(*"… wants to use the 'Chrome Safe Storage' key"*) — choose **Always Allow**.
 
 ## Configuration
 
 `ai-usage` needs **no configuration** — it auto-discovers every Chrome profile that has a
 Claude or Codex session and shows them all. To pin *which* profiles appear, rename them, or
 limit providers, drop a file at **`~/.config/ai-usage/config.toml`**
-(or `$XDG_CONFIG_HOME/ai-usage/config.toml`):
+(or `$XDG_CONFIG_HOME/ai-usage/config.toml`).
+
+### Initial Setup
+
+Generate a starter config from your current sessions:
+
+```bash
+ai-usage --init-config
+```
+
+A template also lives at [`config.example.toml`](config.example.toml).
+
+### Example Configuration
 
 ```toml
 # Optional: highlight this account as active (default: auto-detected from
@@ -108,38 +214,87 @@ limit providers, drop a file at **`~/.config/ai-usage/config.toml`**
 
 # Listing any [[profiles]] shows ONLY those, in this order.
 [[profiles]]
-match = "Work"                  # Chrome display name, or on-disk dir e.g. "Default"
-label = "work"                     # optional: shown instead of the account email username
+match = "Work"                    # Chrome display name, or on-disk dir e.g. "Default"
+label = "work"                    # optional: shown instead of the account email username
 # providers = ["claude", "codex"] # optional: subset to show; default = both
 
 [[profiles]]
 match = "Home"
 label = "home"
+
+# Antigravity (Google's `agy`). Auto-discovered when ~/.gemini token or a running
+# `agy` is found — config is optional. Use it only to relabel, pin a non-default
+# token, or disable the row.
+[antigravity]
+# enabled = true                    # false to hide even when detected
+label = "antigravity"               # optional row label
+# token_path = "~/.gemini/antigravity-cli/antigravity-oauth-token"
 ```
 
-Or generate one from your current sessions: **`ai-usage --init-config`**.
-Precedence: **CLI flags > config file > auto-detection**. A starter also lives at
-[`config.example.toml`](config.example.toml).
+### Configuration Options
 
-## Development
+| Option | Description | Default |
+|--------|-------------|---------|
+| `active_email` | Highlight this account's Claude row as active | Auto-detected from `CLAUDE_CONFIG_DIR/.claude.json` |
+| `[[profiles]]` | Explicit list of profiles to show (empty = auto-discover all) | `[]` (auto) |
+| `profiles[].match` | Chrome display name or on-disk directory (e.g. `Default`) | Required |
+| `profiles[].label` | Display label instead of the account email username | Email username |
+| `profiles[].providers` | Subset of providers to show for this profile | Both |
+| `[antigravity].enabled` | Show the Antigravity row when detected | `true` |
+| `[antigravity].label` | Row label for Antigravity | `antigravity` |
+| `[antigravity].token_path` | Non-default OAuth token path | `~/.gemini/…` |
 
-```sh
-make build      # debug build
-make release    # optimized release build
-make install    # build + install to ~/.local/bin
-make check      # clippy (-D warnings) + rustfmt check
-make test       # run tests
-make deps       # install build prerequisites (cmake)
+Precedence: **CLI flags > config file > auto-detection**.
+
+## How It Works
+
+```mermaid
+flowchart LR
+    A[Chrome Profiles] --> B[Decrypt Cookies]
+    B --> C[Fetch Usage APIs]
+    C --> D[Render Table / JSON]
 ```
 
-For a local release, run `make release` or `make install`. GitHub Actions workflows are
-not included while this repository is private; run `make check` and `make test` locally
-before committing.
+For each Chrome profile it finds, `ai-usage`:
 
-## Notes & limitations
+1. **Decrypts** cookies from `~/Library/Application Support/Google/Chrome/<profile>/Cookies`
+   using the **Chrome Safe Storage** key from your macOS Keychain (standard `v10`
+   AES‑128‑CBC scheme). Only cookies Chrome would send to `claude.ai` / `chatgpt.com`
+   themselves are replayed — suffix lookalikes like `evilclaude.ai` are filtered out.
+2. **Claude** — uses the `sessionKey` cookie to call
+   `claude.ai/api/organizations/{org}/usage` → `five_hour` / `seven_day` `{utilization, resets_at}`.
+3. **Codex** — uses the `__Secure-next-auth.session-token` cookie to exchange for a Bearer
+   token via `chatgpt.com/api/auth/session`, then calls `chatgpt.com/backend-api/wham/usage`
+   → `rate_limit.primary_window` / `secondary_window`.
+4. **Antigravity** — reads the OAuth token from `~/.gemini` (refreshing as needed). When
+   `agy` is running, prefers the localhost quota server for the richer per-group payload;
+   otherwise falls back to Google's `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`.
 
-- **macOS + Google Chrome only**, for now. (Chrome stores cookies with the `v10` scheme on
-  macOS; Windows' `v20` app-bound encryption is not handled.)
+`claude.ai` and `chatgpt.com` sit behind Cloudflare, so the HTTP client
+([`wreq`](https://crates.io/crates/wreq)) emulates Chrome's TLS/HTTP2 fingerprint and
+replays the profile's `cf_clearance` cookie — a plain HTTP client just gets a `403`.
+
+Nothing leaves your machine except the same authenticated requests your browser already
+makes to Anthropic, OpenAI, and Google. No tokens or cookies are printed or stored.
+
+## Build Commands
+
+| Command | Description |
+|---------|-------------|
+| `make build` | Debug build |
+| `make release` | Optimized release build (strip + LTO) |
+| `make install` | Build and install to `~/.local/bin` |
+| `make uninstall` | Remove the installed binary |
+| `make test` | Run tests |
+| `make fmt` | Format code |
+| `make check` | clippy (`-D warnings`) + rustfmt check + cargo check |
+| `make clean` | Clean build artifacts |
+| `make deps` | Install build prerequisites (cmake) |
+
+## Notes & Limitations
+
+- **macOS + Google Chrome only**. Chrome uses `v10` cookie encryption on macOS; Windows'
+  `v20` app-bound scheme is not handled.
 - If a `cf_clearance` cookie has gone stale you'll see a *Cloudflare challenge* error for
   that one account — open the relevant site once in that Chrome profile to refresh it, then
   re-run. Other accounts are unaffected.
@@ -153,3 +308,15 @@ before committing.
 reverse-engineering in [CodexBar](https://github.com/steipete/CodexBar)'s
 Antigravity provider — see its
 [implementation notes](https://github.com/steipete/CodexBar/blob/main/docs/antigravity.md).
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Changelog
+
+See [Releases](https://github.com/owayo/ai-usage/releases) for version history.
+
+## License
+
+[GPL-3.0](LICENSE)

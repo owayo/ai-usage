@@ -103,7 +103,9 @@ path is working (the OAuth fallback collapses to a single Gemini row).
 
 ## Repo hygiene
 
-Current GitHub repo visibility is private; per project policy, GitHub Actions
-workflows are removed while it stays private. Still treat the repo as if it may
-become public: never commit personal paths, emails, org names, or live tokens /
-secrets. Use `~` / `$HOME` placeholders in docs and examples.
+The GitHub repo is public. CI runs `cargo test` + clippy + rustfmt on macOS
+(`.github/workflows/ci.yml`); the release workflow (`release.yml`) is
+`workflow_dispatch` — it bumps `Cargo.toml` to a `YY.M.NNN` version, tags it,
+builds `x86_64` / `aarch64` Apple Darwin binaries, and attaches the tarballs to
+a GitHub Release. Never commit personal paths, emails, org names, or live
+tokens / secrets — use `~` / `$HOME` placeholders in docs and examples.
