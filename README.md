@@ -67,6 +67,12 @@ Claude and a Codex subscription = four accounts) without you logging anything in
 
 ## Installation
 
+### Homebrew (macOS)
+
+```bash
+brew install owayo/ai-usage/ai-usage
+```
+
 ### From Source
 
 ```bash

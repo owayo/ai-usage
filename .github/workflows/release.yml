@@ -160,6 +160,11 @@ jobs:
 
             ### Installation
 
+            #### Homebrew (macOS)
+            ```bash
+            brew install owayo/ai-usage/ai-usage
+            ```
+
             #### macOS (Apple Silicon)
             ```bash
             curl -L https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-release.outputs.tag }}/ai-usage-aarch64-apple-darwin.tar.gz | tar xz
@@ -178,9 +183,135 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  update-homebrew:
+    name: Update Homebrew Tap
+    needs: [prepare-release, release]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+          repositories: homebrew-ai-usage
+
+      - name: Create Homebrew bottles and calculate SHA256
+        id: bottles
+        run: |
+          VERSION="${{ needs.prepare-release.outputs.version }}"
+          TAG="${{ needs.prepare-release.outputs.tag }}"
+
+          # Source archive for the Formula's url/sha256
+          curl -sL "https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz" -o source.tar.gz
+          SHA256_SOURCE=$(sha256sum source.tar.gz | cut -d' ' -f1)
+          echo "sha256_source=${SHA256_SOURCE}" >> $GITHUB_OUTPUT
+
+          # Release binaries
+          curl -sL "https://github.com/${{ github.repository }}/releases/download/${TAG}/ai-usage-aarch64-apple-darwin.tar.gz" -o mac_arm64.tar.gz
+          curl -sL "https://github.com/${{ github.repository }}/releases/download/${TAG}/ai-usage-x86_64-apple-darwin.tar.gz" -o mac_x86_64.tar.gz
+
+          # Build a Homebrew bottle tarball from a release binary
+          create_bottle() {
+            local src_tarball=$1
+            local bottle_tag=$2
+
+            rm -rf bottle_staging
+            mkdir -p "bottle_staging/ai-usage/${VERSION}/bin"
+
+            tar xzf "${src_tarball}" -C "bottle_staging/ai-usage/${VERSION}/bin/"
+            chmod +x "bottle_staging/ai-usage/${VERSION}/bin/ai-usage"
+
+            local bottle_name="ai-usage-${VERSION}.${bottle_tag}.bottle.tar.gz"
+            tar czf "${bottle_name}" -C bottle_staging ai-usage
+
+            sha256sum "${bottle_name}" | cut -d' ' -f1
+          }
+
+          SHA256_BOTTLE_ARM64_SONOMA=$(create_bottle mac_arm64.tar.gz arm64_sonoma)
+          SHA256_BOTTLE_SONOMA=$(create_bottle mac_x86_64.tar.gz sonoma)
+
+          echo "sha256_bottle_arm64_sonoma=${SHA256_BOTTLE_ARM64_SONOMA}" >> $GITHUB_OUTPUT
+          echo "sha256_bottle_sonoma=${SHA256_BOTTLE_SONOMA}" >> $GITHUB_OUTPUT
+
+      - name: Upload bottles to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.prepare-release.outputs.version }}"
+          TAG="${{ needs.prepare-release.outputs.tag }}"
+
+          gh release upload "${TAG}" \
+            "ai-usage-${VERSION}.arm64_sonoma.bottle.tar.gz" \
+            "ai-usage-${VERSION}.sonoma.bottle.tar.gz" \
+            --clobber \
+            --repo "${{ github.repository }}"
+
+      - name: Update Homebrew Formula
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          VERSION="${{ needs.prepare-release.outputs.version }}"
+          TAG="${{ needs.prepare-release.outputs.tag }}"
+          SHA256_SOURCE="${{ steps.bottles.outputs.sha256_source }}"
+          SHA256_BOTTLE_ARM64_SONOMA="${{ steps.bottles.outputs.sha256_bottle_arm64_sonoma }}"
+          SHA256_BOTTLE_SONOMA="${{ steps.bottles.outputs.sha256_bottle_sonoma }}"
+
+          # Clone the tap
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/owayo/homebrew-ai-usage.git"
+          cd homebrew-ai-usage
+
+          mkdir -p Formula
+
+          cat > Formula/ai-usage.rb << 'FORMULA'
+          class AiUsage < Formula
+            desc "Unified Claude + Codex + Antigravity usage limits across Chrome profiles"
+            homepage "https://github.com/owayo/ai-usage"
+            url "URL_SOURCE_PLACEHOLDER"
+            sha256 "SHA256_SOURCE_PLACEHOLDER"
+            license "GPL-3.0-only"
+
+            bottle do
+              root_url "ROOT_URL_PLACEHOLDER"
+              sha256 cellar: :any_skip_relocation, arm64_sonoma: "SHA256_BOTTLE_ARM64_SONOMA_PLACEHOLDER"
+              sha256 cellar: :any_skip_relocation, sonoma: "SHA256_BOTTLE_SONOMA_PLACEHOLDER"
+            end
+
+            depends_on "cmake" => :build
+            depends_on "rust" => :build
+            depends_on :macos
+
+            def install
+              system "cargo", "install", *std_cargo_args
+            end
+
+            test do
+              system "#{bin}/ai-usage", "--version"
+            end
+          end
+          FORMULA
+
+          # Strip leading heredoc indentation
+          sed -i 's/^          //' Formula/ai-usage.rb
+
+          # Replace placeholders
+          sed -i "s|URL_SOURCE_PLACEHOLDER|https://github.com/owayo/ai-usage/archive/refs/tags/${TAG}.tar.gz|g" Formula/ai-usage.rb
+          sed -i "s|SHA256_SOURCE_PLACEHOLDER|${SHA256_SOURCE}|g" Formula/ai-usage.rb
+          sed -i "s|ROOT_URL_PLACEHOLDER|https://github.com/owayo/ai-usage/releases/download/${TAG}|g" Formula/ai-usage.rb
+          sed -i "s|SHA256_BOTTLE_ARM64_SONOMA_PLACEHOLDER|${SHA256_BOTTLE_ARM64_SONOMA}|g" Formula/ai-usage.rb
+          sed -i "s|SHA256_BOTTLE_SONOMA_PLACEHOLDER|${SHA256_BOTTLE_SONOMA}|g" Formula/ai-usage.rb
+
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/ai-usage.rb
+          git commit -m "Update ai-usage to ${TAG}"
+          git push
+
   release-summary:
     name: Release Summary
-    needs: [prepare-release, release]
+    needs: [prepare-release, release, update-homebrew]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     steps:
@@ -191,3 +322,5 @@ jobs:
           echo "Assets uploaded:"
           echo "  - ai-usage-x86_64-apple-darwin.tar.gz"
           echo "  - ai-usage-aarch64-apple-darwin.tar.gz"
+          echo ""
+          echo "Homebrew tap updated: owayo/homebrew-ai-usage"

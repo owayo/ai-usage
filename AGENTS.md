@@ -106,6 +106,11 @@ path is working (the OAuth fallback collapses to a single Gemini row).
 The GitHub repo is public. CI runs `cargo test` + clippy + rustfmt on macOS
 (`.github/workflows/ci.yml`); the release workflow (`release.yml`) is
 `workflow_dispatch` — it bumps `Cargo.toml` to a `YY.M.NNN` version, tags it,
-builds `x86_64` / `aarch64` Apple Darwin binaries, and attaches the tarballs to
-a GitHub Release. Never commit personal paths, emails, org names, or live
-tokens / secrets — use `~` / `$HOME` placeholders in docs and examples.
+builds `x86_64` / `aarch64` Apple Darwin binaries, attaches the tarballs to a
+GitHub Release, then rebuilds `arm64_sonoma` / `sonoma` Homebrew bottles from
+those binaries, uploads them alongside the release, and rewrites the
+`Formula/ai-usage.rb` file in the `owayo/homebrew-ai-usage` tap. The tap push
+uses a GitHub App token from the `APP_ID` / `PRIVATE_KEY` repo secrets — the
+App must be installed on `homebrew-ai-usage` for the `update-homebrew` job to
+succeed. Never commit personal paths, emails, org names, or live tokens /
+secrets — use `~` / `$HOME` placeholders in docs and examples.

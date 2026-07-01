@@ -67,6 +67,12 @@ macOS 向け CLI です。
 
 ## インストール
 
+### Homebrew (macOS)
+
+```bash
+brew install owayo/ai-usage/ai-usage
+```
+
 ### ソースから
 
 ```bash
