@@ -210,6 +210,25 @@ fn debug_row(
     );
 }
 
+/// 行の active 判定と `--debug` 診断出力をまとめて行う。table / statusline の
+/// 両レンダラーで同じ判定・同じ JSONL を出すための共有入口。
+fn resolve_active(
+    active: Option<&ActiveTarget>,
+    provider: Provider,
+    profile: &str,
+    row_email: Option<&str>,
+    debug: bool,
+) -> bool {
+    let (is_active, reason) = match active {
+        Some(t) => is_active_row(t, provider, profile, row_email),
+        None => (false, "no_active_target"),
+    };
+    if debug {
+        debug_row(provider, profile, row_email, is_active, reason);
+    }
+    is_active
+}
+
 /// provider ごとの brand RGB。table(comfy-table `Color::Rgb`)と statusline
 /// (`brand_sgr` の ANSI truecolor)で共有する単一 source。
 fn brand_rgb(p: Provider) -> (u8, u8, u8) {
@@ -270,13 +289,7 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
             r.profile_email.as_deref(),
             &r.profile_name,
         );
-        let (is_active, reason) = match active {
-            Some(t) => is_active_row(t, r.provider, &r.profile_name, row_email),
-            None => (false, "no_active_target"),
-        };
-        if debug {
-            debug_row(r.provider, &r.profile_name, row_email, is_active, reason);
-        }
+        let is_active = resolve_active(active, r.provider, &r.profile_name, row_email, debug);
         let mut name_cell = Cell::new(&name);
         if is_active {
             name_cell = name_cell.fg(Color::Red).add_attribute(Attribute::Bold);
@@ -429,13 +442,7 @@ pub fn statusline(
             let row_email = a.email.as_deref().or(a.profile_email.as_deref());
             // profile targeting は任意 provider 行を highlight できる。
             // email targeting は従来の Claude-only 挙動を保つ。`--debug` で各行の理由を出す。
-            let (is_active, reason) = match active {
-                Some(t) => is_active_row(t, a.provider, &a.profile, row_email),
-                None => (false, "no_active_target"),
-            };
-            if opts.debug {
-                debug_row(a.provider, &a.profile, row_email, is_active, reason);
-            }
+            let is_active = resolve_active(active, a.provider, &a.profile, row_email, opts.debug);
             render_row(a, row_email, is_active, opts, now)
         })
         .collect();
