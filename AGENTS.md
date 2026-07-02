@@ -147,6 +147,15 @@ constrained (lowest-remaining) bucket per group for the bar. Handle both the
 defensively — `v1internal` is an undocumented contract and shifts between
 Antigravity releases.
 
+As of 2026-07 the local `language_server` `RetrieveUserQuotaSummary` response
+returns **only `window: "weekly"` buckets** per group (its own description
+line says *"Within each group, models share a weekly limit"*). So both
+groups' `five_hour` slots are `None` and the render layer collapses them
+into the same merged wide bar as PixelLab. Keep the `is_weekly` /
+`five_hour` split code — if Antigravity restores 5-hour buckets in a future
+release, `parse_summary` will populate `five_hour` again and rows revert to
+the dual-slot layout automatically.
+
 ## Statusline cache
 
 `~/.claude/statusline.sh` drives the second-line usage display: it calls
