@@ -118,9 +118,7 @@ fn parse_summary(v: &Value, email: Option<String>, plan: Option<String>) -> Resu
             .into_iter()
             .flatten()
         {
-            let Some(window) = bucket_to_window(b) else {
-                continue;
-            };
+            let window = bucket_to_window(b);
             // 同じ window 種別の bucket が複数返る場合は、最も残量の少ない(used_percent が
             // 高い)= 最も制約の厳しいものを採用する。先勝ち / 後勝ちだと API のレスポンス
             // 順序次第で過小表示が起きる。
@@ -188,19 +186,20 @@ fn is_weekly(b: &Value) -> bool {
         .unwrap_or(true)
 }
 
-fn bucket_to_window(b: &Value) -> Option<Window> {
+fn bucket_to_window(b: &Value) -> Window {
     // language_server は `{remaining:{remainingFraction}}`、OAuth 経路はトップレベルの
     // `remainingFraction` を返すことがあるため両形式を許容する。
+    // どちらも欠落している場合は 1.0(未使用)として扱う。
     let rf = b
         .pointer("/remaining/remainingFraction")
         .or_else(|| b.get("remainingFraction"))
         .and_then(Value::as_f64)
         .unwrap_or(1.0);
     let used = ((1.0 - rf) * 100.0).clamp(0.0, 100.0);
-    Some(Window {
+    Window {
         used_percent: used,
         resets_at: bucket_reset(b),
-    })
+    }
 }
 
 fn bucket_reset(b: &Value) -> Option<DateTime<Utc>> {
@@ -348,7 +347,7 @@ fn parse_buckets(v: &Value) -> Result<Vec<UsageRow>> {
     let usage = Usage {
         email: None,
         plan: None,
-        five_hour: bucket_to_window(b),
+        five_hour: Some(bucket_to_window(b)),
         weekly: None,
     };
     Ok(vec![UsageRow {
@@ -587,7 +586,7 @@ mod tests {
             "remaining": {"remainingFraction": 0.2},
             "resetTime": "2026-06-15T06:28:32Z"
         });
-        let w = bucket_to_window(&b).unwrap();
+        let w = bucket_to_window(&b);
         assert!(
             (w.used_percent - 80.0).abs() < 0.01,
             "used should be 80% got {}",

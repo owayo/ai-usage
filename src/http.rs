@@ -6,7 +6,7 @@
 //! `api` は Cloudflare 配下ではない Google `cloudcode-pa` endpoint 用の plain client。
 
 use anyhow::{Context, Result, anyhow};
-use wreq::{Client, StatusCode};
+use wreq::{Client, Response, StatusCode};
 use wreq_util::Emulation;
 
 /// installed Chrome と合わせた User-Agent。その Chrome で発行された `cf_clearance` Cookie を
@@ -71,6 +71,15 @@ pub async fn get_json(
     serde_json::from_str(&body).with_context(|| format!("parsing JSON from {url}"))
 }
 
+/// response body を lenient に JSON へ parse し `(status, parsed-or-Null)` を返す。
+/// post_json / post_form 共通の後段処理。
+async fn status_and_json(resp: Response) -> (StatusCode, serde_json::Value) {
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    let json = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
 /// JSON body を POST し、`(status, parsed-or-Null)` を返す。401 → refresh+retry、
 /// 403 → この token では endpoint 不許可、などの判定は caller が行う。
 /// この project では `wreq` の `.json()` が必要とする `json` feature を有効化していないため、
@@ -90,10 +99,7 @@ pub async fn post_json(
         .send()
         .await
         .with_context(|| format!("POST {url}"))?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    let json = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-    Ok((status, json))
+    Ok(status_and_json(resp).await)
 }
 
 /// `application/x-www-form-urlencoded` body を POST する(Google OAuth token endpoint)。
@@ -109,8 +115,5 @@ pub async fn post_form(
         .send()
         .await
         .with_context(|| format!("POST {url}"))?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    let json = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-    Ok((status, json))
+    Ok(status_and_json(resp).await)
 }

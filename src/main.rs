@@ -148,11 +148,17 @@ enum AuthMaterial {
     GoogleOAuth(Option<config::AntigravityCfg>),
 }
 
-struct Job {
+/// fetch 結果の AccountReport 行に引き継ぐ job のメタデータ。auth と分離することで、
+/// JoinSet の受け渡しをタプルのバラ撒きではなく構造体で行う。
+struct JobMeta {
     profile_name: String,
     profile_email: Option<String>,
     label: Option<String>,
     provider: Provider,
+}
+
+struct Job {
+    meta: JobMeta,
     auth: AuthMaterial,
 }
 
@@ -223,19 +229,23 @@ async fn fetch_reports(
             };
             if t.want_claude && claude::has_session(&pc.claude) {
                 jobs.push(Job {
-                    profile_name: t.profile.name.clone(),
-                    profile_email: t.profile.email.clone(),
-                    label: t.label.clone(),
-                    provider: Provider::Claude,
+                    meta: JobMeta {
+                        profile_name: t.profile.name.clone(),
+                        profile_email: t.profile.email.clone(),
+                        label: t.label.clone(),
+                        provider: Provider::Claude,
+                    },
                     auth: AuthMaterial::BrowserCookies(pc.claude),
                 });
             }
             if t.want_codex && codex::has_session(&pc.chatgpt) {
                 jobs.push(Job {
-                    profile_name: t.profile.name.clone(),
-                    profile_email: t.profile.email.clone(),
-                    label: t.label.clone(),
-                    provider: Provider::Codex,
+                    meta: JobMeta {
+                        profile_name: t.profile.name.clone(),
+                        profile_email: t.profile.email.clone(),
+                        label: t.label.clone(),
+                        provider: Provider::Codex,
+                    },
                     auth: AuthMaterial::BrowserCookies(pc.chatgpt),
                 });
             }
@@ -245,10 +255,12 @@ async fn fetch_reports(
     // Antigravity job は Chrome profile に紐づかない単一 OAuth/local account。
     if want_antigravity {
         jobs.push(Job {
-            profile_name: "Antigravity".to_string(),
-            profile_email: None,
-            label: antigravity_cfg.and_then(|c| c.label.clone()),
-            provider: Provider::Antigravity,
+            meta: JobMeta {
+                profile_name: "Antigravity".to_string(),
+                profile_email: None,
+                label: antigravity_cfg.and_then(|c| c.label.clone()),
+                provider: Provider::Antigravity,
+            },
             auth: AuthMaterial::GoogleOAuth(antigravity_cfg.cloned()),
         });
     }

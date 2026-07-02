@@ -284,23 +284,13 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
 
         match &r.usage {
             Ok(u) => {
-                let (c5, col5) = window_cell(&u.five_hour, now);
-                let (cw, colw) = window_cell(&u.weekly, now);
-                let mut cell5 = Cell::new(c5);
-                if let Some(c) = col5 {
-                    cell5 = cell5.fg(c);
-                }
-                let mut cellw = Cell::new(cw);
-                if let Some(c) = colw {
-                    cellw = cellw.fg(c);
-                }
                 table.add_row(vec![
                     name_cell,
                     Cell::new(service_label(r.provider, r.group_label.as_deref()))
                         .fg(provider_color(r.provider)),
                     Cell::new(u.plan.as_deref().unwrap_or("—")),
-                    cell5,
-                    cellw,
+                    window_cell(&u.five_hour, now),
+                    window_cell(&u.weekly, now),
                 ]);
             }
             Err(e) => {
@@ -324,9 +314,10 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
     );
 }
 
-fn window_cell(w: &Option<Window>, now: DateTime<Utc>) -> (String, Option<Color>) {
+fn window_cell(w: &Option<Window>, now: DateTime<Utc>) -> Cell {
     match w {
-        None => ("—".to_string(), None),
+        // データ無し: 色なしのプレースホルダ("—")。
+        None => Cell::new("—"),
         Some(w) => {
             let reset = w
                 .resets_at
@@ -338,7 +329,7 @@ fn window_cell(w: &Option<Window>, now: DateTime<Utc>) -> (String, Option<Color>
                 w.used_percent.round() as i64,
                 reset
             );
-            (text, Some(tlevel(w.used_percent)))
+            Cell::new(text).fg(tlevel(w.used_percent))
         }
     }
 }
@@ -409,19 +400,24 @@ const BOLD_RED: &str = "1;38;5;196"; // active account
 const FIVE_H_TH: [i64; 3] = [3600, 7200, 10800];
 const WEEK_TH: [i64; 3] = [86400, 172800, 259200];
 
+/// statusline レンダリングの表示オプション。CLI flag 群を 1 つに束ね、
+/// レンダラー間の引数爆発(clippy::too_many_arguments)を避ける。
+pub struct StatuslineOpts {
+    pub color: bool,
+    pub logos: bool,
+    pub debug: bool,
+    pub compact: bool,
+    pub reset_at: bool,
+}
+
 /// account ごとに 1 行を render する(Claude → Codex の group 順)。
 /// 各行は 5h / 1w の gauge、percentage、reset countdown を持つ。
 /// `active_email`(この session の account)に一致する行は赤 bold で表示する。
-#[allow(clippy::too_many_arguments)]
 pub fn statusline(
     report: &Report,
     active: Option<&ActiveTarget>,
     sort: SortKey,
-    color: bool,
-    logos: bool,
-    debug: bool,
-    compact: bool,
-    reset_at: bool,
+    opts: &StatuslineOpts,
 ) {
     let now = Utc::now();
     // SortKey::Provider のときは従来どおり provider.rank() → profile 名で並べる。
@@ -437,27 +433,21 @@ pub fn statusline(
                 Some(t) => is_active_row(t, a.provider, &a.profile, row_email),
                 None => (false, "no_active_target"),
             };
-            if debug {
+            if opts.debug {
                 debug_row(a.provider, &a.profile, row_email, is_active, reason);
             }
-            render_row(
-                a, row_email, is_active, color, logos, now, compact, reset_at,
-            )
+            render_row(a, row_email, is_active, opts, now)
         })
         .collect();
     print!("{}", lines.join("\n"));
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_row(
     a: &AccountOut,
     row_email: Option<&str>,
     active: bool,
-    color: bool,
-    logos: bool,
+    opts: &StatuslineOpts,
     now: DateTime<Utc>,
-    compact: bool,
-    reset_at: bool,
 ) -> String {
     let prov = match a.provider {
         Provider::Claude => "Claude",
@@ -472,22 +462,22 @@ fn render_row(
     );
     let mut s = String::from("  ");
     // provider marker は `--logos` なら brand-logo glyph、そうでなければ text label。
-    if logos {
+    if opts.logos {
         let (logo, logo_color) = match a.provider {
             Provider::Claude => (CLAUDE_LOGO, brand_sgr(a.provider)),
             // Codex mark は teal の brand color より white の方が読みやすい。
             Provider::Codex => (CODEX_LOGO, CODEX_LOGO_COLOR.to_string()),
             Provider::Antigravity => (ANTIGRAVITY_LOGO, brand_sgr(a.provider)),
         };
-        s += &paint(color, &logo_color, &format!("{logo}  "));
+        s += &paint(opts.color, &logo_color, &format!("{logo}  "));
     } else {
-        s += &paint(color, &brand_sgr(a.provider), &format!("{prov:<6} "));
+        s += &paint(opts.color, &brand_sgr(a.provider), &format!("{prov:<6} "));
     }
     // Antigravity 行は単一 token で account name が冗長なため model-group を表示する。
     // それ以外は account name を表示する。"Claude&GPT" が入る幅で pad し、全行の gauge を揃える。
     let display = a.group_label.as_deref().unwrap_or(&name);
     s += &paint(
-        color,
+        opts.color,
         if active { BOLD_RED } else { GRAY },
         &format!("{display:<11}"),
     );
@@ -495,60 +485,43 @@ fn render_row(
         // データ取得に失敗したアカウントも、データ有り行と桁位置を揃える。
         // window_seg の None 分岐(空ゲージ + "--")を 5h / 1w 双方で再利用する。
         // 5h には reset_at を伝搬しない(1w 限定のため false 固定)。
-        s += &window_seg(color, "5h", None, now, FIVE_H_TH, compact, false);
+        s += &window_seg(opts, "5h", None, now, FIVE_H_TH, false);
         s += "   ";
-        s += &window_seg(color, "1w", None, now, WEEK_TH, compact, reset_at);
+        s += &window_seg(opts, "1w", None, now, WEEK_TH, opts.reset_at);
         return s;
     }
-    s += &window_seg(
-        color,
-        "5h",
-        a.five_hour.as_ref(),
-        now,
-        FIVE_H_TH,
-        compact,
-        false,
-    );
+    s += &window_seg(opts, "5h", a.five_hour.as_ref(), now, FIVE_H_TH, false);
     s += "   ";
-    s += &window_seg(
-        color,
-        "1w",
-        a.weekly.as_ref(),
-        now,
-        WEEK_TH,
-        compact,
-        reset_at,
-    );
+    s += &window_seg(opts, "1w", a.weekly.as_ref(), now, WEEK_TH, opts.reset_at);
     s
 }
 
 fn window_seg(
-    color: bool,
+    opts: &StatuslineOpts,
     label: &str,
     w: Option<&WindowOut>,
     now: DateTime<Utc>,
     th: [i64; 3],
-    compact: bool,
     show_reset_at: bool,
 ) -> String {
     // --compact 時は gauge 幅を半分(8)にする。空 gauge / 実 gauge とも同じ幅で揃える。
-    let gauge_width = if compact { 8 } else { 16 };
-    let mut s = paint(color, GRAY, &format!("{label} "));
+    let gauge_width = if opts.compact { 8 } else { 16 };
+    let mut s = paint(opts.color, GRAY, &format!("{label} "));
     match w {
         None => {
             // データ無し: 空 gauge + "--"(% なし) + "--"(残り時間)。
             // Some 分岐と同じ桁幅(gauge_width + 1 + 4 + 2 + 5)に揃える。
-            s += &paint(color, DIM, &"░".repeat(gauge_width));
+            s += &paint(opts.color, DIM, &"░".repeat(gauge_width));
             s += " ";
-            s += &paint(color, DIM, &format!("{:>4}", "--"));
+            s += &paint(opts.color, DIM, &format!("{:>4}", "--"));
             s += "  ";
-            s += &paint(color, DIM, &format!("{:<6}", "--"));
+            s += &paint(opts.color, DIM, &format!("{:<6}", "--"));
         }
         Some(w) => {
-            s += &gauge(color, w.used_percent, gauge_width);
+            s += &gauge(opts.color, w.used_percent, gauge_width);
             s += " ";
             s += &paint(
-                color,
+                opts.color,
                 pct_code(w.used_percent),
                 &format!("{:>3}%", w.used_percent.round() as i64),
             );
@@ -558,7 +531,7 @@ fn window_seg(
             match rem {
                 Some(sec) if sec > 0 => {
                     s += &paint(
-                        color,
+                        opts.color,
                         reset_code(sec, th),
                         &format!("{:<6}", compact_dur(sec)),
                     );
@@ -566,14 +539,14 @@ fn window_seg(
                     // 5h 側は呼び出し元で show_reset_at=false 固定。
                     if show_reset_at && let Some(r) = reset {
                         s += &paint(
-                            color,
+                            opts.color,
                             DIM,
                             &format!(" ({})", r.with_timezone(&Local).format("%m/%d %H:%M")),
                         );
                     }
                 }
-                Some(_) => s += &paint(color, GREEN, &format!("{:<6}", "now")),
-                None => s += &paint(color, DIM, &format!("{:<6}", "--")),
+                Some(_) => s += &paint(opts.color, GREEN, &format!("{:<6}", "now")),
+                None => s += &paint(opts.color, DIM, &format!("{:<6}", "--")),
             }
         }
     }
@@ -834,22 +807,35 @@ mod tests {
             .with_timezone(&Utc)
     }
 
+    /// テスト用に、color/compact を無効化した最小構成の StatuslineOpts を作る。
+    /// window_seg は color と compact しか参照しないため、他 flag は false 固定。
+    fn plain_opts() -> StatuslineOpts {
+        StatuslineOpts {
+            color: false,
+            logos: false,
+            debug: false,
+            compact: false,
+            reset_at: false,
+        }
+    }
+
     #[test]
     fn window_seg_appends_reset_at_only_when_enabled() {
         // 未来のリセット時刻 + show_reset_at=true → 末尾に "(MM/DD HH:MM)" が付く。
         // ローカル TZ 依存の具体値は検証せず、括弧の有無で機能を確認。
         let now = fixed_utc("2026-06-15T00:00:00Z");
+        let opts = plain_opts();
         let w = WindowOut {
             used_percent: 54.0,
             resets_at: Some("2026-06-17T16:10:00Z".to_string()),
             resets_in_seconds: Some(2 * 86400),
         };
-        let with_date = window_seg(false, "1w", Some(&w), now, WEEK_TH, false, true);
+        let with_date = window_seg(&opts, "1w", Some(&w), now, WEEK_TH, true);
         assert!(
             with_date.contains('(') && with_date.ends_with(')'),
             "expected date suffix in {with_date:?}"
         );
-        let without = window_seg(false, "1w", Some(&w), now, WEEK_TH, false, false);
+        let without = window_seg(&opts, "1w", Some(&w), now, WEEK_TH, false);
         assert!(
             !without.contains('('),
             "did not expect date suffix in {without:?}"
@@ -860,7 +846,8 @@ mod tests {
     fn window_seg_reset_at_skips_when_no_window_or_expired() {
         // データ無し or 既にリセット済み(now 表示)では、show_reset_at=true でも日時は出さない。
         let now = fixed_utc("2026-06-15T00:00:00Z");
-        let none_out = window_seg(false, "1w", None, now, WEEK_TH, false, true);
+        let opts = plain_opts();
+        let none_out = window_seg(&opts, "1w", None, now, WEEK_TH, true);
         assert!(
             !none_out.contains('('),
             "no date for None window: {none_out:?}"
@@ -871,7 +858,7 @@ mod tests {
             resets_at: Some("2026-06-10T00:00:00Z".to_string()),
             resets_in_seconds: Some(0),
         };
-        let expired_out = window_seg(false, "1w", Some(&expired), now, WEEK_TH, false, true);
+        let expired_out = window_seg(&opts, "1w", Some(&expired), now, WEEK_TH, true);
         assert!(
             !expired_out.contains('('),
             "no date when already reset: {expired_out:?}"
