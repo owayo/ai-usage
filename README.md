@@ -159,6 +159,7 @@ ai-usage --statusline
 | `--statusline --logos` | With brand-logo glyphs (requires the BrandLogos font) |
 | `--statusline --compact` | Half-width gauge for narrow panes |
 | `--statusline --reset-at` | Append the weekly reset clock-time, e.g. `(06/18 01:10)` |
+| `--statusline-hide <PROVIDERS>` | Comma-separated providers to skip in statusline only (`--json` / table unaffected). E.g. `--statusline-hide antigravity,codex` |
 | `--sort weekly-usage` | Rank rows by weekly utilization (closest to the cap first) |
 | `--sort weekly-reset` | Rank rows by weekly reset time (soonest first) |
 
@@ -241,6 +242,12 @@ label = "home"
 # enabled = true                    # false to hide even when detected
 label = "antigravity"               # optional row label
 # token_path = "~/.gemini/antigravity-cli/antigravity-oauth-token"
+
+# Statusline-only display filter. Hides rows from `--statusline` output while
+# keeping them in `--json` / table (so scripts and manual checks still see them).
+# Overridden by `--statusline-hide` on the CLI.
+[statusline]
+hide = ["antigravity"]              # subset of: claude / codex / antigravity / pixellab
 ```
 
 ### Configuration Options
@@ -255,6 +262,7 @@ label = "antigravity"               # optional row label
 | `[antigravity].enabled` | Show the Antigravity row when detected | `true` |
 | `[antigravity].label` | Row label for Antigravity | `antigravity` |
 | `[antigravity].token_path` | Non-default OAuth token path | `~/.gemini/…` |
+| `[statusline].hide` | Providers to omit from `--statusline` (still in `--json` / table) | `[]` |
 
 Precedence: **CLI flags > config file > auto-detection**.
 

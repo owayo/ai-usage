@@ -114,6 +114,12 @@ struct Cli {
     /// statusline すべてに適用される。
     #[arg(long, value_enum, default_value_t = SortKey::Provider)]
     sort: SortKey,
+
+    /// `--statusline` 描画時に隠す provider(comma-separated: claude,codex,antigravity,
+    /// pixellab)。fetch と `--json` / table には影響しない。指定すると config の
+    /// `[statusline] hide` を上書きする。
+    #[arg(long, value_delimiter = ',', value_name = "PROVIDERS")]
+    statusline_hide: Vec<ProviderArg>,
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -603,13 +609,42 @@ fn write_init_config(root: &std::path::Path, all: &[Profile]) -> Result<()> {
 
 /// CLI flag 群から statusline の表示オプションを組み立てる。cached / fresh 双方の
 /// 描画経路で同じ引数展開を繰り返さないための共有ヘルパ。
-fn statusline_opts(cli: &Cli) -> render::StatuslineOpts {
+fn statusline_opts(cli: &Cli, cfg: &config::Config) -> render::StatuslineOpts {
     render::StatuslineOpts {
         color: color_enabled(cli.no_color),
         logos: cli.logos,
         debug: cli.debug,
         compact: cli.compact,
         reset_at: cli.reset_at,
+        hide: resolve_statusline_hide(cli, cfg),
+    }
+}
+
+/// `--statusline-hide`(CLI)と `[statusline] hide`(config)を Provider 集合に解決する。
+/// CLI 指定があればそちらを最優先。未知の文字列は wrap 無しで無視する
+/// (config を古い binary で読めるようにするのと同じ寛容ポリシー)。
+fn resolve_statusline_hide(cli: &Cli, cfg: &config::Config) -> Vec<model::Provider> {
+    if !cli.statusline_hide.is_empty() {
+        return cli
+            .statusline_hide
+            .iter()
+            .map(|p| p.to_provider())
+            .collect();
+    }
+    let Some(sl) = cfg.statusline.as_ref() else {
+        return Vec::new();
+    };
+    sl.hide.iter().filter_map(|s| parse_provider(s)).collect()
+}
+
+/// config で渡された provider 名文字列を Provider に解決する。case-insensitive。
+fn parse_provider(s: &str) -> Option<model::Provider> {
+    match s.to_ascii_lowercase().as_str() {
+        "claude" => Some(model::Provider::Claude),
+        "codex" => Some(model::Provider::Codex),
+        "antigravity" => Some(model::Provider::Antigravity),
+        "pixellab" => Some(model::Provider::PixelLab),
+        _ => None,
     }
 }
 
@@ -618,6 +653,7 @@ fn statusline_opts(cli: &Cli) -> render::StatuslineOpts {
 fn render_cached_statusline(
     path: &std::path::Path,
     cli: &Cli,
+    cfg: &config::Config,
     active: Option<&render::ActiveTarget>,
 ) {
     let Ok(data) = std::fs::read_to_string(path) else {
@@ -626,17 +662,22 @@ fn render_cached_statusline(
     let Ok(report) = serde_json::from_str::<report::Report>(&data) else {
         return;
     };
-    render::statusline(&report, active, cli.sort, &statusline_opts(cli));
+    render::statusline(&report, active, cli.sort, &statusline_opts(cli, cfg));
 }
 
 /// fresh に fetch した report を CLI flag に応じた format で描画する。
-fn render_reports(cli: &Cli, reports: &[AccountReport], active: Option<&render::ActiveTarget>) {
+fn render_reports(
+    cli: &Cli,
+    cfg: &config::Config,
+    reports: &[AccountReport],
+    active: Option<&render::ActiveTarget>,
+) {
     if cli.statusline {
         render::statusline(
             &report::Report::build(reports),
             active,
             cli.sort,
-            &statusline_opts(cli),
+            &statusline_opts(cli, cfg),
         );
     } else if cli.json {
         render::json(&report::Report::build(reports), cli.sort);
@@ -671,7 +712,7 @@ async fn run(cli: Cli) -> Result<()> {
     if cli.statusline
         && let Some(path) = cli.input.as_deref()
     {
-        render_cached_statusline(path, &cli, active.as_ref());
+        render_cached_statusline(path, &cli, &cfg, active.as_ref());
         return Ok(());
     }
 
@@ -684,7 +725,7 @@ async fn run(cli: Cli) -> Result<()> {
     let reports =
         fetch_reports(&root, &targets, want_antigravity, cfg.antigravity.as_ref()).await?;
 
-    render_reports(&cli, &reports, active.as_ref());
+    render_reports(&cli, &cfg, &reports, active.as_ref());
     Ok(())
 }
 

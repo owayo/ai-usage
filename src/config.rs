@@ -24,6 +24,19 @@ pub struct Config {
     /// 実行中の `agy` から auto-discover する。Chrome profile ではないため、
     /// `[[profiles]]` 配下ではなく top-level に置く。
     pub antigravity: Option<AntigravityCfg>,
+
+    /// `--statusline` 描画のみに効く設定。`--json` / table 出力には影響しない。
+    pub statusline: Option<StatuslineCfg>,
+}
+
+/// `--statusline` 出力にだけ効く設定(top-level `[statusline]`)。
+#[derive(Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct StatuslineCfg {
+    /// statusline に出さない provider の list(小文字: "claude" / "codex" / "antigravity"
+    /// / "pixellab")。fetch と `--json` / table には影響しない。CLI `--statusline-hide`
+    /// が指定されるとそちらで上書きされる。
+    pub hide: Vec<String>,
 }
 
 /// Antigravity provider config(top-level `[antigravity]`)。
@@ -210,6 +223,9 @@ mod tests {
             [antigravity]
             enabled = true
             label = "agy"
+
+            [statusline]
+            hide = ["claude", "codex"]
         "#;
         let parsed: Config = toml::from_str(text).unwrap();
         assert_eq!(parsed.active_email.as_deref(), Some("alice@example.com"));
@@ -227,6 +243,8 @@ mod tests {
         let agy = parsed.antigravity.as_ref().unwrap();
         assert_eq!(agy.enabled, Some(true));
         assert_eq!(agy.label.as_deref(), Some("agy"));
+        let sl = parsed.statusline.as_ref().unwrap();
+        assert_eq!(sl.hide, vec!["claude".to_string(), "codex".to_string()]);
     }
 
     #[test]

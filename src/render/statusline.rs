@@ -47,6 +47,8 @@ pub struct StatuslineOpts {
     pub debug: bool,
     pub compact: bool,
     pub reset_at: bool,
+    /// statusline で非表示にする provider。fetch と `--json` / table には無関係。
+    pub hide: Vec<Provider>,
 }
 
 /// account ごとに 1 行を render する(Claude → Codex の group 順)。
@@ -64,6 +66,9 @@ pub fn statusline(
     let rows = sorted_refs(&report.accounts, sort, now, Some(statusline_default_cmp));
     let lines: Vec<String> = rows
         .iter()
+        // 表示前に hide list で除外する。fetch は変えないので `--json` cache と
+        // 同居しても、`--input` から読んだ report をそのまま filter するだけで済む。
+        .filter(|a| !opts.hide.contains(&a.provider))
         .map(|a| {
             let row_email = a.email.as_deref().or(a.profile_email.as_deref());
             // profile targeting は任意 provider 行を highlight できる。
@@ -332,6 +337,7 @@ mod tests {
             debug: false,
             compact: false,
             reset_at: false,
+            hide: Vec::new(),
         }
     }
 

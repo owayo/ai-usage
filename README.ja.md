@@ -159,6 +159,7 @@ ai-usage --statusline
 | `--statusline --logos` | ブランドロゴ字形で表示 (BrandLogos フォントが必要) |
 | `--statusline --compact` | 狭いペイン向けにゲージ幅を半分にする |
 | `--statusline --reset-at` | 週次リセットの絶対時刻 (例: `(06/18 01:10)`) を末尾に併記 |
+| `--statusline-hide <PROVIDERS>` | statusline でのみ非表示にする provider (comma 区切り)。`--json` / table には影響なし。例: `--statusline-hide antigravity,codex` |
 | `--sort weekly-usage` | 週枠の使用率が高い順 (リミットに近いアカウントを上に) |
 | `--sort weekly-reset` | 週枠のリセット時刻が近い順 (リセット待ちが短いアカウントを上に) |
 
