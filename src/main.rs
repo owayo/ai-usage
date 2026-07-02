@@ -8,6 +8,7 @@ mod config;
 mod cookies;
 mod http;
 mod model;
+mod pixellab;
 mod profiles;
 mod render;
 mod report;
@@ -120,6 +121,7 @@ enum ProviderArg {
     Claude,
     Codex,
     Antigravity,
+    Pixellab,
 }
 
 impl ProviderArg {
@@ -128,6 +130,7 @@ impl ProviderArg {
             ProviderArg::Claude => Provider::Claude,
             ProviderArg::Codex => Provider::Codex,
             ProviderArg::Antigravity => Provider::Antigravity,
+            ProviderArg::Pixellab => Provider::PixelLab,
         }
     }
 }
@@ -207,6 +210,9 @@ async fn fetch_with_retry(
             (Provider::Codex, AuthMaterial::BrowserCookies(c)) => {
                 codex::fetch(&clients.browser, c).await
             }
+            (Provider::PixelLab, AuthMaterial::BrowserCookies(c)) => {
+                pixellab::fetch(&clients.browser, c).await
+            }
             (Provider::Antigravity, AuthMaterial::GoogleOAuth(cfg)) => {
                 antigravity::fetch(&clients.api, cfg.as_ref()).await
             }
@@ -266,6 +272,17 @@ async fn fetch_reports(
                     auth: AuthMaterial::BrowserCookies(pc.chatgpt),
                 });
             }
+            if t.wants.pixellab && pixellab::has_session(&pc.pixellab) {
+                jobs.push(Job {
+                    meta: JobMeta {
+                        profile_name: t.profile.name.clone(),
+                        profile_email: t.profile.email.clone(),
+                        label: t.label.clone(),
+                        provider: Provider::PixelLab,
+                    },
+                    auth: AuthMaterial::BrowserCookies(pc.pixellab),
+                });
+            }
         }
     }
 
@@ -284,8 +301,8 @@ async fn fetch_reports(
 
     if jobs.is_empty() {
         bail!(
-            "No signed-in Claude/Codex sessions or Antigravity token found. Sign in via Chrome, \
-             run `agy`, or adjust --profile / --only / your config. (Try --list-profiles.)"
+            "No signed-in Claude/Codex/PixelLab sessions or Antigravity token found. Sign in via \
+             Chrome, run `agy`, or adjust --profile / --only / your config. (Try --list-profiles.)"
         );
     }
 
@@ -434,8 +451,8 @@ fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
         let Some(db) = profiles::cookies_db(root, &p.dir) else {
             continue;
         };
-        let (claude, codex) = cookies::detect_sessions(&db);
-        if !claude && !codex {
+        let sessions = cookies::detect_sessions(&db);
+        if !sessions.claude && !sessions.codex && !sessions.pixellab {
             continue;
         }
         let email = p.email.as_deref().unwrap_or("");
@@ -451,9 +468,21 @@ fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
         }
         out += "\n";
         out += &format!("label = {}\n", toml_str(label));
-        if !(claude && codex) {
-            let only = if claude { "claude" } else { "codex" };
-            out += &format!("providers = [{}]\n", toml_str(only));
+        // 検出された provider の subset だけ出す。全 provider 揃っているときは省略。
+        let all_wanted = sessions.claude && sessions.codex && sessions.pixellab;
+        if !all_wanted {
+            let mut wanted: Vec<&str> = Vec::new();
+            if sessions.claude {
+                wanted.push("claude");
+            }
+            if sessions.codex {
+                wanted.push("codex");
+            }
+            if sessions.pixellab {
+                wanted.push("pixellab");
+            }
+            let items: Vec<String> = wanted.iter().map(|s| toml_str(s)).collect();
+            out += &format!("providers = [{}]\n", items.join(", "));
         }
         out += "\n";
     }
@@ -464,20 +493,28 @@ fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
 /// 次に profile config の `providers`、未指定なら両方。
 fn resolve_wants(cli: &Cli, cfg: Option<&config::ProfileCfg>) -> BrowserWants {
     // global `--only` が最優先。未指定(None)のときだけ config の providers、
-    // それも無ければ両方 true(既定)に fallback する。
-    // Antigravity は Chrome provider を両方 false にする(別経路で取得)。
+    // それも無ければ全 provider true(既定)に fallback する。
+    // Antigravity は Chrome provider をすべて false にする(別経路で取得)。
     match cli.only {
         Some(ProviderArg::Claude) => BrowserWants {
             claude: true,
             codex: false,
+            pixellab: false,
         },
         Some(ProviderArg::Codex) => BrowserWants {
             claude: false,
             codex: true,
+            pixellab: false,
+        },
+        Some(ProviderArg::Pixellab) => BrowserWants {
+            claude: false,
+            codex: false,
+            pixellab: true,
         },
         Some(ProviderArg::Antigravity) => BrowserWants {
             claude: false,
             codex: false,
+            pixellab: false,
         },
         None => cfg.map_or(BrowserWants::all(), |c| c.wants()),
     }
@@ -686,8 +723,12 @@ mod tests {
         assert!(toml_str("work").starts_with(['"', '\'']));
     }
 
-    fn bw(claude: bool, codex: bool) -> BrowserWants {
-        BrowserWants { claude, codex }
+    fn bw(claude: bool, codex: bool, pixellab: bool) -> BrowserWants {
+        BrowserWants {
+            claude,
+            codex,
+            pixellab,
+        }
     }
 
     #[test]
@@ -696,32 +737,39 @@ mod tests {
         let cfg = config::ProfileCfg {
             matcher: "Work".to_string(),
             label: None,
-            providers: Some(vec!["claude".to_string(), "codex".to_string()]),
+            providers: Some(vec![
+                "claude".to_string(),
+                "codex".to_string(),
+                "pixellab".to_string(),
+            ]),
         };
         let cli = Cli::parse_from(["ai-usage", "--only", "codex"]);
-        // config が両方 true でも、--only codex なら codex だけ。
-        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(false, true));
+        // config で 3 種全て true でも、--only codex なら codex だけ。
+        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(false, true, false));
 
         let cli = Cli::parse_from(["ai-usage", "--only", "claude"]);
-        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(true, false));
+        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(true, false, false));
 
-        // --only antigravity は Chrome provider を両方 false にする(Antigravity は別経路)。
+        let cli = Cli::parse_from(["ai-usage", "--only", "pixellab"]);
+        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(false, false, true));
+
+        // --only antigravity は Chrome 系 provider をすべて false にする(Antigravity は別経路)。
         let cli = Cli::parse_from(["ai-usage", "--only", "antigravity"]);
-        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(false, false));
+        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(false, false, false));
     }
 
     #[test]
-    fn resolve_wants_falls_back_to_config_then_both() {
+    fn resolve_wants_falls_back_to_config_then_all() {
         // --only 無し → config の providers。
         let cfg = config::ProfileCfg {
             matcher: "Work".to_string(),
             label: None,
-            providers: Some(vec!["claude".to_string()]),
+            providers: Some(vec!["claude".to_string(), "pixellab".to_string()]),
         };
         let cli = Cli::parse_from(["ai-usage"]);
-        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(true, false));
+        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(true, false, true));
 
-        // config も無ければ両方 true(既定)。
-        assert_eq!(resolve_wants(&cli, None), bw(true, true));
+        // config も無ければ全 provider true(既定)。
+        assert_eq!(resolve_wants(&cli, None), BrowserWants::all());
     }
 }

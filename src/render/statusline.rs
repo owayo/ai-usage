@@ -74,6 +74,7 @@ fn render_row(
         Provider::Claude => "Claude",
         Provider::Codex => "Codex",
         Provider::Antigravity => "AGY",
+        Provider::PixelLab => "Pixel",
     };
     let name = display_name(
         a.label.as_deref(),
@@ -83,14 +84,20 @@ fn render_row(
     );
     let mut s = String::from("  ");
     // provider marker は `--logos` なら brand-logo glyph、そうでなければ text label。
+    // PixelLab は BrandLogos font に glyph が無いため logos モードでも text にフォールバック。
     if opts.logos {
-        let (logo, logo_color) = match a.provider {
-            Provider::Claude => (CLAUDE_LOGO, brand_sgr(a.provider)),
+        let logo_form = match a.provider {
+            Provider::Claude => Some((CLAUDE_LOGO, brand_sgr(a.provider))),
             // Codex mark は teal の brand color より white の方が読みやすい。
-            Provider::Codex => (CODEX_LOGO, CODEX_LOGO_COLOR.to_string()),
-            Provider::Antigravity => (ANTIGRAVITY_LOGO, brand_sgr(a.provider)),
+            Provider::Codex => Some((CODEX_LOGO, CODEX_LOGO_COLOR.to_string())),
+            Provider::Antigravity => Some((ANTIGRAVITY_LOGO, brand_sgr(a.provider))),
+            Provider::PixelLab => None,
         };
-        s += &paint(opts.color, &logo_color, &format!("{logo}  "));
+        if let Some((logo, logo_color)) = logo_form {
+            s += &paint(opts.color, &logo_color, &format!("{logo}  "));
+        } else {
+            s += &paint(opts.color, &brand_sgr(a.provider), &format!("{prov:<6} "));
+        }
     } else {
         s += &paint(opts.color, &brand_sgr(a.provider), &format!("{prov:<6} "));
     }

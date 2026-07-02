@@ -1,8 +1,8 @@
 # ai-usage 設定例 — ~/.config/ai-usage/config.toml へコピーしてください
 # (または $XDG_CONFIG_HOME/ai-usage/config.toml)
 #
-# 任意設定です。config file がない場合、ai-usage は Claude / Codex session を持つ
-# Chrome profile をすべて auto-discover して表示します(default behavior)。
+# 任意設定です。config file がない場合、ai-usage は Claude / Codex / PixelLab session を
+# 持つ Chrome profile をすべて auto-discover して表示します(default behavior)。
 #
 # 優先順: CLI flags (--profile / --only / --active-email) > この file > auto-detection。
 #
@@ -19,7 +19,7 @@
 [[profiles]]
 match = "Work"                    # Chrome profile 表示名、または dir 例: "Default"
 label = "work"                    # optional: account email username の代わりに表示
-# providers = ["claude", "codex"] # optional: 表示 subset。default = both
+# providers = ["claude", "codex", "pixellab"] # optional: 表示 subset。default = 全 provider
 
 [[profiles]]
 match = "Home"

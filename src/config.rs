@@ -52,26 +52,28 @@ pub struct ProfileCfg {
     pub providers: Option<Vec<String>>,
 }
 
-/// profile ごとに表示する Chrome 系 provider(Claude / Codex)の選択。
-/// `(bool, bool)` タプルの位置取り違えを避けるための小さな型。
+/// profile ごとに表示する Chrome 系 provider(Claude / Codex / PixelLab)の選択。
+/// タプルの位置取り違えを避けるための小さな型。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BrowserWants {
     pub claude: bool,
     pub codex: bool,
+    pub pixellab: bool,
 }
 
 impl BrowserWants {
-    /// 両 provider を表示する既定値。
+    /// 全 provider を表示する既定値。
     pub fn all() -> Self {
         Self {
             claude: true,
             codex: true,
+            pixellab: true,
         }
     }
 
-    /// どちらか一方でも表示対象があるか(Chrome Cookie 復号が必要か)。
+    /// いずれかでも表示対象があるか(Chrome Cookie 復号が必要か)。
     pub fn any(self) -> bool {
-        self.claude || self.codex
+        self.claude || self.codex || self.pixellab
     }
 }
 
@@ -80,13 +82,14 @@ impl ProfileCfg {
         self.matcher.eq_ignore_ascii_case(name) || self.matcher.eq_ignore_ascii_case(dir)
     }
 
-    /// この profile の `providers` list から表示する Chrome provider(Claude / Codex)を得る。
+    /// この profile の `providers` list から表示する Chrome provider(Claude / Codex / PixelLab)を得る。
     pub fn wants(&self) -> BrowserWants {
         match &self.providers {
             None => BrowserWants::all(),
             Some(list) => BrowserWants {
                 claude: list.iter().any(|s| s.eq_ignore_ascii_case("claude")),
                 codex: list.iter().any(|s| s.eq_ignore_ascii_case("codex")),
+                pixellab: list.iter().any(|s| s.eq_ignore_ascii_case("pixellab")),
             },
         }
     }
@@ -143,16 +146,10 @@ mod tests {
     }
 
     #[test]
-    fn wants_defaults_to_both() {
-        // providers が未指定なら Claude/Codex 両方を表示対象にする。
+    fn wants_defaults_to_all() {
+        // providers が未指定なら Claude/Codex/PixelLab を全て表示対象にする。
         let c = cfg("Work", None);
-        assert_eq!(
-            c.wants(),
-            BrowserWants {
-                claude: true,
-                codex: true
-            }
-        );
+        assert_eq!(c.wants(), BrowserWants::all());
     }
 
     #[test]
@@ -162,28 +159,40 @@ mod tests {
             cfg("W", Some(&["claude"])).wants(),
             BrowserWants {
                 claude: true,
-                codex: false
+                codex: false,
+                pixellab: false,
             }
         );
         assert_eq!(
             cfg("W", Some(&["CODEX"])).wants(),
             BrowserWants {
                 claude: false,
-                codex: true
+                codex: true,
+                pixellab: false,
             }
         );
         assert_eq!(
             cfg("W", Some(&["claude", "codex"])).wants(),
             BrowserWants {
                 claude: true,
-                codex: true
+                codex: true,
+                pixellab: false,
+            }
+        );
+        assert_eq!(
+            cfg("W", Some(&["Pixellab"])).wants(),
+            BrowserWants {
+                claude: false,
+                codex: false,
+                pixellab: true,
             }
         );
         assert_eq!(
             cfg("W", Some(&[])).wants(),
             BrowserWants {
                 claude: false,
-                codex: false
+                codex: false,
+                pixellab: false,
             }
         );
     }
@@ -211,7 +220,8 @@ mod tests {
             parsed.profiles[0].wants(),
             BrowserWants {
                 claude: true,
-                codex: false
+                codex: false,
+                pixellab: false,
             }
         );
         let agy = parsed.antigravity.as_ref().unwrap();

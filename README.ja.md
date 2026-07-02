@@ -5,7 +5,7 @@
 <h1 align="center">ai-usage</h1>
 
 <p align="center">
-  Chrome プロファイル横断で Claude / Codex / Antigravity の使用量を一覧表示する CLI
+  Chrome プロファイル横断で Claude / Codex / Antigravity / PixelLab の使用量を一覧表示する CLI
 </p>
 
 <p align="center">
@@ -30,9 +30,9 @@
 
 ---
 
-サインイン済みの各 Chrome プロファイルについて、**Claude** と **OpenAI Codex (ChatGPT)** の使用量
+サインイン済みの各 Chrome プロファイルについて、**Claude** / **OpenAI Codex (ChatGPT)** / **PixelLab** の使用量
 — ローリング **5時間** 枠と **週次** 枠、そしてそれぞれのリセット時刻 — を1コマンドでまとめて表示する
-macOS 向け CLI です。
+macOS 向け CLI です。PixelLab は月次生成枠を長期(週次)スロットで表示します。
 
 各 Chrome プロファイルのセッションをブラウザから直接読み取るため、ログインし直すことなく
 **複数アカウントを同時に**確認できます(例: `Work` と `Home` の2プロファイル × Claude/Codex の
@@ -53,8 +53,8 @@ macOS 向け CLI です。
 ## 特徴
 
 - **マルチアカウント**: サインイン済みの全 Chrome プロファイルを一覧表示。ログインし直し不要
-- **マルチプロバイダ**: Claude (`claude.ai`) / Codex (`chatgpt.com`) / Antigravity (Google `agy` CLI・IDE) を同一ビューに集約
-- **2つの窓**: ローリング 5 時間枠と週次 (7 日) 枠の利用率とリセット残時間
+- **マルチプロバイダ**: Claude (`claude.ai`) / Codex (`chatgpt.com`) / Antigravity (Google `agy` CLI・IDE) / PixelLab (`pixellab.ai`) を同一ビューに集約
+- **2つの窓**: ローリング 5 時間枠と週次 (7 日) 枠の利用率とリセット残時間(PixelLab は月次生成枠を長期スロットに表示)
 - **Cloudflare 対応**: [`wreq`](https://crates.io/crates/wreq) が Chrome の TLS/HTTP2 フィンガープリントをエミュレートし、`cf_clearance` を再送
 - **statusline モード**: 端末のステータスバー向けにアカウント 1 行のコンパクト表示。ブランドロゴ字形にも対応
 - **JSON 出力**: スクリプト・ダッシュボード向けの機械可読出力
@@ -147,7 +147,7 @@ ai-usage --statusline
 | オプション | 短縮 | 説明 |
 |-----------|------|------|
 | `--profile <NAMES>` | `-p` | プロファイル名をカンマ区切りで指定 (Chrome 表示名または on-disk ディレクトリ名) |
-| `--only <PROVIDER>` | | `claude` / `codex` / `antigravity` のみを表示 |
+| `--only <PROVIDER>` | | `claude` / `codex` / `antigravity` / `pixellab` のみを表示 |
 
 #### 出力
 
@@ -188,6 +188,7 @@ ai-usage -p Work,Home             # プロファイル指定
 ai-usage --only claude
 ai-usage --only codex
 ai-usage --only antigravity
+ai-usage --only pixellab
 
 # 端末ステータスバー向け
 ai-usage --statusline
@@ -279,6 +280,11 @@ flowchart LR
 4. **Antigravity** — `~/.gemini` の OAuth トークンを読み (必要に応じて refresh)、`agy`
    起動中は localhost の quota サーバー (グループ別の詳細ペイロード) を優先。停止時は
    Google の `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` にフォールバック。
+5. **PixelLab** — `www.pixellab.ai` の `supabase-auth-token` Cookie から access/refresh
+   token を取り出し、期限切れなら `supabase.pixellab.ai/auth/v1/token` で更新した上で
+   `api.pixellab.ai/get-account-data` (月次生成枠 `imageGenerated / imageAmount` と
+   プリペイド `credits`) と `api.pixellab.ai/get-subscription` (プラン名 +
+   `generation_reset_date`) を取得。月次枠はレイアウト共通化のため週次列に表示。
 
 `claude.ai` と `chatgpt.com` はいずれも Cloudflare の背後にあるため、HTTP クライアント
 ([`wreq`](https://crates.io/crates/wreq)) が Chrome の TLS/HTTP2 フィンガープリントを

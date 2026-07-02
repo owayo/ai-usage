@@ -5,8 +5,9 @@ Working notes for `ai-usage`. See `README.md` for the user-facing overview.
 ## What it does
 
 macOS CLI that decrypts each Chrome profile's cookies (via the "Chrome Safe
-Storage" Keychain key) and reports Claude and Codex usage limits — the rolling
-5-hour and weekly windows plus reset times — for every signed-in profile.
+Storage" Keychain key) and reports Claude, Codex, and PixelLab usage limits —
+the rolling 5-hour and weekly windows plus reset times — for every signed-in
+profile. Antigravity (Google's `agy`) is fetched via OAuth alongside them.
 
 ## Source map
 
@@ -15,7 +16,7 @@ Storage" Keychain key) and reports Claude and Codex usage limits — the rolling
 | `src/profiles.rs` | Chrome profile discovery (`Local State`). |
 | `src/cookies.rs`  | macOS `v10` cookie decryption. |
 | `src/http.rs`     | `wreq` client with Chrome TLS/HTTP2 emulation (Cloudflare). |
-| `src/claude.rs` / `src/codex.rs` / `src/antigravity.rs` | Per-provider usage fetchers. |
+| `src/claude.rs` / `src/codex.rs` / `src/antigravity.rs` / `src/pixellab.rs` | Per-provider usage fetchers. |
 | `src/model.rs`    | `Provider` / `Usage` / `Window` data model. |
 | `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles + Antigravity table) + `BrowserWants`. |
 | `src/sort.rs`     | `SortKey` (`--sort`), shared by CLI and renderers. |
@@ -37,9 +38,12 @@ display-name and active-row resolution (`render.rs`), row sorting
 (`render/sort.rs`), table bar/humanize formatting (`render/table.rs`),
 statusline gauge/duration formatting (`render/statusline.rs`), Antigravity
 quota parsing including ISO-8601 and epoch-second `resetTime` plus wrapped/flat
-`GetUserStatus` shapes (`antigravity.rs`), report-DTO building with
-reset-countdown clamping (`report.rs`), and TOML-value escaping plus provider
-resolution (`main.rs`).
+`GetUserStatus` shapes (`antigravity.rs`), PixelLab Supabase cookie parsing
+(legacy JSON-array + `base64-…` object forms + `.0/.1` chunk join), JWT `exp` /
+`email` extraction, `/get-account-data` + `/get-subscription` folding into the
+`weekly` slot with `generation_reset_date` (`pixellab.rs`), report-DTO building
+with reset-countdown clamping (`report.rs`), and TOML-value escaping plus
+provider resolution (`main.rs`).
 Network code (`http.rs`) is not unit-tested — drive it via `make build` + a real
 run.
 
@@ -48,6 +52,48 @@ run.
 Add a `Provider` variant in `model.rs`, a `fetch()` module returning `Usage`,
 and wire it into `main.rs` (`fetch_with_retry`) plus the `report.rs` /
 `render.rs` mappers.
+
+## PixelLab
+
+Implemented in `src/pixellab.rs` — auto-discovered when the Chrome profile has a
+`supabase-auth-token` Cookie on `www.pixellab.ai`. Uses the browser-emulating
+`wreq` client (both the Supabase auth endpoint and the PixelLab API sit behind
+Cloudflare, and reject plain HTTP clients).
+
+Auth flow:
+
+1. Read the `supabase-auth-token` Cookie (`.0/.1/...` chunks are joined if
+   split). It is URL-encoded and decodes to either:
+   - the **legacy** Auth Helpers JSON array
+     `[access_token, refresh_token, provider_token, provider_refresh_token, ...]`,
+     or
+   - the **new** `base64-<base64_of_json>` form containing
+     `{access_token, refresh_token, expires_at, ...}`.
+2. If the JWT's `exp` is within 60 s (or missing), refresh via
+   `POST https://supabase.pixellab.ai/auth/v1/token?grant_type=refresh_token`
+   with the PixelLab public **anon key** in both the `apikey` and `Authorization`
+   headers (Supabase requires both). The anon key is a JWT baked into the JS
+   bundle (`NEXT_PUBLIC_SUPABASE_ANON_KEY`), so it lives as a constant in
+   `pixellab.rs`.
+3. Call `GET https://api.pixellab.ai/get-account-data` for
+   `{ imageAmount, imageGenerated, credits, tier }`; retry once via refresh on
+   401/403/`Invalid token`.
+4. Call `GET https://api.pixellab.ai/get-subscription` (best-effort; free users
+   get an empty body) for `{ name, generation_reset_date, next_bill_date }`.
+
+Map to `Usage`:
+
+- `weekly` = monthly generation window:
+  `used_percent = imageGenerated / imageAmount * 100` (clamped to `[0, 100]`),
+  `resets_at = generation_reset_date` (falls back to `next_bill_date`, then
+  `expiry_date`). The unified model has no dedicated "monthly" slot, so we
+  reuse the long-window column — `1w` in statusline output is a slight
+  misnomer for PixelLab but keeps the layout consistent.
+- `five_hour` = `None` (PixelLab has no rolling short-window quota).
+- `plan` = subscription `name` (e.g. `Tier 1: Pixel Apprentice`) with
+  `+ $X.XX credits` appended when the pay-as-you-go USD balance is > 0. Free
+  accounts get `Tier <N>` / `Free`.
+- `email` = the `email` claim in the JWT payload.
 
 ## Antigravity
 

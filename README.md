@@ -5,7 +5,7 @@
 <h1 align="center">ai-usage</h1>
 
 <p align="center">
-  Unified Claude + Codex + Antigravity usage limits across Chrome profiles
+  Unified Claude + Codex + Antigravity + PixelLab usage limits across Chrome profiles
 </p>
 
 <p align="center">
@@ -52,9 +52,9 @@ Claude and a Codex subscription = four accounts) without you logging anything in
 
 ## Features
 
-- **Multi-Account**: Reports every Chrome profile signed into Claude or Codex — no re-login needed
-- **Multi-Provider**: Claude (`claude.ai`), Codex (`chatgpt.com`), and Antigravity (Google's `agy` CLI/IDE) in one view
-- **Two Windows**: Rolling 5-hour and weekly (7-day) utilization plus reset countdown
+- **Multi-Account**: Reports every Chrome profile signed into Claude, Codex, or PixelLab — no re-login needed
+- **Multi-Provider**: Claude (`claude.ai`), Codex (`chatgpt.com`), Antigravity (Google's `agy` CLI/IDE), and PixelLab (`pixellab.ai`) in one view
+- **Two Windows**: Rolling 5-hour and weekly (7-day) utilization plus reset countdown (PixelLab shows its monthly generation quota in the long-window slot)
 - **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
 - **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars
 - **JSON Output**: Machine-readable output for scripting and dashboards
@@ -147,7 +147,7 @@ ai-usage --statusline
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--profile <NAMES>` | `-p` | Comma-separated profile names (Chrome display name or on-disk dir) |
-| `--only <PROVIDER>` | | Show only `claude`, `codex`, or `antigravity` |
+| `--only <PROVIDER>` | | Show only `claude`, `codex`, `antigravity`, or `pixellab` |
 
 #### Output
 
@@ -188,6 +188,7 @@ ai-usage -p Work,Home             # specific profiles only
 ai-usage --only claude
 ai-usage --only codex
 ai-usage --only antigravity
+ai-usage --only pixellab
 
 # Statusline for terminal status bar
 ai-usage --statusline
@@ -279,6 +280,11 @@ For each Chrome profile it finds, `ai-usage`:
 4. **Antigravity** — reads the OAuth token from `~/.gemini` (refreshing as needed). When
    `agy` is running, prefers the localhost quota server for the richer per-group payload;
    otherwise falls back to Google's `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`.
+5. **PixelLab** — reads the `supabase-auth-token` cookie from `www.pixellab.ai`, refreshing
+   the access token via `supabase.pixellab.ai/auth/v1/token` if it has expired, then calls
+   `api.pixellab.ai/get-account-data` (monthly `imageGenerated / imageAmount` + prepaid
+   `credits`) and `api.pixellab.ai/get-subscription` (plan name + `generation_reset_date`).
+   The monthly quota renders in the weekly-window column with the next reset time.
 
 `claude.ai` and `chatgpt.com` sit behind Cloudflare, so the HTTP client
 ([`wreq`](https://crates.io/crates/wreq)) emulates Chrome's TLS/HTTP2 fingerprint and

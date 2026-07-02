@@ -129,6 +129,7 @@ fn brand_rgb(p: Provider) -> (u8, u8, u8) {
         Provider::Claude => (217, 119, 87), // Anthropic coral #D97757
         Provider::Codex => (16, 163, 127),  // OpenAI teal #10A37F
         Provider::Antigravity => (66, 133, 244), // Google blue #4285F4
+        Provider::PixelLab => (234, 179, 8), // pixel-art amber #EAB308
     }
 }
 

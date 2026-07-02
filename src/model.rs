@@ -9,6 +9,7 @@ pub enum Provider {
     Claude,
     Codex,
     Antigravity,
+    PixelLab,
 }
 
 impl Provider {
@@ -17,6 +18,7 @@ impl Provider {
             Provider::Claude => "Claude",
             Provider::Codex => "Codex",
             Provider::Antigravity => "Antigravity",
+            Provider::PixelLab => "PixelLab",
         }
     }
 
@@ -26,6 +28,7 @@ impl Provider {
             Provider::Claude => 0,
             Provider::Codex => 1,
             Provider::Antigravity => 2,
+            Provider::PixelLab => 3,
         }
     }
 }

@@ -19,7 +19,9 @@ type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
 const CLAUDE_DOMAIN: &str = "claude.ai";
 const CHATGPT_DOMAIN: &str = "chatgpt.com";
+const PIXELLAB_DOMAIN: &str = "www.pixellab.ai";
 const CODEX_SESSION_COOKIE: &str = "__Secure-next-auth.session-token";
+const PIXELLAB_SESSION_COOKIE: &str = "supabase-auth-token";
 
 /// macOS login Keychain から "Chrome Safe Storage" シークレットを読む。
 /// バイナリごとの初回アクセス時は macOS の許可ダイアログが出るため、
@@ -72,6 +74,8 @@ pub struct ProfileCookies {
     pub claude: HashMap<String, String>,
     /// 復号済み chatgpt.com Cookie。キーは Cookie 名。
     pub chatgpt: HashMap<String, String>,
+    /// 復号済み www.pixellab.ai Cookie。キーは Cookie 名。
+    pub pixellab: HashMap<String, String>,
 }
 
 fn sqlite_immutable_uri(path: &Path) -> String {
@@ -105,6 +109,14 @@ fn is_codex_session_cookie(name: &str) -> bool {
     name == CODEX_SESSION_COOKIE
         || name
             .strip_prefix(CODEX_SESSION_COOKIE)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
+fn is_pixellab_session_cookie(name: &str) -> bool {
+    // Supabase Auth はトークンが大きいと `.0`/`.1` に分割する(Codex と同じ挙動)。
+    name == PIXELLAB_SESSION_COOKIE
+        || name
+            .strip_prefix(PIXELLAB_SESSION_COOKIE)
             .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
@@ -148,6 +160,8 @@ pub fn load(db_path: &Path, key: &[u8; 16]) -> Result<ProfileCookies> {
             &mut out.claude
         } else if host_matches_domain(&host, CHATGPT_DOMAIN) {
             &mut out.chatgpt
+        } else if host_matches_domain(&host, PIXELLAB_DOMAIN) {
+            &mut out.pixellab
         } else {
             continue;
         };
@@ -173,40 +187,51 @@ fn encrypt_for_test(key: &[u8; 16], prefix: &[u8], plain: &[u8]) -> Vec<u8> {
 }
 
 /// Cookie の存在だけでログイン済みプロバイダを安価に検出する。復号も Keychain 参照も
-/// 行わない。戻り値は `(has_claude, has_codex)`。`--init-config` で使う。
-pub fn detect_sessions(db_path: &Path) -> (bool, bool) {
+/// 行わない。`--init-config` で使う。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DetectedSessions {
+    pub claude: bool,
+    pub codex: bool,
+    pub pixellab: bool,
+}
+
+pub fn detect_sessions(db_path: &Path) -> DetectedSessions {
     use rusqlite::{Connection, OpenFlags};
     let uri = sqlite_immutable_uri(db_path);
     let Ok(conn) = Connection::open_with_flags(
         uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     ) else {
-        return (false, false);
+        return DetectedSessions::default();
     };
     let Ok(mut stmt) = conn.prepare(
         "SELECT host_key, name FROM cookies \
-         WHERE name = 'sessionKey' OR name GLOB '__Secure-next-auth.session-token*'",
+         WHERE name = 'sessionKey' \
+            OR name GLOB '__Secure-next-auth.session-token*' \
+            OR name GLOB 'supabase-auth-token*'",
     ) else {
-        return (false, false);
+        return DetectedSessions::default();
     };
     let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
     else {
-        return (false, false);
+        return DetectedSessions::default();
     };
-    let mut claude = false;
-    let mut codex = false;
+    let mut d = DetectedSessions::default();
     for (host, name) in rows.flatten() {
         if name == "sessionKey" && host_matches_domain(&host, CLAUDE_DOMAIN) {
-            claude = true;
+            d.claude = true;
         }
         if is_codex_session_cookie(&name) && host_matches_domain(&host, CHATGPT_DOMAIN) {
-            codex = true;
+            d.codex = true;
         }
-        if claude && codex {
+        if is_pixellab_session_cookie(&name) && host_matches_domain(&host, PIXELLAB_DOMAIN) {
+            d.pixellab = true;
+        }
+        if d.claude && d.codex && d.pixellab {
             break;
         }
     }
-    (claude, codex)
+    d
 }
 
 #[cfg(test)]
@@ -298,9 +323,17 @@ mod tests {
             &[
                 (".claude.ai", "sessionKey"),
                 (".chatgpt.com", &format!("{CODEX_SESSION_COOKIE}.0")),
+                (PIXELLAB_DOMAIN, PIXELLAB_SESSION_COOKIE),
             ],
         );
-        assert_eq!(detect_sessions(&path), (true, true));
+        assert_eq!(
+            detect_sessions(&path),
+            DetectedSessions {
+                claude: true,
+                codex: true,
+                pixellab: true,
+            }
+        );
         let _ = std::fs::remove_file(path);
     }
 
@@ -313,10 +346,34 @@ mod tests {
                 ("evilchatgpt.com", CODEX_SESSION_COOKIE),
                 ("chatgpt.com", "xxSecure-next-auth.session-token"),
                 ("chatgpt.com", "__Secure-next-auth.session-tokenizer"),
+                ("evil.pixellab.ai.example", PIXELLAB_SESSION_COOKIE),
+                (PIXELLAB_DOMAIN, "supabase-auth-tokenizer"),
             ],
         );
-        assert_eq!(detect_sessions(&path), (false, false));
+        assert_eq!(detect_sessions(&path), DetectedSessions::default());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn is_pixellab_session_cookie_matches_exact_and_chunk_names_only() {
+        // 完全一致と `.0` / `.1` などの連番 chunk のみ true。
+        assert!(is_pixellab_session_cookie(PIXELLAB_SESSION_COOKIE));
+        assert!(is_pixellab_session_cookie(&format!(
+            "{PIXELLAB_SESSION_COOKIE}.0"
+        )));
+        assert!(is_pixellab_session_cookie(&format!(
+            "{PIXELLAB_SESSION_COOKIE}.1"
+        )));
+        // suffix が `.` 区切りでない類似名は弾く。
+        assert!(!is_pixellab_session_cookie(&format!(
+            "{PIXELLAB_SESSION_COOKIE}izer"
+        )));
+        assert!(!is_pixellab_session_cookie(&format!(
+            "{PIXELLAB_SESSION_COOKIE}-extra"
+        )));
+        assert!(!is_pixellab_session_cookie(&format!(
+            "xx{PIXELLAB_SESSION_COOKIE}"
+        )));
     }
 
     #[test]
