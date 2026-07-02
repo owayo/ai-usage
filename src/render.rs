@@ -122,6 +122,16 @@ fn resolve_active(
     is_active
 }
 
+/// 長期(right)スロットの表示 label。統一 model は `Usage::weekly` を長期スロットとして
+/// 使い回しているが、実際の reset サイクル(週次 / 月次)は provider ごとに違うため
+/// render 時に解決する。table / statusline の両方で使う。
+fn long_window_label(p: Provider) -> &'static str {
+    match p {
+        Provider::PixelLab => "1m",
+        _ => "1w",
+    }
+}
+
 /// provider ごとの brand RGB。table(comfy-table `Color::Rgb`)と statusline
 /// (`brand_sgr` の ANSI truecolor)で共有する単一 source。
 fn brand_rgb(p: Provider) -> (u8, u8, u8) {
@@ -283,5 +293,14 @@ mod tests {
         assert!(parse_utc("2026-06-15T06:28:32Z").is_some());
         assert!(parse_utc("2026-06-12T15:06:32.244+09:00").is_some());
         assert!(parse_utc("not a date").is_none());
+    }
+
+    #[test]
+    fn long_window_label_by_provider() {
+        // PixelLab は月次サイクル(1m)、それ以外は週次(1w)。
+        assert_eq!(long_window_label(Provider::Claude), "1w");
+        assert_eq!(long_window_label(Provider::Codex), "1w");
+        assert_eq!(long_window_label(Provider::Antigravity), "1w");
+        assert_eq!(long_window_label(Provider::PixelLab), "1m");
     }
 }

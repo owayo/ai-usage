@@ -5,7 +5,7 @@ use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
 
 use super::sort::sorted_refs;
-use super::{ActiveTarget, brand_rgb, display_name, resolve_active};
+use super::{ActiveTarget, brand_rgb, display_name, long_window_label, resolve_active};
 use crate::SortKey;
 use crate::model::{AccountReport, Provider, Window};
 
@@ -34,7 +34,9 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
             "Service",
             "Plan",
             "5-hour",
-            "Weekly (7-day)",
+            // 週次 / 月次を同居させる長期スロット。各行のバッジ(1w / 1m)で
+            // 実サイクルを明示する。
+            "Long window",
         ]);
 
     // SortKey::Provider のときは入力(=ジョブ順)をそのまま保持。
@@ -64,8 +66,8 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
                     Cell::new(service_label(r.provider, r.group_label.as_deref()))
                         .fg(provider_color(r.provider)),
                     Cell::new(u.plan.as_deref().unwrap_or("—")),
-                    window_cell(&u.five_hour, now),
-                    window_cell(&u.weekly, now),
+                    window_cell(&u.five_hour, now, Some("5h")),
+                    window_cell(&u.weekly, now, Some(long_window_label(r.provider))),
                 ]);
             }
             Err(e) => {
@@ -89,7 +91,7 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
     );
 }
 
-fn window_cell(w: &Option<Window>, now: DateTime<Utc>) -> Cell {
+fn window_cell(w: &Option<Window>, now: DateTime<Utc>, badge: Option<&str>) -> Cell {
     match w {
         // データ無し: 色なしのプレースホルダ("—")。
         None => Cell::new("—"),
@@ -99,12 +101,13 @@ fn window_cell(w: &Option<Window>, now: DateTime<Utc>) -> Cell {
                 .map(|r| humanize(r - now))
                 .unwrap_or_else(|| "—".to_string());
             let text = format!(
-                "{}  {:>3}%  · {}",
+                "{} {}  {:>3}%  · {}",
+                badge.unwrap_or(""),
                 tbar(w.used_percent),
                 w.used_percent.round() as i64,
                 reset
             );
-            Cell::new(text).fg(tlevel(w.used_percent))
+            Cell::new(text.trim_start()).fg(tlevel(w.used_percent))
         }
     }
 }
@@ -169,5 +172,33 @@ mod tests {
             service_label(Provider::Antigravity, Some("Gemini")),
             "Antigravity · Gemini"
         );
+    }
+
+    #[test]
+    fn window_cell_prepends_badge_and_omits_when_none() {
+        // badge を渡すと text 先頭に付く。None なら prefix 無し。空データは "—" のまま。
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let w = Some(Window {
+            used_percent: 46.0,
+            resets_at: Some(fixed_utc("2026-06-20T15:00:00Z")),
+        });
+        let cell = window_cell(&w, now, Some("1m")).content();
+        assert!(cell.starts_with("1m"), "expected 1m badge in {cell:?}");
+        assert!(cell.contains("46%"));
+
+        let cell_no_badge = window_cell(&w, now, None).content();
+        assert!(
+            !cell_no_badge.starts_with(char::is_alphabetic),
+            "no badge → cell starts with bar glyph, got {cell_no_badge:?}"
+        );
+
+        // データ無しは badge 有無に関わらず "—" のまま(桁ズレさせない)。
+        assert_eq!(window_cell(&None, now, Some("1m")).content(), "—");
+    }
+
+    fn fixed_utc(rfc3339: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(rfc3339)
+            .unwrap()
+            .with_timezone(&Utc)
     }
 }

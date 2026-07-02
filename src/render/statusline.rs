@@ -3,7 +3,7 @@
 use chrono::{DateTime, Local, Utc};
 
 use super::sort::{sorted_refs, statusline_default_cmp};
-use super::{ActiveTarget, brand_rgb, display_name, parse_utc, resolve_active};
+use super::{ActiveTarget, brand_rgb, display_name, long_window_label, parse_utc, resolve_active};
 use crate::SortKey;
 use crate::model::Provider;
 use crate::report::{AccountOut, Report, WindowOut};
@@ -109,18 +109,28 @@ fn render_row(
         if active { BOLD_RED } else { GRAY },
         &format!("{display:<11}"),
     );
+    // 長期(right)スロットの label は provider ごとの reset サイクルに合わせる。
+    // PixelLab は月次生成枠なので "1m"、それ以外は従来どおり "1w"。
+    let long_label = long_window_label(a.provider);
     if !a.ok {
         // データ取得に失敗したアカウントも、データ有り行と桁位置を揃える。
-        // window_seg の None 分岐(空ゲージ + "--")を 5h / 1w 双方で再利用する。
-        // 5h には reset_at を伝搬しない(1w 限定のため false 固定)。
+        // window_seg の None 分岐(空ゲージ + "--")を短期 / 長期スロット双方で再利用する。
+        // 短期スロットには reset_at を伝搬しない(長期限定のため false 固定)。
         s += &window_seg(opts, "5h", None, now, FIVE_H_TH, false);
         s += "   ";
-        s += &window_seg(opts, "1w", None, now, WEEK_TH, opts.reset_at);
+        s += &window_seg(opts, long_label, None, now, WEEK_TH, opts.reset_at);
         return s;
     }
     s += &window_seg(opts, "5h", a.five_hour.as_ref(), now, FIVE_H_TH, false);
     s += "   ";
-    s += &window_seg(opts, "1w", a.weekly.as_ref(), now, WEEK_TH, opts.reset_at);
+    s += &window_seg(
+        opts,
+        long_label,
+        a.weekly.as_ref(),
+        now,
+        WEEK_TH,
+        opts.reset_at,
+    );
     s
 }
 

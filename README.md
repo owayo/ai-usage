@@ -39,14 +39,15 @@ It reads each Chrome profile's session straight from the browser, so it can repo
 Claude and a Codex subscription = four accounts) without you logging anything in or out.
 
 ```
-┌─────────┬─────────┬──────────┬──────────────────────────┬──────────────────────────┐
-│ Account ┆ Service ┆ Plan     ┆ 5-hour                   ┆ Weekly (7-day)           │
-╞═════════╪═════════╪══════════╪══════════════════════════╪══════════════════════════╡
-│ work    ┆ Claude  ┆ max      ┆ █░░░░░░░░░    4%  · in 2h ┆ █░░░░░░░░░    3%  · in 4d │
-│ work    ┆ Codex   ┆ team     ┆ █░░░░░░░░░    1%  · in 5h ┆ ░░░░░░░░░░    0%  · in 7d │
-│ home    ┆ Claude  ┆ max      ┆ █░░░░░░░░░   12%  · in 1h ┆ █░░░░░░░░░    3%  · in 5d │
-│ home    ┆ Codex   ┆ prolite  ┆ █░░░░░░░░░   10%  · in 4h ┆ ███░░░░░░░   31%  · in 4d │
-└─────────┴─────────┴──────────┴──────────────────────────┴──────────────────────────┘
+┌─────────┬──────────┬──────────────────────────┬─────────────────────────────┬─────────────────────────────┐
+│ Account ┆ Service  ┆ Plan                     ┆ 5-hour                      ┆ Long window                 │
+╞═════════╪══════════╪══════════════════════════╪═════════════════════════════╪═════════════════════════════╡
+│ work    ┆ Claude   ┆ max                      ┆ 5h █░░░░░░░░░    4%  · in 2h ┆ 1w █░░░░░░░░░    3%  · in 4d │
+│ work    ┆ Codex    ┆ team                     ┆ 5h █░░░░░░░░░    1%  · in 5h ┆ 1w ░░░░░░░░░░    0%  · in 7d │
+│ home    ┆ Claude   ┆ max                      ┆ 5h █░░░░░░░░░   12%  · in 1h ┆ 1w █░░░░░░░░░    3%  · in 5d │
+│ home    ┆ Codex    ┆ prolite                  ┆ 5h █░░░░░░░░░   10%  · in 4h ┆ 1w ███░░░░░░░   31%  · in 4d │
+│ home    ┆ PixelLab ┆ Tier 1: Pixel Apprentice ┆ —                           ┆ 1m █████░░░░░   46%  · in 5d │
+└─────────┴──────────┴──────────────────────────┴─────────────────────────────┴─────────────────────────────┘
   updated 21:46 · bars = usage, time = until reset
 ```
 
@@ -54,7 +55,7 @@ Claude and a Codex subscription = four accounts) without you logging anything in
 
 - **Multi-Account**: Reports every Chrome profile signed into Claude, Codex, or PixelLab — no re-login needed
 - **Multi-Provider**: Claude (`claude.ai`), Codex (`chatgpt.com`), Antigravity (Google's `agy` CLI/IDE), and PixelLab (`pixellab.ai`) in one view
-- **Two Windows**: Rolling 5-hour and weekly (7-day) utilization plus reset countdown (PixelLab shows its monthly generation quota in the long-window slot)
+- **Two Windows**: Rolling 5-hour and a long window (weekly for Claude / Codex / Antigravity, monthly for PixelLab) with usage bar, percentage, and reset countdown — each row's badge (`5h` / `1w` / `1m`) shows the exact cycle
 - **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
 - **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars
 - **JSON Output**: Machine-readable output for scripting and dashboards
@@ -284,7 +285,8 @@ For each Chrome profile it finds, `ai-usage`:
    the access token via `supabase.pixellab.ai/auth/v1/token` if it has expired, then calls
    `api.pixellab.ai/get-account-data` (monthly `imageGenerated / imageAmount` + prepaid
    `credits`) and `api.pixellab.ai/get-subscription` (plan name + `generation_reset_date`).
-   The monthly quota renders in the weekly-window column with the next reset time.
+   The monthly quota renders in the long-window column with a `1m` badge (rather than the
+   usual `1w`) so it isn't mistaken for a weekly reset.
 
 `claude.ai` and `chatgpt.com` sit behind Cloudflare, so the HTTP client
 ([`wreq`](https://crates.io/crates/wreq)) emulates Chrome's TLS/HTTP2 fingerprint and
