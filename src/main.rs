@@ -279,15 +279,8 @@ async fn fetch_reports(
             if idx > 0 {
                 tokio::time::sleep(Duration::from_millis(150 * idx as u64)).await;
             }
-            let rows = fetch_with_retry(&clients, job.provider, &job.auth).await;
-            (
-                idx,
-                job.profile_name,
-                job.profile_email,
-                job.label,
-                job.provider,
-                rows,
-            )
+            let rows = fetch_with_retry(&clients, job.meta.provider, &job.auth).await;
+            (idx, job.meta, rows)
         });
     }
 
@@ -295,7 +288,7 @@ async fn fetch_reports(
     // 1 行返す。job 順は維持する。
     let mut results: Vec<(usize, AccountReport)> = Vec::new();
     while let Some(joined) = set.join_next().await {
-        let Ok((idx, pname, pemail, label, provider, rows)) = joined else {
+        let Ok((idx, meta, rows)) = joined else {
             continue;
         };
         match rows {
@@ -304,10 +297,10 @@ async fn fetch_reports(
                     results.push((
                         idx,
                         AccountReport {
-                            profile_name: pname.clone(),
-                            profile_email: pemail.clone(),
-                            label: label.clone(),
-                            provider,
+                            profile_name: meta.profile_name.clone(),
+                            profile_email: meta.profile_email.clone(),
+                            label: meta.label.clone(),
+                            provider: meta.provider,
                             group_label: row.group_label,
                             usage: Ok(row.usage),
                         },
@@ -317,10 +310,10 @@ async fn fetch_reports(
             Err(e) => results.push((
                 idx,
                 AccountReport {
-                    profile_name: pname,
-                    profile_email: pemail,
-                    label,
-                    provider,
+                    profile_name: meta.profile_name,
+                    profile_email: meta.profile_email,
+                    label: meta.label,
+                    provider: meta.provider,
                     group_label: None,
                     usage: Err(e),
                 },
@@ -475,15 +468,14 @@ fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
 /// profile ごとに表示する provider を決める。global `--only` flag が最優先で、
 /// 次に profile config の `providers`、未指定なら両方。
 fn resolve_wants(cli: &Cli, cfg: Option<&config::ProfileCfg>) -> (bool, bool) {
-    if cli.only.is_some() {
-        (
-            matches!(cli.only, Some(ProviderArg::Claude)),
-            matches!(cli.only, Some(ProviderArg::Codex)),
-        )
-    } else if let Some(c) = cfg {
-        c.wants()
-    } else {
-        (true, true)
+    // global `--only` が最優先。未指定(None)のときだけ config の providers、
+    // それも無ければ両方 true(既定)に fallback する。
+    // Antigravity は Chrome provider を両方 false にする(別経路で取得)。
+    match cli.only {
+        Some(ProviderArg::Claude) => (true, false),
+        Some(ProviderArg::Codex) => (false, true),
+        Some(ProviderArg::Antigravity) => (false, false),
+        None => cfg.map_or((true, true), |c| c.wants()),
     }
 }
 
@@ -572,6 +564,18 @@ fn write_init_config(root: &std::path::Path, all: &[Profile]) -> Result<()> {
     Ok(())
 }
 
+/// CLI flag 群から statusline の表示オプションを組み立てる。cached / fresh 双方の
+/// 描画経路で同じ引数展開を繰り返さないための共有ヘルパ。
+fn statusline_opts(cli: &Cli) -> render::StatuslineOpts {
+    render::StatuslineOpts {
+        color: color_enabled(cli.no_color),
+        logos: cli.logos,
+        debug: cli.debug,
+        compact: cli.compact,
+        reset_at: cli.reset_at,
+    }
+}
+
 /// cached `--json` file から statusline を描画する。cache がない/不正な場合は何も出さず、
 /// 次の描画で再生成される。
 fn render_cached_statusline(
@@ -585,16 +589,7 @@ fn render_cached_statusline(
     let Ok(report) = serde_json::from_str::<report::Report>(&data) else {
         return;
     };
-    render::statusline(
-        &report,
-        active,
-        cli.sort,
-        color_enabled(cli.no_color),
-        cli.logos,
-        cli.debug,
-        cli.compact,
-        cli.reset_at,
-    );
+    render::statusline(&report, active, cli.sort, &statusline_opts(cli));
 }
 
 /// fresh に fetch した report を CLI flag に応じた format で描画する。
@@ -604,11 +599,7 @@ fn render_reports(cli: &Cli, reports: &[AccountReport], active: Option<&render::
             &report::Report::build(reports),
             active,
             cli.sort,
-            color_enabled(cli.no_color),
-            cli.logos,
-            cli.debug,
-            cli.compact,
-            cli.reset_at,
+            &statusline_opts(cli),
         );
     } else if cli.json {
         render::json(&report::Report::build(reports), cli.sort);
