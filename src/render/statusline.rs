@@ -9,7 +9,9 @@ use crate::model::Provider;
 use crate::report::{AccountOut, Report, WindowOut};
 
 // 256-color ANSI code(SGR wrapper なしの parameter 部分)。
-const CODEX_LOGO_COLOR: &str = "38;2;255;255;255"; // white。Codex logo glyph 用。
+// Codex の marker 色。teal brand color は暗背景で沈むため、logo glyph・text label とも
+// 白で表示する。
+const CODEX_MARKER_COLOR: &str = "38;2;255;255;255";
 // BrandLogos font の PUA-B glyph。`--logos` で使う。
 const CLAUDE_LOGO: &str = "\u{100002}"; // Claude sunburst。
 const CODEX_LOGO: &str = "\u{100000}"; // OpenAI mark。
@@ -25,6 +27,16 @@ const WEEK_TH: [i64; 3] = [86400, 172800, 259200];
 fn brand_sgr(p: Provider) -> String {
     let (r, g, b) = brand_rgb(p);
     format!("38;2;{r};{g};{b}")
+}
+
+/// provider marker(左端の logo glyph またはテキストラベル)に使う ANSI color。
+/// Codex は brand teal よりも白の方が明るいターミナル背景でも視認しやすいため、
+/// logos モードと text モードのどちらでも `CODEX_MARKER_COLOR` を使う。
+fn marker_color(p: Provider) -> String {
+    match p {
+        Provider::Codex => CODEX_MARKER_COLOR.to_string(),
+        _ => brand_sgr(p),
+    }
 }
 
 /// statusline レンダリングの表示オプション。CLI flag 群を 1 つに束ね、
@@ -84,22 +96,24 @@ fn render_row(
     );
     let mut s = String::from("  ");
     // provider marker は `--logos` なら brand-logo glyph、そうでなければ text label。
+    // どちらのモードでも Codex は teal brand color より white の方が読みやすいので
+    // マーカー用の色は marker_color() に集約する。
     // PixelLab は BrandLogos font に glyph が無いため logos モードでも text にフォールバック。
+    let marker_color = marker_color(a.provider);
     if opts.logos {
-        let logo_form = match a.provider {
-            Provider::Claude => Some((CLAUDE_LOGO, brand_sgr(a.provider))),
-            // Codex mark は teal の brand color より white の方が読みやすい。
-            Provider::Codex => Some((CODEX_LOGO, CODEX_LOGO_COLOR.to_string())),
-            Provider::Antigravity => Some((ANTIGRAVITY_LOGO, brand_sgr(a.provider))),
+        let logo = match a.provider {
+            Provider::Claude => Some(CLAUDE_LOGO),
+            Provider::Codex => Some(CODEX_LOGO),
+            Provider::Antigravity => Some(ANTIGRAVITY_LOGO),
             Provider::PixelLab => None,
         };
-        if let Some((logo, logo_color)) = logo_form {
-            s += &paint(opts.color, &logo_color, &format!("{logo}  "));
+        if let Some(logo) = logo {
+            s += &paint(opts.color, &marker_color, &format!("{logo}  "));
         } else {
-            s += &paint(opts.color, &brand_sgr(a.provider), &format!("{prov:<6} "));
+            s += &paint(opts.color, &marker_color, &format!("{prov:<6} "));
         }
     } else {
-        s += &paint(opts.color, &brand_sgr(a.provider), &format!("{prov:<6} "));
+        s += &paint(opts.color, &marker_color, &format!("{prov:<6} "));
     }
     // Antigravity 行は単一 token で account name が冗長なため model-group を表示する。
     // それ以外は account name を表示する。"Claude&GPT" が入る幅で pad し、全行の gauge を揃える。
