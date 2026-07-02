@@ -87,8 +87,15 @@ Map to `Usage`:
   `used_percent = imageGenerated / imageAmount * 100` (clamped to `[0, 100]`),
   `resets_at = generation_reset_date` (falls back to `next_bill_date`, then
   `expiry_date`). The unified model has no dedicated "monthly" slot, so we
-  reuse the long-window column — `1w` in statusline output is a slight
-  misnomer for PixelLab but keeps the layout consistent.
+  reuse the long-window column. Rendering keeps this honest with two
+  overrides: the per-row badge in both `render/table.rs` and
+  `render/statusline.rs` reads `1m` (not `1w`), and because
+  `five_hour == None`, the short slot is dropped and the long slot expands
+  into a merged bar (`render/statusline.rs` uses `wide_gauge = 2 * gauge + 19`
+  so the right edge still aligns with dual-slot rows; `render/table.rs` swaps
+  in `WIDE_BAR_WIDTH = 24` for the same effect). This branch is data-driven
+  ("5h missing → merged"), so Antigravity local-server groups (which also
+  return only weekly buckets) benefit automatically.
 - `five_hour` = `None` (PixelLab has no rolling short-window quota).
 - `plan` = subscription `name` (e.g. `Tier 1: Pixel Apprentice`) with
   `+ $X.XX credits` appended when the pay-as-you-go USD balance is > 0. Free

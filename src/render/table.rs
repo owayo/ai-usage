@@ -61,13 +61,27 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
 
         match &r.usage {
             Ok(u) => {
+                // 5h スロットが空の provider(PixelLab / Antigravity 一部)は、
+                // 長期セルを横長バー(2.4x)にして 5h 分のデッドスペースを回収する。
+                // comfy-table は colspan を持たないので、5h セルは "—" のまま。
+                let merged = u.five_hour.is_none() && u.weekly.is_some();
+                let long_bar_width = if merged {
+                    WIDE_BAR_WIDTH
+                } else {
+                    NORMAL_BAR_WIDTH
+                };
                 table.add_row(vec![
                     name_cell,
                     Cell::new(service_label(r.provider, r.group_label.as_deref()))
                         .fg(provider_color(r.provider)),
                     Cell::new(u.plan.as_deref().unwrap_or("—")),
-                    window_cell(&u.five_hour, now, Some("5h")),
-                    window_cell(&u.weekly, now, Some(long_window_label(r.provider))),
+                    window_cell(&u.five_hour, now, Some("5h"), NORMAL_BAR_WIDTH),
+                    window_cell(
+                        &u.weekly,
+                        now,
+                        Some(long_window_label(r.provider)),
+                        long_bar_width,
+                    ),
                 ]);
             }
             Err(e) => {
@@ -91,7 +105,18 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
     );
 }
 
-fn window_cell(w: &Option<Window>, now: DateTime<Utc>, badge: Option<&str>) -> Cell {
+/// 通常セルの gauge 幅(旧 tbar と同じ)。
+const NORMAL_BAR_WIDTH: usize = 10;
+/// 5h スロットが常に空の provider 向けに、長期セル用の横長 gauge 幅。5h セルの
+/// デッドスペースを長期セル側で回収する量。
+const WIDE_BAR_WIDTH: usize = 24;
+
+fn window_cell(
+    w: &Option<Window>,
+    now: DateTime<Utc>,
+    badge: Option<&str>,
+    bar_width: usize,
+) -> Cell {
     match w {
         // データ無し: 色なしのプレースホルダ("—")。
         None => Cell::new("—"),
@@ -103,7 +128,7 @@ fn window_cell(w: &Option<Window>, now: DateTime<Utc>, badge: Option<&str>) -> C
             let text = format!(
                 "{} {}  {:>3}%  · {}",
                 badge.unwrap_or(""),
-                tbar(w.used_percent),
+                tbar(w.used_percent, bar_width),
                 w.used_percent.round() as i64,
                 reset
             );
@@ -112,9 +137,11 @@ fn window_cell(w: &Option<Window>, now: DateTime<Utc>, badge: Option<&str>) -> C
     }
 }
 
-fn tbar(pct: f64) -> String {
-    let filled = ((pct / 100.0) * 10.0).round().clamp(0.0, 10.0) as usize;
-    format!("{}{}", "█".repeat(filled), "░".repeat(10 - filled))
+fn tbar(pct: f64, width: usize) -> String {
+    let filled = ((pct / 100.0) * width as f64)
+        .round()
+        .clamp(0.0, width as f64) as usize;
+    format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
 }
 
 fn tlevel(pct: f64) -> Color {
@@ -158,11 +185,22 @@ mod tests {
 
     #[test]
     fn tbar_clamps_extremes() {
-        // 0% は全 ░、100% は全 █、超過/欠損もパニックせず clamp される。
-        assert_eq!(tbar(0.0), "░".repeat(10));
-        assert_eq!(tbar(100.0), "█".repeat(10));
-        assert_eq!(tbar(150.0), "█".repeat(10));
-        assert_eq!(tbar(-10.0), "░".repeat(10));
+        // 0% は全 ░、100% は全 █、超過/欠損もパニックせず clamp される。標準 10 幅。
+        assert_eq!(tbar(0.0, 10), "░".repeat(10));
+        assert_eq!(tbar(100.0, 10), "█".repeat(10));
+        assert_eq!(tbar(150.0, 10), "█".repeat(10));
+        assert_eq!(tbar(-10.0, 10), "░".repeat(10));
+    }
+
+    #[test]
+    fn tbar_width_controls_length() {
+        // WIDE_BAR_WIDTH (merged 用) でも同じ挙動。
+        assert_eq!(tbar(0.0, WIDE_BAR_WIDTH), "░".repeat(WIDE_BAR_WIDTH));
+        assert_eq!(tbar(100.0, WIDE_BAR_WIDTH), "█".repeat(WIDE_BAR_WIDTH));
+        // 50% は width/2 の █ を返す(width が偶数のとき厳密に半々)。
+        let half = tbar(50.0, 24);
+        assert_eq!(half.chars().filter(|c| *c == '█').count(), 12);
+        assert_eq!(half.chars().filter(|c| *c == '░').count(), 12);
     }
 
     #[test]
@@ -182,18 +220,40 @@ mod tests {
             used_percent: 46.0,
             resets_at: Some(fixed_utc("2026-06-20T15:00:00Z")),
         });
-        let cell = window_cell(&w, now, Some("1m")).content();
+        let cell = window_cell(&w, now, Some("1m"), NORMAL_BAR_WIDTH).content();
         assert!(cell.starts_with("1m"), "expected 1m badge in {cell:?}");
         assert!(cell.contains("46%"));
 
-        let cell_no_badge = window_cell(&w, now, None).content();
+        let cell_no_badge = window_cell(&w, now, None, NORMAL_BAR_WIDTH).content();
         assert!(
             !cell_no_badge.starts_with(char::is_alphabetic),
             "no badge → cell starts with bar glyph, got {cell_no_badge:?}"
         );
 
-        // データ無しは badge 有無に関わらず "—" のまま(桁ズレさせない)。
-        assert_eq!(window_cell(&None, now, Some("1m")).content(), "—");
+        // データ無しは badge 有無・幅指定に関わらず "—" のまま(桁ズレさせない)。
+        assert_eq!(
+            window_cell(&None, now, Some("1m"), NORMAL_BAR_WIDTH).content(),
+            "—"
+        );
+        assert_eq!(
+            window_cell(&None, now, Some("1m"), WIDE_BAR_WIDTH).content(),
+            "—"
+        );
+    }
+
+    #[test]
+    fn window_cell_wide_bar_matches_requested_width() {
+        // merged 行(5h 無し)向けに、gauge 文字数が WIDE_BAR_WIDTH と一致する。
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let w = Some(Window {
+            used_percent: 50.0,
+            resets_at: Some(fixed_utc("2026-06-20T00:00:00Z")),
+        });
+        let cell = window_cell(&w, now, Some("1m"), WIDE_BAR_WIDTH)
+            .content()
+            .to_string();
+        let gauge_glyphs = cell.chars().filter(|c| *c == '█' || *c == '░').count();
+        assert_eq!(gauge_glyphs, WIDE_BAR_WIDTH);
     }
 
     fn fixed_utc(rfc3339: &str) -> DateTime<Utc> {

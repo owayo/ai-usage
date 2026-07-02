@@ -112,25 +112,60 @@ fn render_row(
     // 長期(right)スロットの label は provider ごとの reset サイクルに合わせる。
     // PixelLab は月次生成枠なので "1m"、それ以外は従来どおり "1w"。
     let long_label = long_window_label(a.provider);
+    let gauge_width = if opts.compact { 8 } else { 16 };
     if !a.ok {
         // データ取得に失敗したアカウントも、データ有り行と桁位置を揃える。
         // window_seg の None 分岐(空ゲージ + "--")を短期 / 長期スロット双方で再利用する。
         // 短期スロットには reset_at を伝搬しない(長期限定のため false 固定)。
-        s += &window_seg(opts, "5h", None, now, FIVE_H_TH, false);
+        s += &window_seg(opts, "5h", None, now, FIVE_H_TH, false, gauge_width);
         s += "   ";
-        s += &window_seg(opts, long_label, None, now, WEEK_TH, opts.reset_at);
+        s += &window_seg(
+            opts,
+            long_label,
+            None,
+            now,
+            WEEK_TH,
+            opts.reset_at,
+            gauge_width,
+        );
         return s;
     }
-    s += &window_seg(opts, "5h", a.five_hour.as_ref(), now, FIVE_H_TH, false);
-    s += "   ";
-    s += &window_seg(
-        opts,
-        long_label,
-        a.weekly.as_ref(),
-        now,
-        WEEK_TH,
-        opts.reset_at,
-    );
+    // 5h スロットが常に空の provider(PixelLab / Antigravity 一部)は、
+    // 長期スロットを 5h 分の空白ごと巻き取って 1 つの横長スロットにする。
+    // 横幅 = 2 スロット + 区切り 3 文字 と等しくなるよう wide_gauge = 2*gauge + 19。
+    let merged_slot = a.five_hour.is_none() && a.weekly.is_some();
+    if merged_slot {
+        let wide_gauge = 2 * gauge_width + 19;
+        s += &window_seg(
+            opts,
+            long_label,
+            a.weekly.as_ref(),
+            now,
+            WEEK_TH,
+            opts.reset_at,
+            wide_gauge,
+        );
+    } else {
+        s += &window_seg(
+            opts,
+            "5h",
+            a.five_hour.as_ref(),
+            now,
+            FIVE_H_TH,
+            false,
+            gauge_width,
+        );
+        s += "   ";
+        s += &window_seg(
+            opts,
+            long_label,
+            a.weekly.as_ref(),
+            now,
+            WEEK_TH,
+            opts.reset_at,
+            gauge_width,
+        );
+    }
     s
 }
 
@@ -141,9 +176,8 @@ fn window_seg(
     now: DateTime<Utc>,
     th: [i64; 3],
     show_reset_at: bool,
+    gauge_width: usize,
 ) -> String {
-    // --compact 時は gauge 幅を半分(8)にする。空 gauge / 実 gauge とも同じ幅で揃える。
-    let gauge_width = if opts.compact { 8 } else { 16 };
     let mut s = paint(opts.color, GRAY, &format!("{label} "));
     match w {
         None => {
@@ -313,12 +347,12 @@ mod tests {
             resets_at: Some("2026-06-17T16:10:00Z".to_string()),
             resets_in_seconds: Some(2 * 86400),
         };
-        let with_date = window_seg(&opts, "1w", Some(&w), now, WEEK_TH, true);
+        let with_date = window_seg(&opts, "1w", Some(&w), now, WEEK_TH, true, 16);
         assert!(
             with_date.contains('(') && with_date.ends_with(')'),
             "expected date suffix in {with_date:?}"
         );
-        let without = window_seg(&opts, "1w", Some(&w), now, WEEK_TH, false);
+        let without = window_seg(&opts, "1w", Some(&w), now, WEEK_TH, false, 16);
         assert!(
             !without.contains('('),
             "did not expect date suffix in {without:?}"
@@ -330,7 +364,7 @@ mod tests {
         // データ無し or 既にリセット済み(now 表示)では、show_reset_at=true でも日時は出さない。
         let now = fixed_utc("2026-06-15T00:00:00Z");
         let opts = plain_opts();
-        let none_out = window_seg(&opts, "1w", None, now, WEEK_TH, true);
+        let none_out = window_seg(&opts, "1w", None, now, WEEK_TH, true, 16);
         assert!(
             !none_out.contains('('),
             "no date for None window: {none_out:?}"
@@ -341,11 +375,31 @@ mod tests {
             resets_at: Some("2026-06-10T00:00:00Z".to_string()),
             resets_in_seconds: Some(0),
         };
-        let expired_out = window_seg(&opts, "1w", Some(&expired), now, WEEK_TH, true);
+        let expired_out = window_seg(&opts, "1w", Some(&expired), now, WEEK_TH, true, 16);
         assert!(
             !expired_out.contains('('),
             "no date when already reset: {expired_out:?}"
         );
         assert!(expired_out.contains("now"));
+    }
+
+    #[test]
+    fn window_seg_gauge_width_controls_bar_length() {
+        // 明示的に渡した gauge_width で bar 長が決まる。マージ時の横長スロット検証。
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let opts = plain_opts();
+        let w = WindowOut {
+            used_percent: 50.0,
+            resets_at: Some("2026-06-17T00:00:00Z".to_string()),
+            resets_in_seconds: Some(2 * 86400),
+        };
+        // 標準幅 16 → gauge 部は 16 文字。
+        let normal = window_seg(&opts, "1w", Some(&w), now, WEEK_TH, false, 16);
+        // マージ時の 51 → gauge 部は 51 文字。gauge 部分だけ純増する。
+        let wide = window_seg(&opts, "1m", Some(&w), now, WEEK_TH, false, 51);
+        // gauge 文字 (█/░) の総数で比較。
+        let count_glyphs = |s: &str| s.chars().filter(|c| *c == '█' || *c == '░').count();
+        assert_eq!(count_glyphs(&normal), 16);
+        assert_eq!(count_glyphs(&wide), 51);
     }
 }

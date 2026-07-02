@@ -55,7 +55,7 @@ Claude and a Codex subscription = four accounts) without you logging anything in
 
 - **Multi-Account**: Reports every Chrome profile signed into Claude, Codex, or PixelLab — no re-login needed
 - **Multi-Provider**: Claude (`claude.ai`), Codex (`chatgpt.com`), Antigravity (Google's `agy` CLI/IDE), and PixelLab (`pixellab.ai`) in one view
-- **Two Windows**: Rolling 5-hour and a long window (weekly for Claude / Codex / Antigravity, monthly for PixelLab) with usage bar, percentage, and reset countdown — each row's badge (`5h` / `1w` / `1m`) shows the exact cycle
+- **Two Windows**: Rolling 5-hour and a long window (weekly for Claude / Codex / Antigravity, monthly for PixelLab) with usage bar, percentage, and reset countdown — each row's badge (`5h` / `1w` / `1m`) shows the exact cycle. Rows without a 5-hour window (PixelLab, Antigravity local-server groups) collapse both slots into a single wider bar so no space is wasted on empty `5h`
 - **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
 - **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars
 - **JSON Output**: Machine-readable output for scripting and dashboards
@@ -286,7 +286,9 @@ For each Chrome profile it finds, `ai-usage`:
    `api.pixellab.ai/get-account-data` (monthly `imageGenerated / imageAmount` + prepaid
    `credits`) and `api.pixellab.ai/get-subscription` (plan name + `generation_reset_date`).
    The monthly quota renders in the long-window column with a `1m` badge (rather than the
-   usual `1w`) so it isn't mistaken for a weekly reset.
+   usual `1w`) so it isn't mistaken for a weekly reset. Since PixelLab has no rolling
+   5-hour window, the 5-hour slot is collapsed and the long-window slot expands into a
+   wider bar spanning the same total width as the two-slot layout.
 
 `claude.ai` and `chatgpt.com` sit behind Cloudflare, so the HTTP client
 ([`wreq`](https://crates.io/crates/wreq)) emulates Chrome's TLS/HTTP2 fingerprint and
