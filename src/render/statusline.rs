@@ -16,6 +16,7 @@ const CODEX_MARKER_COLOR: &str = "38;2;255;255;255";
 const CLAUDE_LOGO: &str = "\u{100002}"; // Claude sunburst。
 const CODEX_LOGO: &str = "\u{100000}"; // OpenAI mark。
 const ANTIGRAVITY_LOGO: &str = "\u{100003}"; // Antigravity mark。
+const PIXELLAB_LOGO: &str = "\u{100004}"; // PixelLab dragon。
 const GRAY: &str = "38;5;245";
 const DIM: &str = "38;5;242";
 const GREEN: &str = "38;5;35";
@@ -103,20 +104,15 @@ fn render_row(
     // provider marker は `--logos` なら brand-logo glyph、そうでなければ text label。
     // どちらのモードでも Codex は teal brand color より white の方が読みやすいので
     // マーカー用の色は marker_color() に集約する。
-    // PixelLab は BrandLogos font に glyph が無いため logos モードでも text にフォールバック。
     let marker_color = marker_color(a.provider);
     if opts.logos {
         let logo = match a.provider {
-            Provider::Claude => Some(CLAUDE_LOGO),
-            Provider::Codex => Some(CODEX_LOGO),
-            Provider::Antigravity => Some(ANTIGRAVITY_LOGO),
-            Provider::PixelLab => None,
+            Provider::Claude => CLAUDE_LOGO,
+            Provider::Codex => CODEX_LOGO,
+            Provider::Antigravity => ANTIGRAVITY_LOGO,
+            Provider::PixelLab => PIXELLAB_LOGO,
         };
-        if let Some(logo) = logo {
-            s += &paint(opts.color, &marker_color, &format!("{logo}  "));
-        } else {
-            s += &paint(opts.color, &marker_color, &format!("{prov:<6} "));
-        }
+        s += &paint(opts.color, &marker_color, &format!("{logo}  "));
     } else {
         s += &paint(opts.color, &marker_color, &format!("{prov:<6} "));
     }
