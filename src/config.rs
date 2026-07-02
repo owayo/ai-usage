@@ -52,19 +52,42 @@ pub struct ProfileCfg {
     pub providers: Option<Vec<String>>,
 }
 
+/// profile ごとに表示する Chrome 系 provider(Claude / Codex)の選択。
+/// `(bool, bool)` タプルの位置取り違えを避けるための小さな型。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BrowserWants {
+    pub claude: bool,
+    pub codex: bool,
+}
+
+impl BrowserWants {
+    /// 両 provider を表示する既定値。
+    pub fn all() -> Self {
+        Self {
+            claude: true,
+            codex: true,
+        }
+    }
+
+    /// どちらか一方でも表示対象があるか(Chrome Cookie 復号が必要か)。
+    pub fn any(self) -> bool {
+        self.claude || self.codex
+    }
+}
+
 impl ProfileCfg {
     pub fn matches(&self, name: &str, dir: &str) -> bool {
         self.matcher.eq_ignore_ascii_case(name) || self.matcher.eq_ignore_ascii_case(dir)
     }
 
-    /// この profile の `providers` list から `(want_claude, want_codex)` を得る。
-    pub fn wants(&self) -> (bool, bool) {
+    /// この profile の `providers` list から表示する Chrome provider(Claude / Codex)を得る。
+    pub fn wants(&self) -> BrowserWants {
         match &self.providers {
-            None => (true, true),
-            Some(list) => (
-                list.iter().any(|s| s.eq_ignore_ascii_case("claude")),
-                list.iter().any(|s| s.eq_ignore_ascii_case("codex")),
-            ),
+            None => BrowserWants::all(),
+            Some(list) => BrowserWants {
+                claude: list.iter().any(|s| s.eq_ignore_ascii_case("claude")),
+                codex: list.iter().any(|s| s.eq_ignore_ascii_case("codex")),
+            },
         }
     }
 }
@@ -123,16 +146,46 @@ mod tests {
     fn wants_defaults_to_both() {
         // providers が未指定なら Claude/Codex 両方を表示対象にする。
         let c = cfg("Work", None);
-        assert_eq!(c.wants(), (true, true));
+        assert_eq!(
+            c.wants(),
+            BrowserWants {
+                claude: true,
+                codex: true
+            }
+        );
     }
 
     #[test]
     fn wants_filters_to_listed_providers() {
         // providers リストに名前があるものだけ表示する(順序・大小無関係)。
-        assert_eq!(cfg("W", Some(&["claude"])).wants(), (true, false));
-        assert_eq!(cfg("W", Some(&["CODEX"])).wants(), (false, true));
-        assert_eq!(cfg("W", Some(&["claude", "codex"])).wants(), (true, true));
-        assert_eq!(cfg("W", Some(&[])).wants(), (false, false));
+        assert_eq!(
+            cfg("W", Some(&["claude"])).wants(),
+            BrowserWants {
+                claude: true,
+                codex: false
+            }
+        );
+        assert_eq!(
+            cfg("W", Some(&["CODEX"])).wants(),
+            BrowserWants {
+                claude: false,
+                codex: true
+            }
+        );
+        assert_eq!(
+            cfg("W", Some(&["claude", "codex"])).wants(),
+            BrowserWants {
+                claude: true,
+                codex: true
+            }
+        );
+        assert_eq!(
+            cfg("W", Some(&[])).wants(),
+            BrowserWants {
+                claude: false,
+                codex: false
+            }
+        );
     }
 
     #[test]
@@ -154,7 +207,13 @@ mod tests {
         assert_eq!(parsed.profiles.len(), 1);
         assert_eq!(parsed.profiles[0].matcher, "Work");
         assert_eq!(parsed.profiles[0].label.as_deref(), Some("work"));
-        assert_eq!(parsed.profiles[0].wants(), (true, false));
+        assert_eq!(
+            parsed.profiles[0].wants(),
+            BrowserWants {
+                claude: true,
+                codex: false
+            }
+        );
         let agy = parsed.antigravity.as_ref().unwrap();
         assert_eq!(agy.enabled, Some(true));
         assert_eq!(agy.label.as_deref(), Some("agy"));

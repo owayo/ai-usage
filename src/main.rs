@@ -11,6 +11,7 @@ mod model;
 mod profiles;
 mod render;
 mod report;
+mod sort;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,8 +20,11 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use clap::{Parser, ValueEnum};
 
+use config::BrowserWants;
 use model::{AccountReport, Provider, UsageRow};
 use profiles::Profile;
+// render 層と共有する(`use crate::SortKey`)ため、クレートルートに再エクスポートする。
+pub use sort::SortKey;
 
 #[derive(Parser)]
 #[command(
@@ -118,19 +122,6 @@ enum ProviderArg {
     Antigravity,
 }
 
-/// `--sort` の値。`render` 層もこの enum を参照してレンダラー間で挙動を揃える。
-#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[value(rename_all = "kebab-case")]
-pub enum SortKey {
-    /// 既存挙動 — table/json はフェッチ順、statusline は provider.rank() → profile 名。
-    #[default]
-    Provider,
-    /// 週枠の使用率が高い順(降順)。リミットに近いアカウントを上に表示する。
-    WeeklyUsage,
-    /// 週枠のリセット時刻が近い順(昇順)。リセット待ちが短いアカウントを上に。
-    WeeklyReset,
-}
-
 impl ProviderArg {
     fn to_provider(self) -> Provider {
         match self {
@@ -157,6 +148,33 @@ struct JobMeta {
     provider: Provider,
 }
 
+impl JobMeta {
+    /// fetch 成功行 1 件を AccountReport にする。1 job が複数行(Antigravity の
+    /// model group)を返すため、メタは行ごとに clone する。
+    fn report_for(&self, row: UsageRow) -> AccountReport {
+        AccountReport {
+            profile_name: self.profile_name.clone(),
+            profile_email: self.profile_email.clone(),
+            label: self.label.clone(),
+            provider: self.provider,
+            group_label: row.group_label,
+            usage: Ok(row.usage),
+        }
+    }
+
+    /// fetch 失敗を error 行 1 件にする(メタは move で消費)。
+    fn error_report(self, e: anyhow::Error) -> AccountReport {
+        AccountReport {
+            profile_name: self.profile_name,
+            profile_email: self.profile_email,
+            label: self.label,
+            provider: self.provider,
+            group_label: None,
+            usage: Err(e),
+        }
+    }
+}
+
 struct Job {
     meta: JobMeta,
     auth: AuthMaterial,
@@ -166,8 +184,7 @@ struct Job {
 struct Target {
     profile: Profile,
     label: Option<String>,
-    want_claude: bool,
-    want_codex: bool,
+    wants: BrowserWants,
 }
 
 /// Cloudflare は有効な request にも challenge を返すことがあるため、account を失敗扱いに
@@ -216,7 +233,7 @@ async fn fetch_reports(
 
     // Chrome Cookie job(Claude/Codex)。必要な場合だけ Keychain に触る。
     // `--only antigravity` では prompt 自体を避ける。
-    let wants_chrome = targets.iter().any(|t| t.want_claude || t.want_codex);
+    let wants_chrome = targets.iter().any(|t| t.wants.any());
     if wants_chrome {
         let password = cookies::safe_storage_key("Chrome Safe Storage")?;
         let key = cookies::derive_key(&password);
@@ -227,7 +244,7 @@ async fn fetch_reports(
             let Ok(pc) = cookies::load(&db, &key) else {
                 continue;
             };
-            if t.want_claude && claude::has_session(&pc.claude) {
+            if t.wants.claude && claude::has_session(&pc.claude) {
                 jobs.push(Job {
                     meta: JobMeta {
                         profile_name: t.profile.name.clone(),
@@ -238,7 +255,7 @@ async fn fetch_reports(
                     auth: AuthMaterial::BrowserCookies(pc.claude),
                 });
             }
-            if t.want_codex && codex::has_session(&pc.chatgpt) {
+            if t.wants.codex && codex::has_session(&pc.chatgpt) {
                 jobs.push(Job {
                     meta: JobMeta {
                         profile_name: t.profile.name.clone(),
@@ -293,31 +310,9 @@ async fn fetch_reports(
         };
         match rows {
             Ok(rows) => {
-                for row in rows {
-                    results.push((
-                        idx,
-                        AccountReport {
-                            profile_name: meta.profile_name.clone(),
-                            profile_email: meta.profile_email.clone(),
-                            label: meta.label.clone(),
-                            provider: meta.provider,
-                            group_label: row.group_label,
-                            usage: Ok(row.usage),
-                        },
-                    ));
-                }
+                results.extend(rows.into_iter().map(|row| (idx, meta.report_for(row))));
             }
-            Err(e) => results.push((
-                idx,
-                AccountReport {
-                    profile_name: meta.profile_name,
-                    profile_email: meta.profile_email,
-                    label: meta.label,
-                    provider: meta.provider,
-                    group_label: None,
-                    usage: Err(e),
-                },
-            )),
+            Err(e) => results.push((idx, meta.error_report(e))),
         }
     }
     results.sort_by_key(|(idx, _)| *idx);
@@ -467,15 +462,24 @@ fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
 
 /// profile ごとに表示する provider を決める。global `--only` flag が最優先で、
 /// 次に profile config の `providers`、未指定なら両方。
-fn resolve_wants(cli: &Cli, cfg: Option<&config::ProfileCfg>) -> (bool, bool) {
+fn resolve_wants(cli: &Cli, cfg: Option<&config::ProfileCfg>) -> BrowserWants {
     // global `--only` が最優先。未指定(None)のときだけ config の providers、
     // それも無ければ両方 true(既定)に fallback する。
     // Antigravity は Chrome provider を両方 false にする(別経路で取得)。
     match cli.only {
-        Some(ProviderArg::Claude) => (true, false),
-        Some(ProviderArg::Codex) => (false, true),
-        Some(ProviderArg::Antigravity) => (false, false),
-        None => cfg.map_or((true, true), |c| c.wants()),
+        Some(ProviderArg::Claude) => BrowserWants {
+            claude: true,
+            codex: false,
+        },
+        Some(ProviderArg::Codex) => BrowserWants {
+            claude: false,
+            codex: true,
+        },
+        Some(ProviderArg::Antigravity) => BrowserWants {
+            claude: false,
+            codex: false,
+        },
+        None => cfg.map_or(BrowserWants::all(), |c| c.wants()),
     }
 }
 
@@ -483,14 +487,10 @@ fn resolve_wants(cli: &Cli, cfg: Option<&config::ProfileCfg>) -> (bool, bool) {
 /// 優先順は `--profile` > config `[[profiles]]` > 全 auto-discover。
 fn build_targets(all: Vec<Profile>, cli: &Cli, cfg: &config::Config) -> Vec<Target> {
     // 3 つの選択戦略で構築処理は同じ。選ばれる profile、順序、対応 config row だけが違う。
-    let make = |profile: Profile, c: Option<&config::ProfileCfg>| {
-        let (want_claude, want_codex) = resolve_wants(cli, c);
-        Target {
-            label: c.and_then(|c| c.label.clone()),
-            want_claude,
-            want_codex,
-            profile,
-        }
+    let make = |profile: Profile, c: Option<&config::ProfileCfg>| Target {
+        label: c.and_then(|c| c.label.clone()),
+        wants: resolve_wants(cli, c),
+        profile,
     };
 
     if !cli.profile.is_empty() {
@@ -686,6 +686,10 @@ mod tests {
         assert!(toml_str("work").starts_with(['"', '\'']));
     }
 
+    fn bw(claude: bool, codex: bool) -> BrowserWants {
+        BrowserWants { claude, codex }
+    }
+
     #[test]
     fn resolve_wants_only_flag_takes_precedence() {
         // --only は config より優先され、その provider だけ true になる。
@@ -696,14 +700,14 @@ mod tests {
         };
         let cli = Cli::parse_from(["ai-usage", "--only", "codex"]);
         // config が両方 true でも、--only codex なら codex だけ。
-        assert_eq!(resolve_wants(&cli, Some(&cfg)), (false, true));
+        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(false, true));
 
         let cli = Cli::parse_from(["ai-usage", "--only", "claude"]);
-        assert_eq!(resolve_wants(&cli, Some(&cfg)), (true, false));
+        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(true, false));
 
         // --only antigravity は Chrome provider を両方 false にする(Antigravity は別経路)。
         let cli = Cli::parse_from(["ai-usage", "--only", "antigravity"]);
-        assert_eq!(resolve_wants(&cli, Some(&cfg)), (false, false));
+        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(false, false));
     }
 
     #[test]
@@ -715,9 +719,9 @@ mod tests {
             providers: Some(vec!["claude".to_string()]),
         };
         let cli = Cli::parse_from(["ai-usage"]);
-        assert_eq!(resolve_wants(&cli, Some(&cfg)), (true, false));
+        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(true, false));
 
         // config も無ければ両方 true(既定)。
-        assert_eq!(resolve_wants(&cli, None), (true, true));
+        assert_eq!(resolve_wants(&cli, None), bw(true, true));
     }
 }
