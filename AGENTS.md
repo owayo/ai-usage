@@ -17,8 +17,11 @@ Storage" Keychain key) and reports Claude and Codex usage limits — the rolling
 | `src/http.rs`     | `wreq` client with Chrome TLS/HTTP2 emulation (Cloudflare). |
 | `src/claude.rs` / `src/codex.rs` / `src/antigravity.rs` | Per-provider usage fetchers. |
 | `src/model.rs`    | `Provider` / `Usage` / `Window` data model. |
-| `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles + Antigravity table). |
-| `src/report.rs` / `src/render.rs` | JSON DTO + table / statusline rendering. |
+| `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles + Antigravity table) + `BrowserWants`. |
+| `src/sort.rs`     | `SortKey` (`--sort`), shared by CLI and renderers. |
+| `src/report.rs`   | JSON DTO (shared by `--json` output and `--input` cache). |
+| `src/render.rs`   | Shared row resolution (display name, active highlight, brand colors) + JSON output; re-exports the renderers. |
+| `src/render/sort.rs` / `src/render/table.rs` / `src/render/statusline.rs` | Row sorting (`SortableRow`), human table, compact statusline. |
 | `src/main.rs`     | CLI, profile/provider resolution, concurrent fetch. |
 
 ## Build / check
@@ -29,11 +32,14 @@ Storage" Keychain key) and reports Claude and Codex usage limits — the rolling
 Each module ships unit tests next to its source (`#[cfg(test)] mod tests`),
 covering pure logic: cookie decryption round-trips, exact provider-domain
 filtering, and session-cookie name matching (`cookies.rs`), org/window parsing
-(`claude.rs`/`codex.rs`), TOML config (`config.rs`), active-row resolution and
-statusline formatting (`render.rs`), Antigravity quota parsing including ISO-8601
-and epoch-second `resetTime` plus wrapped/flat `GetUserStatus` shapes
-(`antigravity.rs`), report-DTO building with reset-countdown clamping
-(`report.rs`), and TOML-value escaping plus provider resolution (`main.rs`).
+(`claude.rs`/`codex.rs`), TOML config and `BrowserWants` (`config.rs`),
+display-name and active-row resolution (`render.rs`), row sorting
+(`render/sort.rs`), table bar/humanize formatting (`render/table.rs`),
+statusline gauge/duration formatting (`render/statusline.rs`), Antigravity
+quota parsing including ISO-8601 and epoch-second `resetTime` plus wrapped/flat
+`GetUserStatus` shapes (`antigravity.rs`), report-DTO building with
+reset-countdown clamping (`report.rs`), and TOML-value escaping plus provider
+resolution (`main.rs`).
 Network code (`http.rs`) is not unit-tested — drive it via `make build` + a real
 run.
 
