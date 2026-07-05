@@ -106,18 +106,21 @@ fn host_matches_domain(host: &str, domain: &str) -> bool {
 }
 
 fn is_codex_session_cookie(name: &str) -> bool {
-    name == CODEX_SESSION_COOKIE
-        || name
-            .strip_prefix(CODEX_SESSION_COOKIE)
-            .is_some_and(|suffix| suffix.starts_with('.'))
+    is_exact_or_numeric_chunk(name, CODEX_SESSION_COOKIE)
 }
 
 fn is_pixellab_session_cookie(name: &str) -> bool {
     // Supabase Auth はトークンが大きいと `.0`/`.1` に分割する(Codex と同じ挙動)。
-    name == PIXELLAB_SESSION_COOKIE
-        || name
-            .strip_prefix(PIXELLAB_SESSION_COOKIE)
-            .is_some_and(|suffix| suffix.starts_with('.'))
+    is_exact_or_numeric_chunk(name, PIXELLAB_SESSION_COOKIE)
+}
+
+fn is_exact_or_numeric_chunk(name: &str, base: &str) -> bool {
+    if name == base {
+        return true;
+    }
+    name.strip_prefix(base)
+        .and_then(|suffix| suffix.strip_prefix('.'))
+        .is_some_and(|chunk| !chunk.is_empty() && chunk.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// live でロックされがちな Cookies DB を read-only + immutable で開き、
@@ -309,6 +312,13 @@ mod tests {
         assert!(!is_codex_session_cookie(&format!(
             "{CODEX_SESSION_COOKIE}-extra"
         )));
+        // `.` 区切りでも数値 chunk でなければ弾く。
+        assert!(!is_codex_session_cookie(&format!(
+            "{CODEX_SESSION_COOKIE}.backup"
+        )));
+        assert!(!is_codex_session_cookie(&format!(
+            "{CODEX_SESSION_COOKIE}."
+        )));
         // prefix にゴミが付くと strip_prefix が外れて false。
         assert!(!is_codex_session_cookie(&format!(
             "xx{CODEX_SESSION_COOKIE}"
@@ -346,8 +356,10 @@ mod tests {
                 ("evilchatgpt.com", CODEX_SESSION_COOKIE),
                 ("chatgpt.com", "xxSecure-next-auth.session-token"),
                 ("chatgpt.com", "__Secure-next-auth.session-tokenizer"),
+                ("chatgpt.com", "__Secure-next-auth.session-token.backup"),
                 ("evil.pixellab.ai.example", PIXELLAB_SESSION_COOKIE),
                 (PIXELLAB_DOMAIN, "supabase-auth-tokenizer"),
+                (PIXELLAB_DOMAIN, "supabase-auth-token.backup"),
             ],
         );
         assert_eq!(detect_sessions(&path), DetectedSessions::default());
@@ -370,6 +382,13 @@ mod tests {
         )));
         assert!(!is_pixellab_session_cookie(&format!(
             "{PIXELLAB_SESSION_COOKIE}-extra"
+        )));
+        // `.` 区切りでも数値 chunk でなければ弾く。
+        assert!(!is_pixellab_session_cookie(&format!(
+            "{PIXELLAB_SESSION_COOKIE}.backup"
+        )));
+        assert!(!is_pixellab_session_cookie(&format!(
+            "{PIXELLAB_SESSION_COOKIE}."
         )));
         assert!(!is_pixellab_session_cookie(&format!(
             "xx{PIXELLAB_SESSION_COOKIE}"

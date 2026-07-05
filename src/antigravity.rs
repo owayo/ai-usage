@@ -190,16 +190,19 @@ fn bucket_to_window(b: &Value) -> Window {
     // language_server は `{remaining:{remainingFraction}}`、OAuth 経路はトップレベルの
     // `remainingFraction` を返すことがあるため両形式を許容する。
     // どちらも欠落している場合は 1.0(未使用)として扱う。
-    let rf = b
-        .pointer("/remaining/remainingFraction")
-        .or_else(|| b.get("remainingFraction"))
-        .and_then(Value::as_f64)
-        .unwrap_or(1.0);
+    let rf = remaining_fraction(b);
     let used = ((1.0 - rf) * 100.0).clamp(0.0, 100.0);
     Window {
         used_percent: used,
         resets_at: bucket_reset(b),
     }
+}
+
+fn remaining_fraction(b: &Value) -> f64 {
+    b.pointer("/remaining/remainingFraction")
+        .or_else(|| b.get("remainingFraction"))
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0)
 }
 
 fn bucket_reset(b: &Value) -> Option<DateTime<Utc>> {
@@ -333,10 +336,7 @@ fn parse_buckets(v: &Value) -> Result<Vec<UsageRow>> {
     let mut worst: Option<&Value> = None;
     let mut worst_rf = 2.0_f64;
     for b in buckets {
-        let rf = b
-            .get("remainingFraction")
-            .and_then(Value::as_f64)
-            .unwrap_or(1.0);
+        let rf = remaining_fraction(b);
         if rf <= worst_rf {
             worst_rf = rf;
             worst = Some(b);
@@ -568,6 +568,24 @@ mod tests {
         assert!(
             (w.used_percent - 60.0).abs() < 0.01,
             "got {}",
+            w.used_percent
+        );
+    }
+
+    #[test]
+    fn oauth_buckets_pick_most_constrained_from_nested_remaining() {
+        let v = json!({"buckets": [
+            {"modelId": "gemini-2.5-pro", "remaining": {"remainingFraction": 0.2},
+             "resetTime": "2026-06-15T06:28:32Z"},
+            {"modelId": "gemini-2.5-flash", "remaining": {"remainingFraction": 0.9},
+             "resetTime": "2026-06-15T06:28:32Z"}
+        ]});
+        let rows = parse_buckets(&v).unwrap();
+        let w = rows[0].usage.five_hour.as_ref().unwrap();
+        // nested 形でも 0.2 = 80% used の bucket を代表値にする。
+        assert!(
+            (w.used_percent - 80.0).abs() < 0.01,
+            "expected nested most constrained bucket, got {}",
             w.used_percent
         );
     }

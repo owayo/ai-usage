@@ -281,6 +281,7 @@ For each Chrome profile it finds, `ai-usage`:
    using the **Chrome Safe Storage** key from your macOS Keychain (standard `v10`
    AES‑128‑CBC scheme). Only cookies Chrome would send to `claude.ai` / `chatgpt.com`
    themselves are replayed — suffix lookalikes like `evilclaude.ai` are filtered out.
+   Chunked session cookies are accepted only when their suffix is numeric (`.0`, `.1`, ...).
 2. **Claude** — uses the `sessionKey` cookie to call
    `claude.ai/api/organizations/{org}/usage` → `five_hour` / `seven_day` `{utilization, resets_at}`.
 3. **Codex** — uses the `__Secure-next-auth.session-token` cookie to exchange for a Bearer
@@ -289,6 +290,8 @@ For each Chrome profile it finds, `ai-usage`:
 4. **Antigravity** — reads the OAuth token from `~/.gemini` (refreshing as needed). When
    `agy` is running, prefers the localhost quota server for the richer per-group payload;
    otherwise falls back to Google's `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`.
+   Both nested and flat `remainingFraction` quota shapes are handled when choosing the most
+   constrained bucket for display.
 5. **PixelLab** — reads the `supabase-auth-token` cookie from `www.pixellab.ai`, refreshing
    the access token via `supabase.pixellab.ai/auth/v1/token` if it has expired, then calls
    `api.pixellab.ai/get-account-data` (monthly `imageGenerated / imageAmount` + prepaid

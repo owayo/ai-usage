@@ -273,7 +273,8 @@ flowchart LR
 1. **Cookie 復号**: `~/Library/Application Support/Google/Chrome/<profile>/Cookies` の
    Cookie を、macOS Keychain の **Chrome Safe Storage** キーで復号 (標準の `v10`
    AES‑128‑CBC 方式)。`claude.ai` / `chatgpt.com` 本体に Chrome が送信する Cookie だけを
-   再送し、`evilclaude.ai` のような suffix 類似ドメインは無視します。
+   再送し、`evilclaude.ai` のような suffix 類似ドメインは無視します。分割された session
+   Cookie は suffix が数値 (`.0`, `.1`, ...) の場合だけ受け入れます。
 2. **Claude** — `sessionKey` Cookie で `claude.ai/api/organizations/{org}/usage` を呼び
    `five_hour` / `seven_day` の `{utilization, resets_at}` を取得。
 3. **Codex** — `__Secure-next-auth.session-token` Cookie を `chatgpt.com/api/auth/session` で
@@ -282,6 +283,7 @@ flowchart LR
 4. **Antigravity** — `~/.gemini` の OAuth トークンを読み (必要に応じて refresh)、`agy`
    起動中は localhost の quota サーバー (グループ別の詳細ペイロード) を優先。停止時は
    Google の `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` にフォールバック。
+   表示用の最も制約が厳しい bucket は、nested / flat 両方の `remainingFraction` 形を読んで選びます。
 5. **PixelLab** — `www.pixellab.ai` の `supabase-auth-token` Cookie から access/refresh
    token を取り出し、期限切れなら `supabase.pixellab.ai/auth/v1/token` で更新した上で
    `api.pixellab.ai/get-account-data` (月次生成枠 `imageGenerated / imageAmount` と

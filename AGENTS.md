@@ -32,12 +32,13 @@ profile. Antigravity (Google's `agy`) is fetched via OAuth alongside them.
 
 Each module ships unit tests next to its source (`#[cfg(test)] mod tests`),
 covering pure logic: cookie decryption round-trips, exact provider-domain
-filtering, and session-cookie name matching (`cookies.rs`), org/window parsing
-(`claude.rs`/`codex.rs`), TOML config and `BrowserWants` (`config.rs`),
-display-name and active-row resolution (`render.rs`), row sorting
-(`render/sort.rs`), table bar/humanize formatting (`render/table.rs`),
-statusline gauge/duration formatting (`render/statusline.rs`), Antigravity
-quota parsing including ISO-8601 and epoch-second `resetTime` plus wrapped/flat
+filtering, numeric session-cookie chunk name matching (`.0`, `.1`, ...)
+(`cookies.rs`), org/window parsing (`claude.rs`/`codex.rs`), TOML config and
+`BrowserWants` (`config.rs`), display-name and active-row resolution
+(`render.rs`), row sorting (`render/sort.rs`), table bar/humanize formatting
+(`render/table.rs`), statusline gauge/duration formatting
+(`render/statusline.rs`), Antigravity quota parsing including nested/flat
+`remainingFraction`, ISO-8601 and epoch-second `resetTime`, plus wrapped/flat
 `GetUserStatus` shapes (`antigravity.rs`), PixelLab Supabase cookie parsing
 (legacy JSON-array + `base64-…` object forms + `.0/.1` chunk join), JWT `exp` /
 `email` extraction, `/get-account-data` + `/get-subscription` folding into the
@@ -139,13 +140,13 @@ Quota sources, in CodexBar's preference order:
    or override with `ANTIGRAVITY_OAUTH_CLIENT_ID` / `ANTIGRAVITY_OAUTH_CLIENT_SECRET`.
    Needs no running process.
 
-Map to `Window`: `groups[].buckets[].remaining.remainingFraction` →
-`used_percent = (1 - remainingFraction) * 100`; bucket reset metadata /
-`resetTime` (ISO-8601, epoch-seconds fallback) → `resets_at`. Use the most
-constrained (lowest-remaining) bucket per group for the bar. Handle both the
-`groups[]` summary shape and the `buckets[]` / `quotaInfo` model shape
-defensively — `v1internal` is an undocumented contract and shifts between
-Antigravity releases.
+Map to `Window`: `groups[].buckets[].remaining.remainingFraction` or flat
+`remainingFraction` → `used_percent = (1 - remainingFraction) * 100`; bucket
+reset metadata / `resetTime` (ISO-8601, epoch-seconds fallback) → `resets_at`.
+Use the most constrained (lowest-remaining) bucket per group or OAuth fallback
+row for the bar. Handle both the `groups[]` summary shape and the `buckets[]` /
+`quotaInfo` model shape defensively — `v1internal` is an undocumented contract
+and shifts between Antigravity releases.
 
 As of 2026-07 the local `language_server` `RetrieveUserQuotaSummary` response
 returns **only `window: "weekly"` buckets** per group (its own description
