@@ -3,9 +3,12 @@
 use chrono::{DateTime, Local, Utc};
 
 use super::sort::{sorted_refs, statusline_default_cmp};
-use super::{ActiveTarget, brand_rgb, display_name, long_window_label, parse_utc, resolve_active};
+use super::{
+    ActiveTarget, brand_rgb, display_name, legacy_long_window_label, parse_utc, resolve_active,
+    window_label,
+};
 use crate::SortKey;
-use crate::model::Provider;
+use crate::model::{Provider, WindowKind};
 use crate::report::{AccountOut, Report, WindowOut};
 
 // 256-color ANSI code(SGR wrapper なしの parameter 部分)。
@@ -22,7 +25,9 @@ const DIM: &str = "38;5;242";
 const GREEN: &str = "38;5;35";
 const BOLD_RED: &str = "1;38;5;196"; // active account
 const FIVE_H_TH: [i64; 3] = [3600, 7200, 10800];
+const DAILY_TH: [i64; 3] = [4 * 3600, 8 * 3600, 12 * 3600];
 const WEEK_TH: [i64; 3] = [86400, 172800, 259200];
+const MONTHLY_TH: [i64; 3] = [3 * 86400, 7 * 86400, 14 * 86400];
 
 /// brand color を ANSI SGR truecolor parameter として返す(statusline 用)。
 fn brand_sgr(p: Provider) -> String {
@@ -53,7 +58,7 @@ pub struct StatuslineOpts {
 }
 
 /// account ごとに 1 行を render する(Claude → Codex の group 順)。
-/// 各行は 5h / 1w の gauge、percentage、reset countdown を持つ。
+/// 各行は周期付きの短期 / 長期 gauge、percentage、reset countdown を持つ。
 /// `active_email`(この session の account)に一致する行は赤 bold で表示する。
 pub fn statusline(
     report: &Report,
@@ -126,7 +131,11 @@ fn render_row(
     );
     // 長期(right)スロットの label は provider ごとの reset サイクルに合わせる。
     // PixelLab は月次生成枠なので "1m"、それ以外は従来どおり "1w"。
-    let long_label = long_window_label(a.provider);
+    let short_label = window_label(a.short.as_ref().and_then(|w| w.kind), "5h");
+    let long_label = window_label(
+        a.long.as_ref().and_then(|w| w.kind),
+        legacy_long_window_label(a.provider),
+    );
     let gauge_width = if opts.compact { 8 } else { 16 };
     if !a.ok {
         // データ取得に失敗したアカウントも、データ有り行と桁位置を揃える。
@@ -145,28 +154,32 @@ fn render_row(
         );
         return s;
     }
-    // 5h スロットが常に空の provider(PixelLab / Antigravity 一部)は、
-    // 長期スロットを 5h 分の空白ごと巻き取って 1 つの横長スロットにする。
+    // quota が短期 / 長期どちらか 1 枠だけなら、空スロットを巻き取って横長表示する。
+    // PixelLab / local Antigravity は長期のみ、OAuth Antigravity は日次の短期のみ。
     // 横幅 = 2 スロット + 区切り 3 文字 と等しくなるよう wide_gauge = 2*gauge + 19。
-    let merged_slot = a.five_hour.is_none() && a.weekly.is_some();
-    if merged_slot {
+    let single_window = match (a.short.as_ref(), a.long.as_ref()) {
+        (Some(w), None) => Some((w, short_label, FIVE_H_TH, false)),
+        (None, Some(w)) => Some((w, long_label, WEEK_TH, opts.reset_at)),
+        _ => None,
+    };
+    if let Some((window, label, legacy_thresholds, show_reset_at)) = single_window {
         let wide_gauge = 2 * gauge_width + 19;
         s += &window_seg(
             opts,
-            long_label,
-            a.weekly.as_ref(),
+            label,
+            Some(window),
             now,
-            WEEK_TH,
-            opts.reset_at,
+            window_thresholds(Some(window), legacy_thresholds),
+            show_reset_at,
             wide_gauge,
         );
     } else {
         s += &window_seg(
             opts,
-            "5h",
-            a.five_hour.as_ref(),
+            short_label,
+            a.short.as_ref(),
             now,
-            FIVE_H_TH,
+            window_thresholds(a.short.as_ref(), FIVE_H_TH),
             false,
             gauge_width,
         );
@@ -174,14 +187,24 @@ fn render_row(
         s += &window_seg(
             opts,
             long_label,
-            a.weekly.as_ref(),
+            a.long.as_ref(),
             now,
-            WEEK_TH,
+            window_thresholds(a.long.as_ref(), WEEK_TH),
             opts.reset_at,
             gauge_width,
         );
     }
     s
+}
+
+fn window_thresholds(w: Option<&WindowOut>, legacy: [i64; 3]) -> [i64; 3] {
+    match w.and_then(|w| w.kind) {
+        Some(WindowKind::FiveHour) => FIVE_H_TH,
+        Some(WindowKind::Daily) => DAILY_TH,
+        Some(WindowKind::Weekly) => WEEK_TH,
+        Some(WindowKind::Monthly) => MONTHLY_TH,
+        None => legacy,
+    }
 }
 
 fn window_seg(
@@ -359,6 +382,7 @@ mod tests {
         let now = fixed_utc("2026-06-15T00:00:00Z");
         let opts = plain_opts();
         let w = WindowOut {
+            kind: Some(WindowKind::Weekly),
             used_percent: 54.0,
             resets_at: Some("2026-06-17T16:10:00Z".to_string()),
             resets_in_seconds: Some(2 * 86400),
@@ -387,6 +411,7 @@ mod tests {
         );
 
         let expired = WindowOut {
+            kind: Some(WindowKind::Weekly),
             used_percent: 100.0,
             resets_at: Some("2026-06-10T00:00:00Z".to_string()),
             resets_in_seconds: Some(0),
@@ -405,6 +430,7 @@ mod tests {
         let now = fixed_utc("2026-06-15T00:00:00Z");
         let opts = plain_opts();
         let w = WindowOut {
+            kind: Some(WindowKind::Weekly),
             used_percent: 50.0,
             resets_at: Some("2026-06-17T00:00:00Z".to_string()),
             resets_in_seconds: Some(2 * 86400),
@@ -417,5 +443,38 @@ mod tests {
         let count_glyphs = |s: &str| s.chars().filter(|c| *c == '█' || *c == '░').count();
         assert_eq!(count_glyphs(&normal), 16);
         assert_eq!(count_glyphs(&wide), 51);
+    }
+
+    #[test]
+    fn single_daily_window_uses_typed_label_and_merged_width() {
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let account = AccountOut {
+            profile: "Antigravity".to_string(),
+            provider: Provider::Antigravity,
+            ok: true,
+            plan: None,
+            email: None,
+            profile_email: None,
+            label: None,
+            group_label: Some("Gemini".to_string()),
+            short: Some(WindowOut {
+                kind: Some(WindowKind::Daily),
+                used_percent: 50.0,
+                resets_at: Some("2026-06-16T00:00:00Z".to_string()),
+                resets_in_seconds: Some(86400),
+            }),
+            long: None,
+            error: None,
+        };
+        let mut opts = plain_opts();
+        opts.reset_at = true;
+        let line = render_row(&account, None, false, &opts, now);
+        let gauge_glyphs = line.chars().filter(|c| *c == '█' || *c == '░').count();
+        assert!(line.contains("1d "), "daily label missing: {line:?}");
+        assert!(
+            !line.contains('('),
+            "short-only window must not show absolute reset time: {line:?}"
+        );
+        assert_eq!(gauge_glyphs, 51);
     }
 }

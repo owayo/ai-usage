@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use wreq::Client;
 
 use crate::http::get_json;
-use crate::model::{Usage, UsageRow, Window};
+use crate::model::{Usage, UsageRow, Window, WindowKind};
 
 fn cookie_header(cookies: &HashMap<String, String>) -> Result<String> {
     let session = cookies
@@ -65,8 +65,8 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
     Ok(UsageRow::single(Usage {
         email,
         plan: None,
-        five_hour: parse_window(usage.get("five_hour")),
-        weekly: parse_window(usage.get("seven_day")),
+        short: parse_window(usage.get("five_hour"), WindowKind::FiveHour),
+        long: parse_window(usage.get("seven_day"), WindowKind::Weekly),
     }))
 }
 
@@ -102,7 +102,7 @@ fn pick_org(orgs: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn parse_window(v: Option<&serde_json::Value>) -> Option<Window> {
+fn parse_window(v: Option<&serde_json::Value>, kind: WindowKind) -> Option<Window> {
     let v = v?;
     if v.is_null() {
         return None;
@@ -114,6 +114,7 @@ fn parse_window(v: Option<&serde_json::Value>) -> Option<Window> {
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|d| d.with_timezone(&Utc));
     Some(Window {
+        kind,
         used_percent: used,
         resets_at,
     })
@@ -208,7 +209,8 @@ mod tests {
     #[test]
     fn parse_window_reads_utilization_and_reset() {
         let v = json!({"utilization": 42.5, "resets_at": "2026-06-15T06:28:32Z"});
-        let w = parse_window(Some(&v)).unwrap();
+        let w = parse_window(Some(&v), WindowKind::Weekly).unwrap();
+        assert_eq!(w.kind, WindowKind::Weekly);
         assert_eq!(w.used_percent, 42.5);
         assert!(w.resets_at.is_some());
     }
@@ -216,16 +218,16 @@ mod tests {
     #[test]
     fn parse_window_handles_null_and_missing() {
         // None / Null / utilization 欠落 は None を返す。
-        assert!(parse_window(None).is_none());
-        assert!(parse_window(Some(&json!(null))).is_none());
-        assert!(parse_window(Some(&json!({}))).is_none());
+        assert!(parse_window(None, WindowKind::Weekly).is_none());
+        assert!(parse_window(Some(&json!(null)), WindowKind::Weekly).is_none());
+        assert!(parse_window(Some(&json!({})), WindowKind::Weekly).is_none());
     }
 
     #[test]
     fn parse_window_tolerates_invalid_reset_time() {
         // 不正な resets_at は None で握りつぶす(used_percent は維持)。
         let v = json!({"utilization": 10.0, "resets_at": "not a date"});
-        let w = parse_window(Some(&v)).unwrap();
+        let w = parse_window(Some(&v), WindowKind::Weekly).unwrap();
         assert_eq!(w.used_percent, 10.0);
         assert!(w.resets_at.is_none());
     }

@@ -40,7 +40,7 @@ Claude and a Codex subscription = four accounts) without you logging anything in
 
 ```
 ┌─────────┬──────────┬──────────────────────────┬─────────────────────────────┬─────────────────────────────┐
-│ Account ┆ Service  ┆ Plan                     ┆ 5-hour                      ┆ Long window                 │
+│ Account ┆ Service  ┆ Plan                     ┆ Short window                ┆ Long window                 │
 ╞═════════╪══════════╪══════════════════════════╪═════════════════════════════╪═════════════════════════════╡
 │ work    ┆ Claude   ┆ max                      ┆ 5h █░░░░░░░░░    4%  · in 2h ┆ 1w █░░░░░░░░░    3%  · in 4d │
 │ work    ┆ Codex    ┆ team                     ┆ 5h █░░░░░░░░░    1%  · in 5h ┆ 1w ░░░░░░░░░░    0%  · in 7d │
@@ -55,12 +55,12 @@ Claude and a Codex subscription = four accounts) without you logging anything in
 
 - **Multi-Account**: Reports every Chrome profile signed into Claude, Codex, or PixelLab — no re-login needed
 - **Multi-Provider**: Claude (`claude.ai`), Codex (`chatgpt.com`), Antigravity (Google's `agy` CLI/IDE), and PixelLab (`pixellab.ai`) in one view
-- **Two Windows**: Rolling 5-hour and a long window (weekly for Claude / Codex / Antigravity, monthly for PixelLab) with usage bar, percentage, and reset countdown — each row's badge (`5h` / `1w` / `1m`) shows the exact cycle. Rows without a 5-hour window (PixelLab, Antigravity local-server groups) collapse both slots into a single wider bar so no space is wasted on empty `5h`
+- **Typed Windows**: Each quota carries its real cycle (5-hour, daily, weekly, or monthly) with a usage bar, percentage, and reset countdown — each row's badge (`5h` / `1d` / `1w` / `1m`) comes from the quota itself. Any row with only one window collapses both slots into a single wider bar
 - **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
 - **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars
 - **JSON Output**: Machine-readable output for scripting and dashboards
 - **Zero Config**: Auto-discovers all signed-in profiles by default; optional `~/.config/ai-usage/config.toml` for pinning
-- **Sort Options**: Rank rows by weekly utilization or reset time
+- **Sort Options**: Rank rows by long-window utilization or reset time (`weekly-*` option names are retained for compatibility)
 - **Privacy**: Nothing leaves your machine except the same requests your browser already makes to Anthropic/OpenAI/Google
 
 ## Requirements
@@ -158,10 +158,10 @@ ai-usage --statusline
 | `--statusline` | Compact one-line-per-account output for status bars |
 | `--statusline --logos` | With brand-logo glyphs (requires the BrandLogos font) |
 | `--statusline --compact` | Half-width gauge for narrow panes |
-| `--statusline --reset-at` | Append the weekly reset clock-time, e.g. `(06/18 01:10)` |
+| `--statusline --reset-at` | Append the long-window reset clock-time, e.g. `(06/18 01:10)` |
 | `--statusline-hide <PROVIDERS>` | Comma-separated providers to skip in statusline only (`--json` / table unaffected). E.g. `--statusline-hide antigravity,codex` |
-| `--sort weekly-usage` | Rank rows by weekly utilization (closest to the cap first) |
-| `--sort weekly-reset` | Rank rows by weekly reset time (soonest first) |
+| `--sort weekly-usage` | Rank rows by long-window utilization (closest to the cap first) |
+| `--sort weekly-reset` | Rank rows by long-window reset time (soonest first) |
 
 #### Active row selection
 
@@ -291,7 +291,8 @@ For each Chrome profile it finds, `ai-usage`:
    `agy` is running, prefers the localhost quota server for the richer per-group payload;
    otherwise falls back to Google's `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`.
    Both nested and flat `remainingFraction` quota shapes are handled when choosing the most
-   constrained bucket for display.
+   constrained bucket for display. Local grouped quotas are labeled `1w` / `5h` from their
+   actual window, while the OAuth fallback's daily quota is labeled `1d`.
 5. **PixelLab** — reads the `supabase-auth-token` cookie from `www.pixellab.ai`, refreshing
    the access token via `supabase.pixellab.ai/auth/v1/token` if it has expired, then calls
    `api.pixellab.ai/get-account-data` (monthly `imageGenerated / imageAmount` + prepaid

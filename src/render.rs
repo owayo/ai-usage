@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::SortKey;
-use crate::model::Provider;
+use crate::model::{Provider, WindowKind};
 use crate::report::{AccountOut, Report};
 
 /// user に表示する account label。config label があればそれを使い、なければ provider account
@@ -122,14 +122,19 @@ fn resolve_active(
     is_active
 }
 
-/// 長期(right)スロットの表示 label。統一 model は `Usage::weekly` を長期スロットとして
-/// 使い回しているが、実際の reset サイクル(週次 / 月次)は provider ごとに違うため
-/// render 時に解決する。table / statusline の両方で使う。
-fn long_window_label(p: Provider) -> &'static str {
+/// `kind` が無い旧 JSON cache の長期 label。旧形式では周期情報を保持していないため、
+/// provider ごとの従来値へ fallback する。
+fn legacy_long_window_label(p: Provider) -> &'static str {
     match p {
         Provider::PixelLab => "1m",
         _ => "1w",
     }
+}
+
+/// 新しい report は window 自身の kind を正とする。kind を持たない旧 cache のみ、
+/// 呼び出し元が渡す従来 label に fallback する。
+fn window_label(kind: Option<WindowKind>, legacy: &'static str) -> &'static str {
+    kind.map(WindowKind::label).unwrap_or(legacy)
 }
 
 /// provider ごとの brand RGB。table(comfy-table `Color::Rgb`)と statusline
@@ -296,11 +301,18 @@ mod tests {
     }
 
     #[test]
-    fn long_window_label_by_provider() {
+    fn legacy_long_window_label_by_provider() {
         // PixelLab は月次サイクル(1m)、それ以外は週次(1w)。
-        assert_eq!(long_window_label(Provider::Claude), "1w");
-        assert_eq!(long_window_label(Provider::Codex), "1w");
-        assert_eq!(long_window_label(Provider::Antigravity), "1w");
-        assert_eq!(long_window_label(Provider::PixelLab), "1m");
+        assert_eq!(legacy_long_window_label(Provider::Claude), "1w");
+        assert_eq!(legacy_long_window_label(Provider::Codex), "1w");
+        assert_eq!(legacy_long_window_label(Provider::Antigravity), "1w");
+        assert_eq!(legacy_long_window_label(Provider::PixelLab), "1m");
+    }
+
+    #[test]
+    fn window_label_prefers_typed_kind() {
+        assert_eq!(window_label(Some(WindowKind::Daily), "5h"), "1d");
+        assert_eq!(window_label(Some(WindowKind::Monthly), "1w"), "1m");
+        assert_eq!(window_label(None, "1w"), "1w");
     }
 }

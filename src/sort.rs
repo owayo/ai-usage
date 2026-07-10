@@ -9,8 +9,8 @@ pub enum SortKey {
     /// 既存挙動 — table/json はフェッチ順、statusline は provider.rank() → profile 名。
     #[default]
     Provider,
-    /// 週枠の使用率が高い順(降順)。リミットに近いアカウントを上に表示する。
+    /// 長期枠の使用率が高い順(降順)。リミットに近いアカウントを上に表示する。
     WeeklyUsage,
-    /// 週枠のリセット時刻が近い順(昇順)。リセット待ちが短いアカウントを上に。
+    /// 長期枠のリセット時刻が近い順(昇順)。リセット待ちが短いアカウントを上に。
     WeeklyReset,
 }

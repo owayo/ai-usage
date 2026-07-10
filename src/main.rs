@@ -31,7 +31,7 @@ pub use sort::SortKey;
 #[command(
     name = "ai-usage",
     version,
-    about = "Show Claude & Codex usage limits across Chrome profiles"
+    about = "Show Claude, Codex, Antigravity, and PixelLab usage limits"
 )]
 struct Cli {
     /// 対象を指定した Chrome profile 表示名に絞る(例: -p Work,Home)
@@ -50,7 +50,7 @@ struct Cli {
     #[arg(long)]
     statusline: bool,
 
-    /// statusline の "Claude"/"Codex" ラベルを brand-logo glyph に置き換える
+    /// statusline の provider ラベルを brand-logo glyph に置き換える
     /// (BrandLogos font が必要。github.com/owayo/brand-logo-font を参照)
     #[arg(long)]
     logos: bool,
@@ -73,7 +73,7 @@ struct Cli {
     active_profile: Option<String>,
 
     /// --active-profile と併用し、highlight 対象をこの provider 行に限定する
-    /// (claude/codex/antigravity)。未指定なら一致 profile の Claude 行を highlight する。
+    /// 未指定なら一致 profile の Claude 行を highlight する。
     #[arg(long, value_enum)]
     active_provider: Option<ProviderArg>,
 
@@ -103,14 +103,14 @@ struct Cli {
     #[arg(long)]
     compact: bool,
 
-    /// statusline の weekly countdown 後に、local time の絶対リセット時刻
+    /// statusline の長期枠 countdown 後に、local time の絶対リセット時刻
     /// `(MM/DD HH:MM)` を付ける。`--statusline` rendering にのみ影響する。
     #[arg(long)]
     reset_at: bool,
 
     /// 行の並び順。default は `provider`(プロバイダ順 — 既存挙動を維持)。
-    /// `weekly-usage` は週枠の使用率が高い順、`weekly-reset` は週枠のリセット
-    /// 時刻が近い順。データ無し/取得失敗の行は常に末尾に並ぶ。table/json/
+    /// `weekly-usage` は長期枠の使用率が高い順、`weekly-reset` は長期枠のリセット
+    /// 時刻が近い順(オプション名は互換性のため維持)。データ無し/取得失敗の行は常に末尾。table/json/
     /// statusline すべてに適用される。
     #[arg(long, value_enum, default_value_t = SortKey::Provider)]
     sort: SortKey,
@@ -141,11 +141,33 @@ impl ProviderArg {
     }
 }
 
-/// job の認証材料。Claude/Codex は Chrome Cookie、Antigravity は local Google OAuth
-/// token または実行中の `agy` を使う。
-enum AuthMaterial {
-    BrowserCookies(HashMap<String, String>),
-    GoogleOAuth(Option<config::AntigravityCfg>),
+/// provider と認証材料を 1 つの enum に閉じ込める。provider/auth を別々に保持して
+/// 実行時に不整合を検出するのではなく、不正な組み合わせ自体を表現不能にする。
+enum FetchSpec {
+    Claude(HashMap<String, String>),
+    Codex(HashMap<String, String>),
+    PixelLab(HashMap<String, String>),
+    Antigravity(Option<config::AntigravityCfg>),
+}
+
+impl FetchSpec {
+    fn provider(&self) -> Provider {
+        match self {
+            FetchSpec::Claude(_) => Provider::Claude,
+            FetchSpec::Codex(_) => Provider::Codex,
+            FetchSpec::PixelLab(_) => Provider::PixelLab,
+            FetchSpec::Antigravity(_) => Provider::Antigravity,
+        }
+    }
+
+    async fn fetch(&self, clients: &http::Clients) -> Result<Vec<UsageRow>> {
+        match self {
+            FetchSpec::Claude(cookies) => claude::fetch(&clients.browser, cookies).await,
+            FetchSpec::Codex(cookies) => codex::fetch(&clients.browser, cookies).await,
+            FetchSpec::PixelLab(cookies) => pixellab::fetch(&clients.browser, cookies).await,
+            FetchSpec::Antigravity(cfg) => antigravity::fetch(&clients.api, cfg.as_ref()).await,
+        }
+    }
 }
 
 /// fetch 結果の AccountReport 行に引き継ぐ job のメタデータ。auth と分離することで、
@@ -154,30 +176,29 @@ struct JobMeta {
     profile_name: String,
     profile_email: Option<String>,
     label: Option<String>,
-    provider: Provider,
 }
 
 impl JobMeta {
     /// fetch 成功行 1 件を AccountReport にする。1 job が複数行(Antigravity の
     /// model group)を返すため、メタは行ごとに clone する。
-    fn report_for(&self, row: UsageRow) -> AccountReport {
+    fn report_for(&self, provider: Provider, row: UsageRow) -> AccountReport {
         AccountReport {
             profile_name: self.profile_name.clone(),
             profile_email: self.profile_email.clone(),
             label: self.label.clone(),
-            provider: self.provider,
+            provider,
             group_label: row.group_label,
             usage: Ok(row.usage),
         }
     }
 
     /// fetch 失敗を error 行 1 件にする(メタは move で消費)。
-    fn error_report(self, e: anyhow::Error) -> AccountReport {
+    fn error_report(self, provider: Provider, e: anyhow::Error) -> AccountReport {
         AccountReport {
             profile_name: self.profile_name,
             profile_email: self.profile_email,
             label: self.label,
-            provider: self.provider,
+            provider,
             group_label: None,
             usage: Err(e),
         }
@@ -186,7 +207,7 @@ impl JobMeta {
 
 struct Job {
     meta: JobMeta,
-    auth: AuthMaterial,
+    fetch: FetchSpec,
 }
 
 /// 表示対象として解決済みの Chrome profile。label と表示 provider を持つ。
@@ -196,40 +217,21 @@ struct Target {
     wants: BrowserWants,
 }
 
-/// Cloudflare は有効な request にも challenge を返すことがあるため、account を失敗扱いに
-/// する前に backoff 付きで数回 retry する。
-async fn fetch_with_retry(
-    clients: &http::Clients,
-    provider: Provider,
-    auth: &AuthMaterial,
-) -> Result<Vec<UsageRow>> {
+/// transport error / 429 / 5xx / Cloudflare challenge のみ backoff 付きで retry する。
+/// 認証不正や parse error は待っても回復しないため即座に返す。
+async fn fetch_with_retry(clients: &http::Clients, fetch: &FetchSpec) -> Result<Vec<UsageRow>> {
     const BACKOFF_MS: [u64; 3] = [600, 1500, 2800];
-    let mut last: Option<anyhow::Error> = None;
-    for attempt in 0..=BACKOFF_MS.len() {
+    let mut attempt = 0;
+    loop {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_millis(BACKOFF_MS[attempt - 1])).await;
         }
-        let result = match (provider, auth) {
-            (Provider::Claude, AuthMaterial::BrowserCookies(c)) => {
-                claude::fetch(&clients.browser, c).await
-            }
-            (Provider::Codex, AuthMaterial::BrowserCookies(c)) => {
-                codex::fetch(&clients.browser, c).await
-            }
-            (Provider::PixelLab, AuthMaterial::BrowserCookies(c)) => {
-                pixellab::fetch(&clients.browser, c).await
-            }
-            (Provider::Antigravity, AuthMaterial::GoogleOAuth(cfg)) => {
-                antigravity::fetch(&clients.api, cfg.as_ref()).await
-            }
-            _ => return Err(anyhow::anyhow!("provider/auth mismatch")),
-        };
-        match result {
+        match fetch.fetch(clients).await {
             Ok(rows) => return Ok(rows),
-            Err(e) => last = Some(e),
+            Err(e) if attempt < BACKOFF_MS.len() && http::is_retryable(&e) => attempt += 1,
+            Err(e) => return Err(e),
         }
     }
-    Err(last.expect("at least one attempt was made"))
 }
 
 /// 対象 profile の Cookie を復号し、signed-in 済み account を並行 fetch する。
@@ -253,8 +255,15 @@ async fn fetch_reports(
             let Some(db) = profiles::cookies_db(root, &t.profile.dir) else {
                 continue;
             };
-            let Ok(pc) = cookies::load(&db, &key) else {
-                continue;
+            let pc = match cookies::load(&db, &key) {
+                Ok(pc) => pc,
+                Err(e) => {
+                    eprintln!(
+                        "ai-usage: skipping Chrome profile {}: {e:#}",
+                        t.profile.name
+                    );
+                    continue;
+                }
             };
             if t.wants.claude && claude::has_session(&pc.claude) {
                 jobs.push(Job {
@@ -262,9 +271,8 @@ async fn fetch_reports(
                         profile_name: t.profile.name.clone(),
                         profile_email: t.profile.email.clone(),
                         label: t.label.clone(),
-                        provider: Provider::Claude,
                     },
-                    auth: AuthMaterial::BrowserCookies(pc.claude),
+                    fetch: FetchSpec::Claude(pc.claude),
                 });
             }
             if t.wants.codex && codex::has_session(&pc.chatgpt) {
@@ -273,9 +281,8 @@ async fn fetch_reports(
                         profile_name: t.profile.name.clone(),
                         profile_email: t.profile.email.clone(),
                         label: t.label.clone(),
-                        provider: Provider::Codex,
                     },
-                    auth: AuthMaterial::BrowserCookies(pc.chatgpt),
+                    fetch: FetchSpec::Codex(pc.chatgpt),
                 });
             }
             if t.wants.pixellab && pixellab::has_session(&pc.pixellab) {
@@ -284,9 +291,8 @@ async fn fetch_reports(
                         profile_name: t.profile.name.clone(),
                         profile_email: t.profile.email.clone(),
                         label: t.label.clone(),
-                        provider: Provider::PixelLab,
                     },
-                    auth: AuthMaterial::BrowserCookies(pc.pixellab),
+                    fetch: FetchSpec::PixelLab(pc.pixellab),
                 });
             }
         }
@@ -299,9 +305,8 @@ async fn fetch_reports(
                 profile_name: "Antigravity".to_string(),
                 profile_email: None,
                 label: antigravity_cfg.and_then(|c| c.label.clone()),
-                provider: Provider::Antigravity,
             },
-            auth: AuthMaterial::GoogleOAuth(antigravity_cfg.cloned()),
+            fetch: FetchSpec::Antigravity(antigravity_cfg.cloned()),
         });
     }
 
@@ -319,8 +324,9 @@ async fn fetch_reports(
             if idx > 0 {
                 tokio::time::sleep(Duration::from_millis(150 * idx as u64)).await;
             }
-            let rows = fetch_with_retry(&clients, job.meta.provider, &job.auth).await;
-            (idx, job.meta, rows)
+            let provider = job.fetch.provider();
+            let rows = fetch_with_retry(&clients, &job.fetch).await;
+            (idx, provider, job.meta, rows)
         });
     }
 
@@ -328,14 +334,21 @@ async fn fetch_reports(
     // 1 行返す。job 順は維持する。
     let mut results: Vec<(usize, AccountReport)> = Vec::new();
     while let Some(joined) = set.join_next().await {
-        let Ok((idx, meta, rows)) = joined else {
-            continue;
+        let (idx, provider, meta, rows) = match joined {
+            Ok(result) => result,
+            Err(e) => {
+                eprintln!("ai-usage: fetch task failed: {e}");
+                continue;
+            }
         };
         match rows {
             Ok(rows) => {
-                results.extend(rows.into_iter().map(|row| (idx, meta.report_for(row))));
+                results.extend(
+                    rows.into_iter()
+                        .map(|row| (idx, meta.report_for(provider, row))),
+                );
             }
-            Err(e) => results.push((idx, meta.error_report(e))),
+            Err(e) => results.push((idx, meta.error_report(provider, e))),
         }
     }
     results.sort_by_key(|(idx, _)| *idx);
@@ -812,5 +825,22 @@ mod tests {
 
         // config も無ければ全 provider true(既定)。
         assert_eq!(resolve_wants(&cli, None), BrowserWants::all());
+    }
+
+    #[test]
+    fn fetch_spec_owns_its_provider_identity() {
+        assert_eq!(
+            FetchSpec::Claude(HashMap::new()).provider(),
+            Provider::Claude
+        );
+        assert_eq!(FetchSpec::Codex(HashMap::new()).provider(), Provider::Codex);
+        assert_eq!(
+            FetchSpec::PixelLab(HashMap::new()).provider(),
+            Provider::PixelLab
+        );
+        assert_eq!(
+            FetchSpec::Antigravity(None).provider(),
+            Provider::Antigravity
+        );
     }
 }

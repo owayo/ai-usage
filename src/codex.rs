@@ -11,7 +11,7 @@ use chrono::{TimeZone, Utc};
 use wreq::Client;
 
 use crate::http::get_json;
-use crate::model::{Usage, UsageRow, Window};
+use crate::model::{Usage, UsageRow, Window, WindowKind};
 
 /// chatgpt.com の session-token Cookie。大きい token は `…token.0` と `…token.1` に
 /// 分割され、小さい token は suffix なしの `…session-token` に入る。
@@ -104,7 +104,12 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
             .get("limit_window_seconds")
             .and_then(serde_json::Value::as_i64)
             .unwrap_or(0);
-        let window = parse_window(w);
+        let kind = if secs <= 8 * 3600 {
+            WindowKind::FiveHour
+        } else {
+            WindowKind::Weekly
+        };
+        let window = parse_window(w, kind);
         if secs <= 8 * 3600 {
             five = window;
         } else {
@@ -115,18 +120,19 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
     Ok(UsageRow::single(Usage {
         email,
         plan,
-        five_hour: five,
-        weekly,
+        short: five,
+        long: weekly,
     }))
 }
 
-fn parse_window(w: &serde_json::Value) -> Option<Window> {
+fn parse_window(w: &serde_json::Value, kind: WindowKind) -> Option<Window> {
     let used = w.get("used_percent").and_then(serde_json::Value::as_f64)?;
     let resets_at = w
         .get("reset_at")
         .and_then(serde_json::Value::as_i64)
         .and_then(|e| Utc.timestamp_opt(e, 0).single());
     Some(Window {
+        kind,
         used_percent: used,
         resets_at,
     })
@@ -229,14 +235,15 @@ mod tests {
     #[test]
     fn parse_window_reads_used_percent_and_reset() {
         let v = json!({"used_percent": 23.5, "reset_at": 1_700_000_000_i64});
-        let w = parse_window(&v).unwrap();
+        let w = parse_window(&v, WindowKind::Weekly).unwrap();
+        assert_eq!(w.kind, WindowKind::Weekly);
         assert_eq!(w.used_percent, 23.5);
         assert!(w.resets_at.is_some());
     }
 
     #[test]
     fn parse_window_missing_percent_returns_none() {
-        assert!(parse_window(&json!({})).is_none());
+        assert!(parse_window(&json!({}), WindowKind::Weekly).is_none());
     }
 
     #[test]

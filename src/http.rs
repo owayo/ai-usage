@@ -5,6 +5,8 @@
 //! 403 "Just a moment" challenge になるため、claude.ai と chatgpt.com では使えない。
 //! `api` は Cloudflare 配下ではない Google `cloudcode-pa` endpoint 用の plain client。
 
+use std::fmt;
+
 use anyhow::{Context, Result, anyhow};
 use wreq::{Client, Response, StatusCode};
 use wreq_util::Emulation;
@@ -19,6 +21,29 @@ AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
 pub struct Clients {
     pub browser: Client,
     pub api: Client,
+}
+
+/// 同じ request を backoff 後に再試行する価値がある transport / HTTP failure。
+/// provider の parse/auth error と区別するため、anyhow の source chain に marker を残す。
+#[derive(Debug)]
+struct RetryableHttpError(String);
+
+impl fmt::Display for RetryableHttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RetryableHttpError {}
+
+fn retryable(message: String) -> anyhow::Error {
+    anyhow::Error::new(RetryableHttpError(message))
+}
+
+pub fn is_retryable(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<RetryableHttpError>().is_some())
 }
 
 pub fn clients() -> Result<Clients> {
@@ -53,19 +78,33 @@ pub async fn get_json(
         req = req.header("ChatGPT-Account-Id", a);
     }
 
-    let resp = req.send().await.with_context(|| format!("GET {url}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| retryable(format!("GET {url}: {e}")))?;
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
 
     if !status.is_success() {
-        if body.contains("Just a moment") || body.to_ascii_lowercase().contains("cloudflare") {
-            return Err(anyhow!(
+        let cloudflare =
+            body.contains("Just a moment") || body.to_ascii_lowercase().contains("cloudflare");
+        if cloudflare {
+            // 有効な cf_clearance でも一時的に challenge が返ることがあるため、ここは意図的に
+            // retryable。全試行後も続く場合にだけ、Chrome での session 更新を案内する。
+            return Err(retryable(format!(
                 "Cloudflare challenge (HTTP {}). Open the site in this Chrome profile to refresh its session, then retry.",
                 status.as_u16()
-            ));
+            )));
         }
         let snippet: String = body.chars().take(160).collect();
-        return Err(anyhow!("HTTP {} from {url}: {snippet}", status.as_u16()));
+        let message = format!("HTTP {} from {url}: {snippet}", status.as_u16());
+        if status == StatusCode::REQUEST_TIMEOUT
+            || status == StatusCode::TOO_MANY_REQUESTS
+            || status.is_server_error()
+        {
+            return Err(retryable(message));
+        }
+        return Err(anyhow!(message));
     }
 
     serde_json::from_str(&body).with_context(|| format!("parsing JSON from {url}"))
@@ -98,7 +137,7 @@ pub async fn post_json(
         .body(payload)
         .send()
         .await
-        .with_context(|| format!("POST {url}"))?;
+        .map_err(|e| retryable(format!("POST {url}: {e}")))?;
     Ok(status_and_json(resp).await)
 }
 
@@ -114,6 +153,18 @@ pub async fn post_form(
         .form(form)
         .send()
         .await
-        .with_context(|| format!("POST {url}"))?;
+        .map_err(|e| retryable(format!("POST {url}: {e}")))?;
     Ok(status_and_json(resp).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retryable_marker_survives_anyhow_context() {
+        let error = retryable("temporary".to_string()).context("provider fetch");
+        assert!(is_retryable(&error));
+        assert!(!is_retryable(&anyhow!("invalid session")));
+    }
 }

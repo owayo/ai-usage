@@ -33,9 +33,32 @@ impl Provider {
     }
 }
 
-/// 単一の rate-limit window。例: rolling 5-hour window / weekly window。
+/// rate-limit window の実際の周期。表示側が provider から周期を推測せず、
+/// provider が取得時点で正しい意味を付与する。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowKind {
+    FiveHour,
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl WindowKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            WindowKind::FiveHour => "5h",
+            WindowKind::Daily => "1d",
+            WindowKind::Weekly => "1w",
+            WindowKind::Monthly => "1m",
+        }
+    }
+}
+
+/// 単一の rate-limit window。
 #[derive(Clone, Debug)]
 pub struct Window {
+    pub kind: WindowKind,
     /// 使用率。percentage で `0..=100`。
     pub used_percent: f64,
     pub resets_at: Option<DateTime<Utc>>,
@@ -45,8 +68,10 @@ pub struct Window {
 pub struct Usage {
     pub email: Option<String>,
     pub plan: Option<String>,
-    pub five_hour: Option<Window>,
-    pub weekly: Option<Window>,
+    /// 左側の短期スロット。通常は 5 時間だが、provider によっては日次。
+    pub short: Option<Window>,
+    /// 右側の長期スロット。週次または月次。
+    pub long: Option<Window>,
 }
 
 /// 表示可能な usage 1 行。provider fetch は 1 行以上を返す。多くの provider は

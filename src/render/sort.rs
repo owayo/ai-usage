@@ -37,23 +37,23 @@ fn cmp_optional_desc<T: PartialOrd>(a: Option<T>, b: Option<T>) -> Ordering {
 /// 双方に実装することで、ソートロジック本体を 1 つで共有できる。
 pub(super) trait SortableRow {
     fn profile(&self) -> &str;
-    fn weekly_used_percent(&self) -> Option<f64>;
-    /// 週枠リセットまでの残秒数。`now` を渡すのは `AccountReport` 側で
+    fn long_used_percent(&self) -> Option<f64>;
+    /// 長期枠リセットまでの残秒数。`now` を渡すのは `AccountReport` 側で
     /// `DateTime<Utc>` から計算するため。`AccountOut` 側はキャッシュ JSON に
     /// 入った `resets_in_seconds` をそのまま返すと「キャッシュ作成時点」の
     /// 残秒数になるため、`resets_at` を再パースして `now` 起点で計算し直す。
-    fn weekly_resets_in_seconds(&self, now: DateTime<Utc>) -> Option<i64>;
+    fn long_resets_in_seconds(&self, now: DateTime<Utc>) -> Option<i64>;
 }
 
 impl SortableRow for AccountOut {
     fn profile(&self) -> &str {
         &self.profile
     }
-    fn weekly_used_percent(&self) -> Option<f64> {
-        self.weekly.as_ref().map(|w| w.used_percent)
+    fn long_used_percent(&self) -> Option<f64> {
+        self.long.as_ref().map(|w| w.used_percent)
     }
-    fn weekly_resets_in_seconds(&self, now: DateTime<Utc>) -> Option<i64> {
-        self.weekly
+    fn long_resets_in_seconds(&self, now: DateTime<Utc>) -> Option<i64> {
+        self.long
             .as_ref()
             .and_then(|w| w.resets_at.as_deref())
             .and_then(parse_utc)
@@ -65,18 +65,18 @@ impl SortableRow for AccountReport {
     fn profile(&self) -> &str {
         &self.profile_name
     }
-    fn weekly_used_percent(&self) -> Option<f64> {
+    fn long_used_percent(&self) -> Option<f64> {
         self.usage
             .as_ref()
             .ok()
-            .and_then(|u| u.weekly.as_ref())
+            .and_then(|u| u.long.as_ref())
             .map(|w| w.used_percent)
     }
-    fn weekly_resets_in_seconds(&self, now: DateTime<Utc>) -> Option<i64> {
+    fn long_resets_in_seconds(&self, now: DateTime<Utc>) -> Option<i64> {
         self.usage
             .as_ref()
             .ok()
-            .and_then(|u| u.weekly.as_ref())
+            .and_then(|u| u.long.as_ref())
             .and_then(|w| w.resets_at)
             .map(|r| (r - now).num_seconds().max(0))
     }
@@ -100,15 +100,12 @@ pub(super) fn sorted_refs<T: SortableRow>(
             }
         }
         SortKey::WeeklyUsage => v.sort_by(|a, b| {
-            cmp_optional_desc(a.weekly_used_percent(), b.weekly_used_percent())
+            cmp_optional_desc(a.long_used_percent(), b.long_used_percent())
                 .then_with(|| a.profile().cmp(b.profile()))
         }),
         SortKey::WeeklyReset => v.sort_by(|a, b| {
-            cmp_optional_asc(
-                a.weekly_resets_in_seconds(now),
-                b.weekly_resets_in_seconds(now),
-            )
-            .then_with(|| a.profile().cmp(b.profile()))
+            cmp_optional_asc(a.long_resets_in_seconds(now), b.long_resets_in_seconds(now))
+                .then_with(|| a.profile().cmp(b.profile()))
         }),
     }
     v
@@ -128,7 +125,7 @@ pub(super) fn statusline_default_cmp(a: &AccountOut, b: &AccountOut) -> Ordering
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Provider;
+    use crate::model::{Provider, WindowKind};
     use crate::report::WindowOut;
 
     fn fixed_utc(rfc3339: &str) -> DateTime<Utc> {
@@ -156,8 +153,9 @@ mod tests {
             profile_email: None,
             label: None,
             group_label: None,
-            five_hour: None,
-            weekly: weekly_pct.map(|p| WindowOut {
+            short: None,
+            long: weekly_pct.map(|p| WindowOut {
+                kind: Some(WindowKind::Weekly),
                 used_percent: p,
                 resets_at: weekly_resets_at.map(str::to_string),
                 resets_in_seconds: resets_in,
@@ -285,12 +283,13 @@ mod tests {
     }
 
     #[test]
-    fn account_report_sortable_pulls_weekly_from_usage() {
+    fn account_report_sortable_pulls_long_window_from_usage() {
         // AccountReport 側の SortableRow 実装も同じ順序を返すか確認。
         use crate::model::{Usage, Window};
         let now = fixed_utc("2026-06-15T00:00:00Z");
         let mk = |name: &str, prov: Provider, pct: Option<f64>, resets_at: Option<&str>| {
-            let weekly = pct.map(|p| Window {
+            let long = pct.map(|p| Window {
+                kind: WindowKind::Weekly,
                 used_percent: p,
                 resets_at: resets_at.and_then(parse_utc),
             });
@@ -301,7 +300,7 @@ mod tests {
                 provider: prov,
                 group_label: None,
                 usage: Ok(Usage {
-                    weekly,
+                    long,
                     ..Usage::default()
                 }),
             }

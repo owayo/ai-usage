@@ -299,12 +299,11 @@ mod tests {
     fn is_codex_session_cookie_matches_exact_and_chunk_names_only() {
         // 完全一致と `.0` / `.1` などの連番 chunk のみ true。
         assert!(is_codex_session_cookie(CODEX_SESSION_COOKIE));
-        assert!(is_codex_session_cookie(&format!(
-            "{CODEX_SESSION_COOKIE}.0"
-        )));
-        assert!(is_codex_session_cookie(&format!(
-            "{CODEX_SESSION_COOKIE}.1"
-        )));
+        for suffix in ["0", "1", "2", "10"] {
+            assert!(is_codex_session_cookie(&format!(
+                "{CODEX_SESSION_COOKIE}.{suffix}"
+            )));
+        }
         // suffix が `.` 区切りでない類似名は弾く(session-tokenizer 等)。
         assert!(!is_codex_session_cookie(&format!(
             "{CODEX_SESSION_COOKIE}izer"
@@ -370,12 +369,11 @@ mod tests {
     fn is_pixellab_session_cookie_matches_exact_and_chunk_names_only() {
         // 完全一致と `.0` / `.1` などの連番 chunk のみ true。
         assert!(is_pixellab_session_cookie(PIXELLAB_SESSION_COOKIE));
-        assert!(is_pixellab_session_cookie(&format!(
-            "{PIXELLAB_SESSION_COOKIE}.0"
-        )));
-        assert!(is_pixellab_session_cookie(&format!(
-            "{PIXELLAB_SESSION_COOKIE}.1"
-        )));
+        for suffix in ["0", "1", "2", "10"] {
+            assert!(is_pixellab_session_cookie(&format!(
+                "{PIXELLAB_SESSION_COOKIE}.{suffix}"
+            )));
+        }
         // suffix が `.` 区切りでない類似名は弾く。
         assert!(!is_pixellab_session_cookie(&format!(
             "{PIXELLAB_SESSION_COOKIE}izer"

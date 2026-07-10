@@ -6,8 +6,9 @@ Working notes for `ai-usage`. See `README.md` for the user-facing overview.
 
 macOS CLI that decrypts each Chrome profile's cookies (via the "Chrome Safe
 Storage" Keychain key) and reports Claude, Codex, and PixelLab usage limits —
-the rolling 5-hour and weekly windows plus reset times — for every signed-in
-profile. Antigravity (Google's `agy`) is fetched via OAuth alongside them.
+typed 5-hour / daily / weekly / monthly windows plus reset times — for every
+signed-in profile. Antigravity (Google's `agy`) is fetched via OAuth alongside
+them.
 
 ## Source map
 
@@ -17,7 +18,7 @@ profile. Antigravity (Google's `agy`) is fetched via OAuth alongside them.
 | `src/cookies.rs`  | macOS `v10` cookie decryption. |
 | `src/http.rs`     | `wreq` client with Chrome TLS/HTTP2 emulation (Cloudflare). |
 | `src/claude.rs` / `src/codex.rs` / `src/antigravity.rs` / `src/pixellab.rs` | Per-provider usage fetchers. |
-| `src/model.rs`    | `Provider` / `Usage` / `Window` data model. |
+| `src/model.rs`    | `Provider` / `Usage` / `Window` / `WindowKind` data model. |
 | `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles + Antigravity table) + `BrowserWants`. |
 | `src/sort.rs`     | `SortKey` (`--sort`), shared by CLI and renderers. |
 | `src/report.rs`   | JSON DTO (shared by `--json` output and `--input` cache). |
@@ -42,17 +43,18 @@ filtering, numeric session-cookie chunk name matching (`.0`, `.1`, ...)
 `GetUserStatus` shapes (`antigravity.rs`), PixelLab Supabase cookie parsing
 (legacy JSON-array + `base64-…` object forms + `.0/.1` chunk join), JWT `exp` /
 `email` extraction, `/get-account-data` + `/get-subscription` folding into the
-`weekly` slot with `generation_reset_date` (`pixellab.rs`), report-DTO building
-with reset-countdown clamping (`report.rs`), and TOML-value escaping plus
-provider resolution (`main.rs`).
-Network code (`http.rs`) is not unit-tested — drive it via `make build` + a real
-run.
+typed monthly long slot with `generation_reset_date` (`pixellab.rs`), report-DTO
+building with reset-countdown clamping and old-cache compatibility (`report.rs`),
+retryable HTTP marker classification (`http.rs`), and TOML-value escaping plus
+provider resolution (`main.rs`). Drive the network paths via `make build` + a
+real run.
 
 ## Adding a provider
 
 Add a `Provider` variant in `model.rs`, a `fetch()` module returning `Usage`,
-and wire it into `main.rs` (`fetch_with_retry`) plus the `report.rs` /
-`render.rs` mappers.
+and a matching `FetchSpec` variant in `main.rs`, plus provider-specific render
+metadata. Every returned `Window` must carry its real `WindowKind`; renderers
+must not infer a period from the provider.
 
 ## PixelLab
 
@@ -84,20 +86,18 @@ Auth flow:
 
 Map to `Usage`:
 
-- `weekly` = monthly generation window:
+- `long` = monthly generation window (`WindowKind::Monthly`):
   `used_percent = imageGenerated / imageAmount * 100` (clamped to `[0, 100]`),
   `resets_at = generation_reset_date` (falls back to `next_bill_date`, then
-  `expiry_date`). The unified model has no dedicated "monthly" slot, so we
-  reuse the long-window column. Rendering keeps this honest with two
-  overrides: the per-row badge in both `render/table.rs` and
-  `render/statusline.rs` reads `1m` (not `1w`), and because
-  `five_hour == None`, the short slot is dropped and the long slot expands
+  `expiry_date`). The long-window column accepts typed weekly/monthly windows;
+  the per-row badge comes from `WindowKind` and therefore reads `1m`. Because
+  `short == None`, the short slot is dropped and the long slot expands
   into a merged bar (`render/statusline.rs` uses `wide_gauge = 2 * gauge + 19`
   so the right edge still aligns with dual-slot rows; `render/table.rs` swaps
   in `WIDE_BAR_WIDTH = 24` for the same effect). This branch is data-driven
-  ("5h missing → merged"), so Antigravity local-server groups (which also
-  return only weekly buckets) benefit automatically.
-- `five_hour` = `None` (PixelLab has no rolling short-window quota).
+  ("only one quota window → merged"), so Antigravity local-server groups and
+  the daily-only OAuth fallback benefit automatically.
+- `short` = `None` (PixelLab has no rolling short-window quota).
 - `plan` = subscription `name` (e.g. `Tier 1: Pixel Apprentice`) with
   `+ $X.XX credits` appended when the pay-as-you-go USD balance is > 0. Free
   accounts get `Tier <N>` / `Free`.
@@ -143,6 +143,9 @@ Quota sources, in CodexBar's preference order:
 Map to `Window`: `groups[].buckets[].remaining.remainingFraction` or flat
 `remainingFraction` → `used_percent = (1 - remainingFraction) * 100`; bucket
 reset metadata / `resetTime` (ISO-8601, epoch-seconds fallback) → `resets_at`.
+Local summary buckets get `WindowKind::Weekly` / `WindowKind::FiveHour`; the
+OAuth fallback's per-model bucket gets `WindowKind::Daily`, so its badge is
+`1d` rather than being mislabeled as `5h`.
 Use the most constrained (lowest-remaining) bucket per group or OAuth fallback
 row for the bar. Handle both the `groups[]` summary shape and the `buckets[]` /
 `quotaInfo` model shape defensively — `v1internal` is an undocumented contract
@@ -151,10 +154,10 @@ and shifts between Antigravity releases.
 As of 2026-07 the local `language_server` `RetrieveUserQuotaSummary` response
 returns **only `window: "weekly"` buckets** per group (its own description
 line says *"Within each group, models share a weekly limit"*). So both
-groups' `five_hour` slots are `None` and the render layer collapses them
+groups' `short` slots are `None` and the render layer collapses them
 into the same merged wide bar as PixelLab. Keep the `is_weekly` /
-`five_hour` split code — if Antigravity restores 5-hour buckets in a future
-release, `parse_summary` will populate `five_hour` again and rows revert to
+`short` split code — if Antigravity restores 5-hour buckets in a future
+release, `parse_summary` will populate `short` again and rows revert to
 the dual-slot layout automatically.
 
 ## Statusline cache
@@ -164,6 +167,12 @@ the dual-slot layout automatically.
 (TTL ~120s, refreshed asynchronously so drawing never blocks), then renders it
 with `ai-usage --statusline --input <cache>`. The cache filename tracks the
 binary name.
+
+The serialized account keys remain `five_hour` / `weekly` for external and
+cache compatibility, while each non-null window now includes a `kind`
+(`five_hour` / `daily` / `weekly` / `monthly`). `kind` is optional during
+deserialization so caches written by older binaries still render with the
+legacy slot/provider label fallback.
 
 **Gotcha after a rename or reinstall:** when the binary name (or cache key)
 changes, the new cache file doesn't exist yet, so every usage row — Antigravity

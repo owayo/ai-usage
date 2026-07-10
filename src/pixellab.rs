@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use wreq::Client;
 
 use crate::http::get_json;
-use crate::model::{Usage, UsageRow, Window};
+use crate::model::{Usage, UsageRow, Window, WindowKind};
 
 /// www.pixellab.ai の Supabase auth Cookie。大きい token は Next.js と同じ `…token.0` /
 /// `…token.1` に分割される。名前を 1 箇所で定義して cookie_bundle / has_session を揃える。
@@ -330,10 +330,11 @@ fn build_usage(access: &str, account: &Value, subscription: Option<&Value>) -> R
         Some(plan_name)
     };
 
-    let weekly = if image_amount > 0.0 {
+    let long = if image_amount > 0.0 {
         let used_percent = (image_generated / image_amount * 100.0).clamp(0.0, 100.0);
         let resets_at = subscription.and_then(subscription_reset);
         Some(Window {
+            kind: WindowKind::Monthly,
             used_percent,
             resets_at,
         })
@@ -344,8 +345,8 @@ fn build_usage(access: &str, account: &Value, subscription: Option<&Value>) -> R
     Ok(Usage {
         email: jwt_email(access),
         plan,
-        five_hour: None,
-        weekly,
+        short: None,
+        long,
     })
 }
 
@@ -468,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn build_usage_maps_monthly_generation_to_weekly_slot() {
+    fn build_usage_maps_monthly_generation_to_long_slot() {
         let jwt = short_lived_jwt("yohei@example.com", 600);
         let account = json!({
             "imageAmount": 2000.0,
@@ -485,8 +486,9 @@ mod tests {
         let u = build_usage(&jwt, &account, Some(&sub)).unwrap();
         assert_eq!(u.email.as_deref(), Some("yohei@example.com"));
         assert_eq!(u.plan.as_deref(), Some("Tier 1: Pixel Apprentice"));
-        assert!(u.five_hour.is_none());
-        let w = u.weekly.as_ref().unwrap();
+        assert!(u.short.is_none());
+        let w = u.long.as_ref().unwrap();
+        assert_eq!(w.kind, WindowKind::Monthly);
         assert!(
             (w.used_percent - 45.95).abs() < 0.05,
             "expected ~45.95%, got {}",
@@ -525,8 +527,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(free.plan.as_deref(), Some("Free"));
-        // imageAmount = 0 は generation quota なしとして weekly も None。
-        assert!(free.weekly.is_none());
+        // imageAmount = 0 は generation quota なしとして long も None。
+        assert!(free.long.is_none());
 
         let paid = build_usage(
             &jwt,
@@ -535,7 +537,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(paid.plan.as_deref(), Some("Tier 2"));
-        let w = paid.weekly.as_ref().unwrap();
+        let w = paid.long.as_ref().unwrap();
         assert!((w.used_percent - 20.0).abs() < 0.01);
         // subscription が無いと reset date も無い(bar だけ表示)。
         assert!(w.resets_at.is_none());
@@ -583,7 +585,7 @@ mod tests {
             Some(&json!({ "name": "Pro" })),
         )
         .unwrap();
-        assert_eq!(u.weekly.as_ref().unwrap().used_percent, 100.0);
+        assert_eq!(u.long.as_ref().unwrap().used_percent, 100.0);
     }
 
     #[test]

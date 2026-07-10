@@ -23,7 +23,7 @@ use wreq::{Client, StatusCode};
 
 use crate::config::AntigravityCfg;
 use crate::http::{post_form, post_json};
-use crate::model::{Usage, UsageRow, Window};
+use crate::model::{Usage, UsageRow, Window, WindowKind};
 
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const CODE_ASSIST: &str = "https://cloudcode-pa.googleapis.com/v1internal";
@@ -109,8 +109,8 @@ fn parse_summary(v: &Value, email: Option<String>, plan: Option<String>) -> Resu
         let mut usage = Usage {
             email: email.clone(),
             plan: plan.clone(),
-            five_hour: None,
-            weekly: None,
+            short: None,
+            long: None,
         };
         for b in g
             .get("buckets")
@@ -118,14 +118,20 @@ fn parse_summary(v: &Value, email: Option<String>, plan: Option<String>) -> Resu
             .into_iter()
             .flatten()
         {
-            let window = bucket_to_window(b);
+            let weekly = is_weekly(b);
+            let kind = if weekly {
+                WindowKind::Weekly
+            } else {
+                WindowKind::FiveHour
+            };
+            let window = bucket_to_window(b, kind);
             // 同じ window 種別の bucket が複数返る場合は、最も残量の少ない(used_percent が
             // 高い)= 最も制約の厳しいものを採用する。先勝ち / 後勝ちだと API のレスポンス
             // 順序次第で過小表示が起きる。
-            let target = if is_weekly(b) {
-                &mut usage.weekly
+            let target = if weekly {
+                &mut usage.long
             } else {
-                &mut usage.five_hour
+                &mut usage.short
             };
             let should_replace = target
                 .as_ref()
@@ -186,13 +192,14 @@ fn is_weekly(b: &Value) -> bool {
         .unwrap_or(true)
 }
 
-fn bucket_to_window(b: &Value) -> Window {
+fn bucket_to_window(b: &Value, kind: WindowKind) -> Window {
     // language_server は `{remaining:{remainingFraction}}`、OAuth 経路はトップレベルの
     // `remainingFraction` を返すことがあるため両形式を許容する。
     // どちらも欠落している場合は 1.0(未使用)として扱う。
     let rf = remaining_fraction(b);
     let used = ((1.0 - rf) * 100.0).clamp(0.0, 100.0);
     Window {
+        kind,
         used_percent: used,
         resets_at: bucket_reset(b),
     }
@@ -347,8 +354,8 @@ fn parse_buckets(v: &Value) -> Result<Vec<UsageRow>> {
     let usage = Usage {
         email: None,
         plan: None,
-        five_hour: Some(bucket_to_window(b)),
-        weekly: None,
+        short: Some(bucket_to_window(b, WindowKind::Daily)),
+        long: None,
     };
     Ok(vec![UsageRow {
         group_label: Some("Gemini".to_string()),
@@ -541,7 +548,8 @@ mod tests {
         let rows = parse_summary(&v, Some("e@x.test".into()), Some("Pro".into())).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].group_label.as_deref(), Some("Gemini"));
-        let w = rows[0].usage.weekly.as_ref().unwrap();
+        let w = rows[0].usage.long.as_ref().unwrap();
+        assert_eq!(w.kind, WindowKind::Weekly);
         assert!(
             (w.used_percent - 3.63).abs() < 0.05,
             "got {}",
@@ -550,7 +558,7 @@ mod tests {
         assert_eq!(rows[0].usage.email.as_deref(), Some("e@x.test"));
         assert_eq!(rows[0].usage.plan.as_deref(), Some("Pro"));
         assert_eq!(rows[1].group_label.as_deref(), Some("Claude&GPT"));
-        assert_eq!(rows[1].usage.weekly.as_ref().unwrap().used_percent, 0.0);
+        assert_eq!(rows[1].usage.long.as_ref().unwrap().used_percent, 0.0);
     }
 
     #[test]
@@ -564,7 +572,8 @@ mod tests {
         let rows = parse_buckets(&v).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].group_label.as_deref(), Some("Gemini"));
-        let w = rows[0].usage.five_hour.as_ref().unwrap();
+        let w = rows[0].usage.short.as_ref().unwrap();
+        assert_eq!(w.kind, WindowKind::Daily);
         assert!(
             (w.used_percent - 60.0).abs() < 0.01,
             "got {}",
@@ -581,7 +590,8 @@ mod tests {
              "resetTime": "2026-06-15T06:28:32Z"}
         ]});
         let rows = parse_buckets(&v).unwrap();
-        let w = rows[0].usage.five_hour.as_ref().unwrap();
+        let w = rows[0].usage.short.as_ref().unwrap();
+        assert_eq!(w.kind, WindowKind::Daily);
         // nested 形でも 0.2 = 80% used の bucket を代表値にする。
         assert!(
             (w.used_percent - 80.0).abs() < 0.01,
@@ -604,7 +614,7 @@ mod tests {
             "remaining": {"remainingFraction": 0.2},
             "resetTime": "2026-06-15T06:28:32Z"
         });
-        let w = bucket_to_window(&b);
+        let w = bucket_to_window(&b, WindowKind::Weekly);
         assert!(
             (w.used_percent - 80.0).abs() < 0.01,
             "used should be 80% got {}",
@@ -634,7 +644,7 @@ mod tests {
             ]}
         ]}});
         let rows = parse_summary(&v, None, None).unwrap();
-        let w = rows[0].usage.weekly.as_ref().unwrap();
+        let w = rows[0].usage.long.as_ref().unwrap();
         // 0.2 = 80% used が採用される(0.9 = 10% used が後勝ちで上書きされる旧バグの再現確認)。
         assert!(
             (w.used_percent - 80.0).abs() < 0.01,

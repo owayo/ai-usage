@@ -5,7 +5,7 @@ use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
 
 use super::sort::sorted_refs;
-use super::{ActiveTarget, brand_rgb, display_name, long_window_label, resolve_active};
+use super::{ActiveTarget, brand_rgb, display_name, resolve_active};
 use crate::SortKey;
 use crate::model::{AccountReport, Provider, Window};
 
@@ -33,7 +33,7 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
             "Account",
             "Service",
             "Plan",
-            "5-hour",
+            "Short window",
             // 週次 / 月次を同居させる長期スロット。各行のバッジ(1w / 1m)で
             // 実サイクルを明示する。
             "Long window",
@@ -61,27 +61,17 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
 
         match &r.usage {
             Ok(u) => {
-                // 5h スロットが空の provider(PixelLab / Antigravity 一部)は、
-                // 長期セルを横長バー(2.4x)にして 5h 分のデッドスペースを回収する。
-                // comfy-table は colspan を持たないので、5h セルは "—" のまま。
-                let merged = u.five_hour.is_none() && u.weekly.is_some();
-                let long_bar_width = if merged {
-                    WIDE_BAR_WIDTH
-                } else {
-                    NORMAL_BAR_WIDTH
-                };
+                // 短期 / 長期のどちらか一方しかない行は、存在する側のバーを横長にする。
+                // comfy-table は colspan を持たないため、空側セルは "—" のまま。
+                let (short_bar_width, long_bar_width) =
+                    bar_widths(u.short.is_some(), u.long.is_some());
                 table.add_row(vec![
                     name_cell,
                     Cell::new(service_label(r.provider, r.group_label.as_deref()))
                         .fg(provider_color(r.provider)),
                     Cell::new(u.plan.as_deref().unwrap_or("—")),
-                    window_cell(&u.five_hour, now, Some("5h"), NORMAL_BAR_WIDTH),
-                    window_cell(
-                        &u.weekly,
-                        now,
-                        Some(long_window_label(r.provider)),
-                        long_bar_width,
-                    ),
+                    window_cell(&u.short, now, short_bar_width),
+                    window_cell(&u.long, now, long_bar_width),
                 ]);
             }
             Err(e) => {
@@ -107,16 +97,18 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
 
 /// 通常セルの gauge 幅(旧 tbar と同じ)。
 const NORMAL_BAR_WIDTH: usize = 10;
-/// 5h スロットが常に空の provider 向けに、長期セル用の横長 gauge 幅。5h セルの
-/// デッドスペースを長期セル側で回収する量。
+/// quota が 1 枠だけの行に使う横長 gauge 幅。
 const WIDE_BAR_WIDTH: usize = 24;
 
-fn window_cell(
-    w: &Option<Window>,
-    now: DateTime<Utc>,
-    badge: Option<&str>,
-    bar_width: usize,
-) -> Cell {
+fn bar_widths(has_short: bool, has_long: bool) -> (usize, usize) {
+    match (has_short, has_long) {
+        (true, false) => (WIDE_BAR_WIDTH, NORMAL_BAR_WIDTH),
+        (false, true) => (NORMAL_BAR_WIDTH, WIDE_BAR_WIDTH),
+        _ => (NORMAL_BAR_WIDTH, NORMAL_BAR_WIDTH),
+    }
+}
+
+fn window_cell(w: &Option<Window>, now: DateTime<Utc>, bar_width: usize) -> Cell {
     match w {
         // データ無し: 色なしのプレースホルダ("—")。
         None => Cell::new("—"),
@@ -127,7 +119,7 @@ fn window_cell(
                 .unwrap_or_else(|| "—".to_string());
             let text = format!(
                 "{} {}  {:>3}%  · {}",
-                badge.unwrap_or(""),
+                w.kind.label(),
                 tbar(w.used_percent, bar_width),
                 w.used_percent.round() as i64,
                 reset
@@ -204,6 +196,13 @@ mod tests {
     }
 
     #[test]
+    fn single_window_expands_on_its_own_side() {
+        assert_eq!(bar_widths(true, false), (WIDE_BAR_WIDTH, NORMAL_BAR_WIDTH));
+        assert_eq!(bar_widths(false, true), (NORMAL_BAR_WIDTH, WIDE_BAR_WIDTH));
+        assert_eq!(bar_widths(true, true), (NORMAL_BAR_WIDTH, NORMAL_BAR_WIDTH));
+    }
+
+    #[test]
     fn service_label_appends_group() {
         assert_eq!(service_label(Provider::Claude, None), "Claude");
         assert_eq!(
@@ -213,32 +212,21 @@ mod tests {
     }
 
     #[test]
-    fn window_cell_prepends_badge_and_omits_when_none() {
-        // badge を渡すと text 先頭に付く。None なら prefix 無し。空データは "—" のまま。
+    fn window_cell_uses_kind_badge_and_omits_when_none() {
+        // WindowKind の badge が text 先頭に付く。空データは "—" のまま。
         let now = fixed_utc("2026-06-15T00:00:00Z");
         let w = Some(Window {
+            kind: crate::model::WindowKind::Monthly,
             used_percent: 46.0,
             resets_at: Some(fixed_utc("2026-06-20T15:00:00Z")),
         });
-        let cell = window_cell(&w, now, Some("1m"), NORMAL_BAR_WIDTH).content();
+        let cell = window_cell(&w, now, NORMAL_BAR_WIDTH).content();
         assert!(cell.starts_with("1m"), "expected 1m badge in {cell:?}");
         assert!(cell.contains("46%"));
 
-        let cell_no_badge = window_cell(&w, now, None, NORMAL_BAR_WIDTH).content();
-        assert!(
-            !cell_no_badge.starts_with(char::is_alphabetic),
-            "no badge → cell starts with bar glyph, got {cell_no_badge:?}"
-        );
-
-        // データ無しは badge 有無・幅指定に関わらず "—" のまま(桁ズレさせない)。
-        assert_eq!(
-            window_cell(&None, now, Some("1m"), NORMAL_BAR_WIDTH).content(),
-            "—"
-        );
-        assert_eq!(
-            window_cell(&None, now, Some("1m"), WIDE_BAR_WIDTH).content(),
-            "—"
-        );
+        // データ無しは幅指定に関わらず "—" のまま(桁ズレさせない)。
+        assert_eq!(window_cell(&None, now, NORMAL_BAR_WIDTH).content(), "—");
+        assert_eq!(window_cell(&None, now, WIDE_BAR_WIDTH).content(), "—");
     }
 
     #[test]
@@ -246,12 +234,11 @@ mod tests {
         // merged 行(5h 無し)向けに、gauge 文字数が WIDE_BAR_WIDTH と一致する。
         let now = fixed_utc("2026-06-15T00:00:00Z");
         let w = Some(Window {
+            kind: crate::model::WindowKind::Monthly,
             used_percent: 50.0,
             resets_at: Some(fixed_utc("2026-06-20T00:00:00Z")),
         });
-        let cell = window_cell(&w, now, Some("1m"), WIDE_BAR_WIDTH)
-            .content()
-            .to_string();
+        let cell = window_cell(&w, now, WIDE_BAR_WIDTH).content().to_string();
         let gauge_glyphs = cell.chars().filter(|c| *c == '█' || *c == '░').count();
         assert_eq!(gauge_glyphs, WIDE_BAR_WIDTH);
     }
