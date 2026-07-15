@@ -6,10 +6,19 @@
 //! `api` は Cloudflare 配下ではない Google `cloudcode-pa` endpoint 用の plain client。
 
 use std::fmt;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use wreq::{Client, Response, StatusCode};
 use wreq_util::Emulation;
+
+/// 1 リクエストの全体 deadline。通常の fetch は 1〜2 秒で完了するため、ここに
+/// かかるのは相手側が応答を返さずぶら下がっている場合だけ。timeout は send() の
+/// transport error として返り、retryable 扱いで backoff 再試行に回る。
+/// 未設定だと遅い接続を無期限に待ち、1 本のハングが全体の応答時間を分単位まで
+/// 引き延ばす(実測で 48 秒の実行を観測)。
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// installed Chrome と合わせた User-Agent。その Chrome で発行された `cf_clearance` Cookie を
 /// Cloudflare に有効と判定させる。
@@ -50,9 +59,13 @@ pub fn clients() -> Result<Clients> {
     let browser = Client::builder()
         .emulation(Emulation::Chrome137)
         .user_agent(UA)
+        .timeout(REQUEST_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .context("building browser HTTP client")?;
     let api = Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .context("building API HTTP client")?;
     Ok(Clients { browser, api })

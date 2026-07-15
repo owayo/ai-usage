@@ -226,6 +226,12 @@ struct Target {
     wants: BrowserWants,
 }
 
+/// 1 job(retry 込み)の全体 deadline。個々のリクエストは http.rs の
+/// REQUEST_TIMEOUT で切れるが、retry × backoff の積み上げでも合計がここを
+/// 超えないよう上限を張る。超過した job はその行だけ error 表示になり、
+/// 他 provider の結果はそのまま出る。
+const JOB_DEADLINE: Duration = Duration::from_secs(20);
+
 /// transport error / 429 / 5xx / Cloudflare challenge のみ backoff 付きで retry する。
 /// 認証不正や parse error は待っても回復しないため即座に返す。
 async fn fetch_with_retry(clients: &http::Clients, fetch: &FetchSpec) -> Result<Vec<UsageRow>> {
@@ -349,7 +355,16 @@ async fn fetch_reports(
                 tokio::time::sleep(Duration::from_millis(150 * idx as u64)).await;
             }
             let provider = job.fetch.provider();
-            let rows = fetch_with_retry(&clients, &job.fetch).await;
+            let rows =
+                match tokio::time::timeout(JOB_DEADLINE, fetch_with_retry(&clients, &job.fetch))
+                    .await
+                {
+                    Ok(rows) => rows,
+                    Err(_) => Err(anyhow::anyhow!(
+                        "fetch timed out after {}s (including retries)",
+                        JOB_DEADLINE.as_secs()
+                    )),
+                };
             (idx, provider, job.meta, rows)
         });
     }

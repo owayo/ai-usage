@@ -12,17 +12,15 @@ use crate::model::{Provider, WindowKind};
 use crate::report::{AccountOut, Report, WindowOut};
 
 // 256-color ANSI code(SGR wrapper なしの parameter 部分)。
-// Codex の marker 色。teal brand color は暗背景で沈むため、logo glyph・text label とも
-// 白で表示する。
-const CODEX_MARKER_COLOR: &str = "38;2;255;255;255";
+// Codex / Grok の marker 色。Codex の teal brand color は暗背景で沈み、Grok(xAI)は
+// 白黒基調ブランドのため、logo glyph・text label とも白で表示する。
+const WHITE_MARKER_COLOR: &str = "38;2;255;255;255";
 // BrandLogos font の PUA-B glyph。`--logos` で使う。
 const CLAUDE_LOGO: &str = "\u{100002}"; // Claude sunburst。
 const CODEX_LOGO: &str = "\u{100000}"; // OpenAI mark。
 const ANTIGRAVITY_LOGO: &str = "\u{100003}"; // Antigravity mark。
-const PIXELLAB_LOGO: &str = "\u{100004}"; // PixelLab dragon。
-// Grok は BrandLogos font にまだ glyph が無いため、`--logos` でも "Gk" テキストで
-// 描画する(font に xAI mark が追加された時点で PUA コードに差し替える)。
-const GROK_LOGO: &str = "Gk";
+const GROK_LOGO: &str = "\u{100004}"; // Grok (xAI) mark。
+const PIXELLAB_LOGO: &str = "\u{100400}"; // PixelLab dragon。
 const GRAY: &str = "38;5;245";
 const DIM: &str = "38;5;242";
 const GREEN: &str = "38;5;35";
@@ -39,11 +37,12 @@ fn brand_sgr(p: Provider) -> String {
 }
 
 /// provider marker(左端の logo glyph またはテキストラベル)に使う ANSI color。
-/// Codex は brand teal よりも白の方が明るいターミナル背景でも視認しやすいため、
-/// logos モードと text モードのどちらでも `CODEX_MARKER_COLOR` を使う。
+/// Codex は brand teal よりも白の方が明るいターミナル背景でも視認しやすく、
+/// Grok は xAI の白黒ブランドに合わせるため、logos モードと text モードの
+/// どちらでも `WHITE_MARKER_COLOR` を使う。
 fn marker_color(p: Provider) -> String {
     match p {
-        Provider::Codex => CODEX_MARKER_COLOR.to_string(),
+        Provider::Codex | Provider::Grok => WHITE_MARKER_COLOR.to_string(),
         _ => brand_sgr(p),
     }
 }
