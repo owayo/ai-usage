@@ -7,8 +7,8 @@ Working notes for `ai-usage`. See `README.md` for the user-facing overview.
 macOS CLI that decrypts each Chrome profile's cookies (via the "Chrome Safe
 Storage" Keychain key) and reports Claude, Codex, and PixelLab usage limits —
 typed 5-hour / daily / weekly / monthly windows plus reset times — for every
-signed-in profile. Antigravity (Google's `agy`) is fetched via OAuth alongside
-them.
+signed-in profile. Antigravity (Google's `agy`) and Grok (xAI's `grok` CLI)
+are fetched via OAuth alongside them.
 
 ## Source map
 
@@ -17,9 +17,9 @@ them.
 | `src/profiles.rs` | Chrome profile discovery (`Local State`). |
 | `src/cookies.rs`  | macOS `v10` cookie decryption. |
 | `src/http.rs`     | `wreq` client with Chrome TLS/HTTP2 emulation (Cloudflare). |
-| `src/claude.rs` / `src/codex.rs` / `src/antigravity.rs` / `src/pixellab.rs` | Per-provider usage fetchers. |
+| `src/claude.rs` / `src/codex.rs` / `src/antigravity.rs` / `src/pixellab.rs` / `src/grok.rs` | Per-provider usage fetchers. |
 | `src/model.rs`    | `Provider` / `Usage` / `Window` / `WindowKind` data model. |
-| `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles + Antigravity table) + `BrowserWants`. |
+| `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles + Antigravity/Grok tables) + `BrowserWants`. |
 | `src/sort.rs`     | `SortKey` (`--sort`), shared by CLI and renderers. |
 | `src/report.rs`   | JSON DTO (shared by `--json` output and `--input` cache). |
 | `src/render.rs`   | Shared row resolution (display name, active highlight, brand colors) + JSON output; re-exports the renderers. |
@@ -159,6 +159,55 @@ into the same merged wide bar as PixelLab. Keep the `is_weekly` /
 `short` split code — if Antigravity restores 5-hour buckets in a future
 release, `parse_summary` will populate `short` again and rows revert to
 the dual-slot layout automatically.
+
+## Grok
+
+Implemented in `src/grok.rs` — auto-discovered when `~/.grok/auth.json` exists
+(written by `grok login`); configurable via the top-level `[grok]` table.
+Chrome-independent single OAuth account, presented as one row labeled `Grok`.
+
+Auth flow:
+
+1. Read `~/.grok/auth.json`. The top-level key is a dynamic
+   `"<oidc_issuer>::<oidc_client_id>"` string; the entry value carries
+   `key` (access-token JWT), `refresh_token`, `expires_at`, `oidc_issuer`,
+   `oidc_client_id`, `email`. If several entries are present the newest
+   `create_time` wins. A flat document (no wrapper key) is also accepted.
+2. Refresh via `POST <oidc_issuer>/oauth2/token` with
+   `grant_type=refresh_token`, `refresh_token=…`, `client_id=…` when
+   `expires_at` is within 60 s. `grok` CLI is a public OAuth client so
+   `client_secret` is not needed. A refresh-token 401 surfaces a
+   "Re-run `grok login`" message.
+3. `GET https://cli-chat-proxy.grok.com/v1/user?include=subscription` for
+   `{ email, subscriptionTier, hasGrokCodeAccess, teamId, … }`. 401/403
+   triggers one refresh + retry.
+4. `GET https://cli-chat-proxy.grok.com/v1/billing` for
+   `{ config: { monthlyLimit, used, billingPeriodStart, billingPeriodEnd,
+   history[] } }`. Non-auth failures leave `long = None` (the row still
+   shows plan / email as "quota なし"). Uses the plain `api` HTTP client:
+   the endpoint is Cloudflare-fronted but accepts a plain `Authorization:
+   Bearer` without Chrome fingerprint emulation.
+
+Map to `Usage`:
+
+- `long` = monthly billing cycle (`WindowKind::Monthly`):
+  `used_percent = used / monthlyLimit * 100` (clamped to `[0, 100]`).
+  When `monthlyLimit == 0` (Free / no active subscription) render as `0%`
+  and keep `resets_at = billingPeriodEnd` so the reset countdown still
+  informs the user. `short == None`, so the render layer merges into the
+  same wide long-only bar used by PixelLab and Antigravity summaries.
+- `short` = `None` (grok CLI does not expose a rolling short-window quota
+  over REST; the 5-hour / weekly buckets that surface in the WS
+  `authenticate` response are not attempted here).
+- `plan` = `subscriptionTier` (e.g. `SuperGrok`); `null` / missing → `Free`.
+- `email` = `email` from `/v1/user`.
+
+The endpoints were confirmed against `grok --debug --debug-file=…` traces
+(gateway `authenticate` / `session/prompt` are WS-only; the REST surface is
+`/v1/{user,billing,models,responses}`). If Grok ships a public REST for the
+grouped 5-hour quota, extend `fetch` to populate `short` — the render layer
+will revert to the dual-slot layout automatically (see the same fallback in
+`src/antigravity.rs`).
 
 ## Statusline cache
 

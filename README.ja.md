@@ -5,7 +5,7 @@
 <h1 align="center">ai-usage</h1>
 
 <p align="center">
-  Chrome プロファイル横断で Claude / Codex / Antigravity / PixelLab の使用量を一覧表示する CLI
+  Chrome プロファイル横断で Claude / Codex / Antigravity / PixelLab / Grok の使用量を一覧表示する CLI
 </p>
 
 <p align="center">
@@ -54,7 +54,7 @@ macOS 向け CLI です。PixelLab は月次生成枠を長期スロットで表
 ## 特徴
 
 - **マルチアカウント**: サインイン済みの全 Chrome プロファイルを一覧表示。ログインし直し不要
-- **マルチプロバイダ**: Claude (`claude.ai`) / Codex (`chatgpt.com`) / Antigravity (Google `agy` CLI・IDE) / PixelLab (`pixellab.ai`) を同一ビューに集約
+- **マルチプロバイダ**: Claude (`claude.ai`) / Codex (`chatgpt.com`) / Antigravity (Google `agy` CLI・IDE) / PixelLab (`pixellab.ai`) / Grok (xAI `grok` CLI) を同一ビューに集約
 - **型付き利用枠**: 各 quota が 5 時間・日次・週次・月次の実周期を保持し、利用率とリセット残時間を表示。行内バッジ (`5h` / `1d` / `1w` / `1m`) は quota 自身の周期から決定。利用枠が1つだけの行は 2 つのスロットを 1 本の横長バーに統合
 - **Cloudflare 対応**: [`wreq`](https://crates.io/crates/wreq) が Chrome の TLS/HTTP2 フィンガープリントをエミュレートし、`cf_clearance` を再送
 - **statusline モード**: 端末のステータスバー向けにアカウント 1 行のコンパクト表示。ブランドロゴ字形にも対応
@@ -69,6 +69,7 @@ macOS 向け CLI です。PixelLab は月次生成枠を長期スロットで表
 - **ブラウザ**: Google Chrome (Claude / Codex にサインイン済み)
 - **ビルド**: Rust ツールチェイン + **cmake** ([`wreq`](https://crates.io/crates/wreq) の BoringSSL に必要)
 - **任意**: Antigravity 使用量には `agy` CLI 起動中、または `~/.gemini` の OAuth トークンが必要
+- **任意**: Grok 使用量には `grok` CLI にサインイン済み (`~/.grok/auth.json`) が必要
 
 ## インストール
 
@@ -242,6 +243,13 @@ label = "home"
 # enabled = true                    # false なら検出されても非表示
 label = "antigravity"               # 任意: 行に表示するラベル
 # token_path = "~/.gemini/antigravity-cli/antigravity-oauth-token"
+
+# Grok (xAI `grok` CLI) 使用量。~/.grok/auth.json (`grok login` が書き出す) が
+# あれば自動検出されるため、設定は任意です。フィールドは [antigravity] と同構造。
+[grok]
+# enabled = true                    # false なら検出されても非表示
+label = "grok"                      # 任意: 行に表示するラベル
+# auth_path = "~/.grok/auth.json"
 ```
 
 ### 設定オプション
@@ -256,6 +264,9 @@ label = "antigravity"               # 任意: 行に表示するラベル
 | `[antigravity].enabled` | 検出時に Antigravity 行を表示 | `true` |
 | `[antigravity].label` | Antigravity 行のラベル | `antigravity` |
 | `[antigravity].token_path` | 非既定の OAuth トークンパス | `~/.gemini/…` |
+| `[grok].enabled` | 検出時に Grok 行を表示 | `true` |
+| `[grok].label` | Grok 行のラベル | `grok` |
+| `[grok].auth_path` | 非既定の `auth.json` パス | `~/.grok/auth.json` |
 
 優先順位は **CLI フラグ > 設定ファイル > 自動検出** です。
 
@@ -293,6 +304,15 @@ flowchart LR
    表示し、行内バッジを `1w` ではなく `1m` にして週次と誤読しないようにする。5 時間枠が
    ない provider は 5h スロットを畳んで長期スロットを横長バー(通常の 2 スロット分の
    横幅)に拡張する。
+6. **Grok** — `~/.grok/auth.json` (`grok login` が書き出す) の OAuth 情報を読み、
+   期限が近ければ `auth.x.ai/oauth2/token` (`refresh_token` grant、public OAuth
+   client なので secret 不要) で更新した上で
+   `cli-chat-proxy.grok.com/v1/user?include=subscription` でプラン (`subscriptionTier`
+   → null は `Free`) を、`cli-chat-proxy.grok.com/v1/billing` で月次サイクル
+   (`used / monthlyLimit`、`billingPeriodEnd` をリセット時刻) を取得する。
+   PixelLab と同じく短期枠がないため単一の `1m` 横長バーとして表示し、
+   `monthlyLimit == 0` の Free では 0% のまま billing period 末尾までの残り時間だけを
+   表示する。
 
 `claude.ai` と `chatgpt.com` はいずれも Cloudflare の背後にあるため、HTTP クライアント
 ([`wreq`](https://crates.io/crates/wreq)) が Chrome の TLS/HTTP2 フィンガープリントを

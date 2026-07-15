@@ -126,7 +126,8 @@ fn resolve_active(
 /// provider ごとの従来値へ fallback する。
 fn legacy_long_window_label(p: Provider) -> &'static str {
     match p {
-        Provider::PixelLab => "1m",
+        // PixelLab は月次生成枠、Grok は月次サイクル(billingPeriod)。それ以外は週次。
+        Provider::PixelLab | Provider::Grok => "1m",
         _ => "1w",
     }
 }
@@ -145,6 +146,9 @@ fn brand_rgb(p: Provider) -> (u8, u8, u8) {
         Provider::Codex => (16, 163, 127),  // OpenAI teal #10A37F
         Provider::Antigravity => (66, 133, 244), // Google blue #4285F4
         Provider::PixelLab => (132, 204, 22), // pixel-art yellow-green (Tailwind lime-500) #84CC16
+        // xAI brand は白/黒基調で dark 背景では黒が沈むため、識別性の高い
+        // 明るい cyan(Tailwind cyan-400 #22D3EE)を採用する。
+        Provider::Grok => (34, 211, 238),
     }
 }
 
@@ -302,11 +306,12 @@ mod tests {
 
     #[test]
     fn legacy_long_window_label_by_provider() {
-        // PixelLab は月次サイクル(1m)、それ以外は週次(1w)。
+        // PixelLab / Grok は月次サイクル(1m)、それ以外は週次(1w)。
         assert_eq!(legacy_long_window_label(Provider::Claude), "1w");
         assert_eq!(legacy_long_window_label(Provider::Codex), "1w");
         assert_eq!(legacy_long_window_label(Provider::Antigravity), "1w");
         assert_eq!(legacy_long_window_label(Provider::PixelLab), "1m");
+        assert_eq!(legacy_long_window_label(Provider::Grok), "1m");
     }
 
     #[test]

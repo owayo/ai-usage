@@ -5,7 +5,7 @@
 <h1 align="center">ai-usage</h1>
 
 <p align="center">
-  Unified Claude + Codex + Antigravity + PixelLab usage limits across Chrome profiles
+  Unified Claude + Codex + Antigravity + PixelLab + Grok usage limits across Chrome profiles
 </p>
 
 <p align="center">
@@ -54,7 +54,7 @@ Claude and a Codex subscription = four accounts) without you logging anything in
 ## Features
 
 - **Multi-Account**: Reports every Chrome profile signed into Claude, Codex, or PixelLab — no re-login needed
-- **Multi-Provider**: Claude (`claude.ai`), Codex (`chatgpt.com`), Antigravity (Google's `agy` CLI/IDE), and PixelLab (`pixellab.ai`) in one view
+- **Multi-Provider**: Claude (`claude.ai`), Codex (`chatgpt.com`), Antigravity (Google's `agy` CLI/IDE), PixelLab (`pixellab.ai`), and Grok (xAI's `grok` CLI) in one view
 - **Typed Windows**: Each quota carries its real cycle (5-hour, daily, weekly, or monthly) with a usage bar, percentage, and reset countdown — each row's badge (`5h` / `1d` / `1w` / `1m`) comes from the quota itself. Any row with only one window collapses both slots into a single wider bar
 - **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
 - **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars
@@ -69,6 +69,7 @@ Claude and a Codex subscription = four accounts) without you logging anything in
 - **Browser**: Google Chrome (signed into Claude and/or Codex)
 - **Build**: Rust toolchain + **cmake** (required by [`wreq`](https://crates.io/crates/wreq)'s BoringSSL)
 - **Optional**: `agy` CLI or `~/.gemini` OAuth token for Antigravity usage
+- **Optional**: `grok` CLI signed in (`~/.grok/auth.json`) for Grok usage
 
 ## Installation
 
@@ -243,11 +244,18 @@ label = "home"
 label = "antigravity"               # optional row label
 # token_path = "~/.gemini/antigravity-cli/antigravity-oauth-token"
 
+# Grok (xAI's `grok` CLI). Auto-discovered when ~/.grok/auth.json exists
+# (written by `grok login`). Config is optional and mirrors [antigravity].
+[grok]
+# enabled = true                    # false to hide even when detected
+label = "grok"                      # optional row label
+# auth_path = "~/.grok/auth.json"
+
 # Statusline-only display filter. Hides rows from `--statusline` output while
 # keeping them in `--json` / table (so scripts and manual checks still see them).
 # Overridden by `--statusline-hide` on the CLI.
 [statusline]
-hide = ["antigravity"]              # subset of: claude / codex / antigravity / pixellab
+hide = ["antigravity"]              # subset of: claude / codex / antigravity / pixellab / grok
 ```
 
 ### Configuration Options
@@ -262,6 +270,9 @@ hide = ["antigravity"]              # subset of: claude / codex / antigravity / 
 | `[antigravity].enabled` | Show the Antigravity row when detected | `true` |
 | `[antigravity].label` | Row label for Antigravity | `antigravity` |
 | `[antigravity].token_path` | Non-default OAuth token path | `~/.gemini/…` |
+| `[grok].enabled` | Show the Grok row when detected | `true` |
+| `[grok].label` | Row label for Grok | `grok` |
+| `[grok].auth_path` | Non-default `auth.json` path | `~/.grok/auth.json` |
 | `[statusline].hide` | Providers to omit from `--statusline` (still in `--json` / table) | `[]` |
 
 Precedence: **CLI flags > config file > auto-detection**.
@@ -301,6 +312,14 @@ For each Chrome profile it finds, `ai-usage`:
    usual `1w`) so it isn't mistaken for a weekly reset. Since PixelLab has no rolling
    5-hour window, the 5-hour slot is collapsed and the long-window slot expands into a
    wider bar spanning the same total width as the two-slot layout.
+6. **Grok** — reads OAuth credentials from `~/.grok/auth.json` (written by `grok login`),
+   refreshing the access token via `auth.x.ai/oauth2/token` (`refresh_token` grant, public
+   OAuth client — no secret) when it is about to expire. Calls
+   `cli-chat-proxy.grok.com/v1/user?include=subscription` for the plan (`subscriptionTier`
+   → falls back to `Free`) and `cli-chat-proxy.grok.com/v1/billing` for the monthly cycle
+   (`used / monthlyLimit`, plus `billingPeriodEnd` as the reset time). Like PixelLab this
+   renders as a single wide `1m` bar; when `monthlyLimit == 0` (Free) the bar stays at 0%
+   but keeps the reset countdown so you still see when the billing period turns over.
 
 `claude.ai` and `chatgpt.com` sit behind Cloudflare, so the HTTP client
 ([`wreq`](https://crates.io/crates/wreq)) emulates Chrome's TLS/HTTP2 fingerprint and

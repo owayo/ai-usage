@@ -6,6 +6,7 @@ mod claude;
 mod codex;
 mod config;
 mod cookies;
+mod grok;
 mod http;
 mod model;
 mod pixellab;
@@ -31,7 +32,7 @@ pub use sort::SortKey;
 #[command(
     name = "ai-usage",
     version,
-    about = "Show Claude, Codex, Antigravity, and PixelLab usage limits"
+    about = "Show Claude, Codex, Antigravity, PixelLab, and Grok usage limits"
 )]
 struct Cli {
     /// 対象を指定した Chrome profile 表示名に絞る(例: -p Work,Home)
@@ -116,7 +117,7 @@ struct Cli {
     sort: SortKey,
 
     /// `--statusline` 描画時に隠す provider(comma-separated: claude,codex,antigravity,
-    /// pixellab)。fetch と `--json` / table には影響しない。指定すると config の
+    /// pixellab,grok)。fetch と `--json` / table には影響しない。指定すると config の
     /// `[statusline] hide` を上書きする。
     #[arg(long, value_delimiter = ',', value_name = "PROVIDERS")]
     statusline_hide: Vec<ProviderArg>,
@@ -128,6 +129,7 @@ enum ProviderArg {
     Codex,
     Antigravity,
     Pixellab,
+    Grok,
 }
 
 impl ProviderArg {
@@ -137,6 +139,7 @@ impl ProviderArg {
             ProviderArg::Codex => Provider::Codex,
             ProviderArg::Antigravity => Provider::Antigravity,
             ProviderArg::Pixellab => Provider::PixelLab,
+            ProviderArg::Grok => Provider::Grok,
         }
     }
 }
@@ -148,6 +151,7 @@ enum FetchSpec {
     Codex(HashMap<String, String>),
     PixelLab(HashMap<String, String>),
     Antigravity(Option<config::AntigravityCfg>),
+    Grok(Option<config::GrokCfg>),
 }
 
 impl FetchSpec {
@@ -157,6 +161,7 @@ impl FetchSpec {
             FetchSpec::Codex(_) => Provider::Codex,
             FetchSpec::PixelLab(_) => Provider::PixelLab,
             FetchSpec::Antigravity(_) => Provider::Antigravity,
+            FetchSpec::Grok(_) => Provider::Grok,
         }
     }
 
@@ -166,6 +171,10 @@ impl FetchSpec {
             FetchSpec::Codex(cookies) => codex::fetch(&clients.browser, cookies).await,
             FetchSpec::PixelLab(cookies) => pixellab::fetch(&clients.browser, cookies).await,
             FetchSpec::Antigravity(cfg) => antigravity::fetch(&clients.api, cfg.as_ref()).await,
+            // cli-chat-proxy.grok.com は Cloudflare 前面にあるが、`Authorization: Bearer` だけで
+            // 通ることを実測で確認済み。Cookie 系プロバイダとは違って Chrome fingerprint は不要
+            // なため、Antigravity と同じ plain `api` client を使う。
+            FetchSpec::Grok(cfg) => grok::fetch(&clients.api, cfg.as_ref()).await,
         }
     }
 }
@@ -241,6 +250,8 @@ async fn fetch_reports(
     targets: &[Target],
     want_antigravity: bool,
     antigravity_cfg: Option<&config::AntigravityCfg>,
+    want_grok: bool,
+    grok_cfg: Option<&config::GrokCfg>,
 ) -> Result<Vec<AccountReport>> {
     let clients = http::clients()?;
     let mut jobs: Vec<Job> = Vec::new();
@@ -310,10 +321,23 @@ async fn fetch_reports(
         });
     }
 
+    // Grok job も Antigravity と同じく Chrome profile と独立した OAuth account。
+    if want_grok {
+        jobs.push(Job {
+            meta: JobMeta {
+                profile_name: "Grok".to_string(),
+                profile_email: None,
+                label: grok_cfg.and_then(|c| c.label.clone()),
+            },
+            fetch: FetchSpec::Grok(grok_cfg.cloned()),
+        });
+    }
+
     if jobs.is_empty() {
         bail!(
-            "No signed-in Claude/Codex/PixelLab sessions or Antigravity token found. Sign in via \
-             Chrome, run `agy`, or adjust --profile / --only / your config. (Try --list-profiles.)"
+            "No signed-in Claude/Codex/PixelLab sessions or Antigravity/Grok token found. Sign in \
+             via Chrome, run `agy` / `grok login`, or adjust --profile / --only / your config. \
+             (Try --list-profiles.)"
         );
     }
 
@@ -535,6 +559,11 @@ fn resolve_wants(cli: &Cli, cfg: Option<&config::ProfileCfg>) -> BrowserWants {
             codex: false,
             pixellab: false,
         },
+        Some(ProviderArg::Grok) => BrowserWants {
+            claude: false,
+            codex: false,
+            pixellab: false,
+        },
         None => cfg.map_or(BrowserWants::all(), |c| c.wants()),
     }
 }
@@ -657,6 +686,7 @@ fn parse_provider(s: &str) -> Option<model::Provider> {
         "codex" => Some(model::Provider::Codex),
         "antigravity" => Some(model::Provider::Antigravity),
         "pixellab" => Some(model::Provider::PixelLab),
+        "grok" => Some(model::Provider::Grok),
         _ => None,
     }
 }
@@ -703,9 +733,12 @@ fn render_reports(
 async fn run(cli: Cli) -> Result<()> {
     let cfg = config::load(cli.config.as_deref());
     let root = profiles::chrome_root()?;
-    // `--only antigravity` は Chrome に触らないため、profile discovery と
+    // `--only antigravity|grok` は Chrome に触らないため、profile discovery と
     // fetch_reports 内の Keychain prompt を避ける。
-    let all = if matches!(cli.only, Some(ProviderArg::Antigravity)) {
+    let all = if matches!(
+        cli.only,
+        Some(ProviderArg::Antigravity) | Some(ProviderArg::Grok)
+    ) {
         Vec::new()
     } else {
         profiles::discover(&root)?
@@ -735,8 +768,20 @@ async fn run(cli: Cli) -> Result<()> {
         Some(_) => false,
         None => antigravity::available(cfg.antigravity.as_ref()),
     };
-    let reports =
-        fetch_reports(&root, &targets, want_antigravity, cfg.antigravity.as_ref()).await?;
+    let want_grok = match cli.only {
+        Some(ProviderArg::Grok) => true,
+        Some(_) => false,
+        None => grok::available(cfg.grok.as_ref()),
+    };
+    let reports = fetch_reports(
+        &root,
+        &targets,
+        want_antigravity,
+        cfg.antigravity.as_ref(),
+        want_grok,
+        cfg.grok.as_ref(),
+    )
+    .await?;
 
     render_reports(&cli, &cfg, &reports, active.as_ref());
     Ok(())
@@ -842,5 +887,6 @@ mod tests {
             FetchSpec::Antigravity(None).provider(),
             Provider::Antigravity
         );
+        assert_eq!(FetchSpec::Grok(None).provider(), Provider::Grok);
     }
 }

@@ -25,6 +25,10 @@ pub struct Config {
     /// `[[profiles]]` 配下ではなく top-level に置く。
     pub antigravity: Option<AntigravityCfg>,
 
+    /// Grok(xAI `grok` CLI)使用量。Antigravity と同じく OAuth token
+    /// (`~/.grok/auth.json`)ベースで、Chrome profile とは無関係な top-level 設定。
+    pub grok: Option<GrokCfg>,
+
     /// `--statusline` 描画のみに効く設定。`--json` / table 出力には影響しない。
     pub statusline: Option<StatuslineCfg>,
 }
@@ -47,6 +51,18 @@ pub struct AntigravityCfg {
     pub enabled: Option<bool>,
     /// OAuth token path を上書きする(default: `~/.gemini/...`)。
     pub token_path: Option<String>,
+    /// 表示 label(default: account email の username)。
+    pub label: Option<String>,
+}
+
+/// Grok provider config(top-level `[grok]`)。
+#[derive(Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct GrokCfg {
+    /// `None` = auto(`~/.grok/auth.json` があれば表示)、`Some(false)` = off。
+    pub enabled: Option<bool>,
+    /// OAuth auth file path を上書きする(default: `~/.grok/auth.json`)。
+    pub auth_path: Option<String>,
     /// 表示 label(default: account email の username)。
     pub label: Option<String>,
 }

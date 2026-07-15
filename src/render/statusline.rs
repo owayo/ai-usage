@@ -20,6 +20,9 @@ const CLAUDE_LOGO: &str = "\u{100002}"; // Claude sunburst。
 const CODEX_LOGO: &str = "\u{100000}"; // OpenAI mark。
 const ANTIGRAVITY_LOGO: &str = "\u{100003}"; // Antigravity mark。
 const PIXELLAB_LOGO: &str = "\u{100004}"; // PixelLab dragon。
+// Grok は BrandLogos font にまだ glyph が無いため、`--logos` でも "Gk" テキストで
+// 描画する(font に xAI mark が追加された時点で PUA コードに差し替える)。
+const GROK_LOGO: &str = "Gk";
 const GRAY: &str = "38;5;245";
 const DIM: &str = "38;5;242";
 const GREEN: &str = "38;5;35";
@@ -98,6 +101,7 @@ fn render_row(
         Provider::Codex => "Codex",
         Provider::Antigravity => "AGY",
         Provider::PixelLab => "Pixel",
+        Provider::Grok => "Grok",
     };
     let name = display_name(
         a.label.as_deref(),
@@ -116,6 +120,7 @@ fn render_row(
             Provider::Codex => CODEX_LOGO,
             Provider::Antigravity => ANTIGRAVITY_LOGO,
             Provider::PixelLab => PIXELLAB_LOGO,
+            Provider::Grok => GROK_LOGO,
         };
         s += &paint(opts.color, &marker_color, &format!("{logo}  "));
     } else {
