@@ -45,7 +45,9 @@ impl fmt::Display for RetryableHttpError {
 
 impl std::error::Error for RetryableHttpError {}
 
-fn retryable(message: String) -> anyhow::Error {
+/// 共通リトライ処理へ伝える一時的な通信エラーを生成する。
+/// provider 固有の HTTP リクエストでも同じ marker を付けられるよう crate 内に公開する。
+pub(crate) fn retryable_error(message: String) -> anyhow::Error {
     anyhow::Error::new(RetryableHttpError(message))
 }
 
@@ -59,11 +61,16 @@ pub fn clients() -> Result<Clients> {
     let browser = Client::builder()
         .emulation(Emulation::Chrome137)
         .user_agent(UA)
+        // wreq 5.3.0 が依存する lru 0.13.0 の IterMut には RUSTSEC-2026-0002 がある。
+        // wreq で該当 API を呼ぶのはアイドル接続プールだけなので、修正版 lru を使う
+        // 安定版 wreq が出るまではプールを無効化して問題経路を到達不能にする。
+        .pool_max_idle_per_host(0)
         .timeout(REQUEST_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .context("building browser HTTP client")?;
     let api = Client::builder()
+        .pool_max_idle_per_host(0)
         .timeout(REQUEST_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
@@ -94,9 +101,12 @@ pub async fn get_json(
     let resp = req
         .send()
         .await
-        .map_err(|e| retryable(format!("GET {url}: {e}")))?;
+        .map_err(|e| retryable_error(format!("GET {url}: {e}")))?;
     let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| retryable_error(format!("reading GET response from {url}: {e}")))?;
 
     if !status.is_success() {
         let cloudflare =
@@ -104,7 +114,7 @@ pub async fn get_json(
         if cloudflare {
             // 有効な cf_clearance でも一時的に challenge が返ることがあるため、ここは意図的に
             // retryable。全試行後も続く場合にだけ、Chrome での session 更新を案内する。
-            return Err(retryable(format!(
+            return Err(retryable_error(format!(
                 "Cloudflare challenge (HTTP {}). Open the site in this Chrome profile to refresh its session, then retry.",
                 status.as_u16()
             )));
@@ -115,7 +125,7 @@ pub async fn get_json(
             || status == StatusCode::TOO_MANY_REQUESTS
             || status.is_server_error()
         {
-            return Err(retryable(message));
+            return Err(retryable_error(message));
         }
         return Err(anyhow!(message));
     }
@@ -125,11 +135,14 @@ pub async fn get_json(
 
 /// response body を lenient に JSON へ parse し `(status, parsed-or-Null)` を返す。
 /// post_json / post_form 共通の後段処理。
-async fn status_and_json(resp: Response) -> (StatusCode, serde_json::Value) {
+async fn status_and_json(resp: Response, url: &str) -> Result<(StatusCode, serde_json::Value)> {
     let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| retryable_error(format!("reading POST response from {url}: {e}")))?;
     let json = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-    (status, json)
+    Ok((status, json))
 }
 
 /// JSON body を POST し、`(status, parsed-or-Null)` を返す。401 → refresh+retry、
@@ -150,8 +163,8 @@ pub async fn post_json(
         .body(payload)
         .send()
         .await
-        .map_err(|e| retryable(format!("POST {url}: {e}")))?;
-    Ok(status_and_json(resp).await)
+        .map_err(|e| retryable_error(format!("POST {url}: {e}")))?;
+    status_and_json(resp, url).await
 }
 
 /// `application/x-www-form-urlencoded` body を POST する(Google OAuth token endpoint)。
@@ -166,8 +179,8 @@ pub async fn post_form(
         .form(form)
         .send()
         .await
-        .map_err(|e| retryable(format!("POST {url}: {e}")))?;
-    Ok(status_and_json(resp).await)
+        .map_err(|e| retryable_error(format!("POST {url}: {e}")))?;
+    status_and_json(resp, url).await
 }
 
 #[cfg(test)]
@@ -176,7 +189,7 @@ mod tests {
 
     #[test]
     fn retryable_marker_survives_anyhow_context() {
-        let error = retryable("temporary".to_string()).context("provider fetch");
+        let error = retryable_error("temporary".to_string()).context("provider fetch");
         assert!(is_retryable(&error));
         assert!(!is_retryable(&anyhow!("invalid session")));
     }

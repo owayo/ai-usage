@@ -7,7 +7,7 @@
 BINARY_NAME := ai-usage
 INSTALL_PATH := $(HOME)/.local/bin
 
-## Setup
+## セットアップ
 
 deps: ## ビルド前提(cmake。wreq/BoringSSL に必要)を導入
 	@command -v cmake >/dev/null 2>&1 || brew install cmake
@@ -21,7 +21,7 @@ build: ## debug 版をビルド
 release: ## 最適化 release 版をビルド(strip + LTO)
 	cargo build --release
 
-## Installation
+## インストール
 
 install: release ## release をビルドして ~/.local/bin へインストール
 	@mkdir -p $(INSTALL_PATH)
@@ -31,7 +31,7 @@ install: release ## release をビルドして ~/.local/bin へインストー�
 uninstall: ## インストール済み binary を削除
 	rm -f $(INSTALL_PATH)/$(BINARY_NAME)
 
-## Development
+## 開発
 
 run: ## ビルドして実行(例: make run ARGS="--only claude")
 	cargo run -- $(ARGS)
@@ -54,7 +54,7 @@ check: clippy fmt-check ## clippy + format check + cargo check を実行
 clean: ## build artifact を削除
 	cargo clean
 
-## Help
+## ヘルプ
 
 help: ## この help message を表示
 	@echo "$(BINARY_NAME) — make targets"

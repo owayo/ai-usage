@@ -38,7 +38,7 @@ pub struct Config {
 #[serde(default)]
 pub struct StatuslineCfg {
     /// statusline に出さない provider の list(小文字: "claude" / "codex" / "antigravity"
-    /// / "pixellab")。fetch と `--json` / table には影響しない。CLI `--statusline-hide`
+    /// / "pixellab" / "grok")。fetch と `--json` / table には影響しない。CLI `--statusline-hide`
     /// が指定されるとそちらで上書きされる。
     pub hide: Vec<String>,
 }

@@ -32,3 +32,16 @@ label = "home"
 # enabled = true          # false なら Antigravity が存在しても非表示
 label = "antigravity"     # optional: 行に表示する label
 # token_path = "~/.gemini/antigravity-cli/antigravity-oauth-token"  # non-default token
+
+# Grok(xAI `grok` CLI)使用量。`grok login` が ~/.grok/auth.json を作成していれば
+# auto-discover されます。label 変更、非 default auth file 指定、または off にしたい
+# 場合だけ追加します。
+[grok]
+# enabled = true          # false なら Grok が存在しても非表示
+label = "grok"            # optional: 行に表示する label
+# auth_path = "~/.grok/auth.json"  # non-default auth file
+
+# statusline でのみ行を非表示にします。table / JSON 出力には影響しません。
+# CLI の --statusline-hide が指定された場合はそちらを優先します。
+[statusline]
+hide = ["antigravity"]   # claude / codex / antigravity / pixellab / grok

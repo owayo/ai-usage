@@ -5,7 +5,7 @@
 <h1 align="center">ai-usage</h1>
 
 <p align="center">
-  Unified Claude + Codex + Antigravity + PixelLab + Grok usage limits across Chrome profiles
+  Unified Claude + Codex + Antigravity + PixelLab + Grok usage limits on macOS
 </p>
 
 <p align="center">
@@ -30,12 +30,13 @@
 
 ---
 
-One command to see your **Claude** and **OpenAI Codex (ChatGPT)** usage limits — the
-rolling **5-hour** window and the **weekly** window, plus when each resets —
-across every Chrome profile you're signed into.
+One command to see usage limits for **Claude**, **OpenAI Codex (ChatGPT)**,
+**Antigravity**, **PixelLab**, and **Grok**. Browser-backed accounts are collected
+across every signed-in Chrome profile, while Antigravity and Grok use their CLI OAuth
+credentials.
 
 It reads each Chrome profile's session straight from the browser, so it can report
-**multiple accounts at once** (e.g. a `Work` and an `Home` profile, each with both a
+**multiple accounts at once** (e.g. a `Work` and a `Home` profile, each with both a
 Claude and a Codex subscription = four accounts) without you logging anything in or out.
 
 ```
@@ -61,12 +62,12 @@ Claude and a Codex subscription = four accounts) without you logging anything in
 - **JSON Output**: Machine-readable output for scripting and dashboards
 - **Zero Config**: Auto-discovers all signed-in profiles by default; optional `~/.config/ai-usage/config.toml` for pinning
 - **Sort Options**: Rank rows by long-window utilization or reset time (`weekly-*` option names are retained for compatibility)
-- **Privacy**: Nothing leaves your machine except the same requests your browser already makes to Anthropic/OpenAI/Google
+- **Privacy**: Nothing leaves your machine except authenticated usage requests to the providers listed above
 
 ## Requirements
 
 - **OS**: macOS (Chrome uses macOS `v10` cookie encryption; Windows `v20` app-bound scheme is not handled)
-- **Browser**: Google Chrome (signed into Claude and/or Codex)
+- **Browser**: Google Chrome (signed into Claude, Codex, and/or PixelLab) for browser-backed providers
 - **Build**: Rust toolchain + **cmake** (required by [`wreq`](https://crates.io/crates/wreq)'s BoringSSL)
 - **Optional**: `agy` CLI or `~/.gemini` OAuth token for Antigravity usage
 - **Optional**: `grok` CLI signed in (`~/.grok/auth.json`) for Grok usage
@@ -113,7 +114,7 @@ brew install cmake
 cargo install --path .
 ```
 
-The **first run** triggers a macOS Keychain prompt
+The **first run with a browser-backed provider** triggers a macOS Keychain prompt
 (*"… wants to use the 'Chrome Safe Storage' key"*) — choose **Always Allow**.
 
 ## Quickstart
@@ -149,7 +150,7 @@ ai-usage --statusline
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--profile <NAMES>` | `-p` | Comma-separated profile names (Chrome display name or on-disk dir) |
-| `--only <PROVIDER>` | | Show only `claude`, `codex`, `antigravity`, or `pixellab` |
+| `--only <PROVIDER>` | | Show only `claude`, `codex`, `antigravity`, `pixellab`, or `grok` |
 
 #### Output
 
@@ -170,7 +171,7 @@ ai-usage --statusline
 |--------|-------------|
 | `--active-email <EMAIL>` | Match the signed-in email of a Claude row (default: `$CLAUDE_CONFIG_DIR/.claude.json`) |
 | `--active-profile <NAME>` | Match a profile by name |
-| `--active-provider <NAME>` | Pin to a single provider: `claude`, `codex`, or `antigravity` |
+| `--active-provider <NAME>` | Pin to a single provider: `claude`, `codex`, `antigravity`, `pixellab`, or `grok` |
 
 #### Debug & Info
 
@@ -192,6 +193,7 @@ ai-usage --only claude
 ai-usage --only codex
 ai-usage --only antigravity
 ai-usage --only pixellab
+ai-usage --only grok
 
 # Statusline for terminal status bar
 ai-usage --statusline
@@ -205,8 +207,9 @@ ai-usage --sort weekly-reset      # soonest reset first
 ## Configuration
 
 `ai-usage` needs **no configuration** — it auto-discovers every Chrome profile that has a
-Claude or Codex session and shows them all. To pin *which* profiles appear, rename them, or
-limit providers, drop a file at **`~/.config/ai-usage/config.toml`**
+Claude, Codex, or PixelLab session, plus available Antigravity and Grok OAuth credentials.
+To pin *which* profiles appear, rename them, or limit providers, drop a file at
+**`~/.config/ai-usage/config.toml`**
 (or `$XDG_CONFIG_HOME/ai-usage/config.toml`).
 
 ### Initial Setup
@@ -230,7 +233,7 @@ A template also lives at [`config.example.toml`](config.example.toml).
 [[profiles]]
 match = "Work"                    # Chrome display name, or on-disk dir e.g. "Default"
 label = "work"                    # optional: shown instead of the account email username
-# providers = ["claude", "codex"] # optional: subset to show; default = both
+# providers = ["claude", "codex"] # optional Chrome-provider subset; default = all
 
 [[profiles]]
 match = "Home"
@@ -266,7 +269,7 @@ hide = ["antigravity"]              # subset of: claude / codex / antigravity / 
 | `[[profiles]]` | Explicit list of profiles to show (empty = auto-discover all) | `[]` (auto) |
 | `profiles[].match` | Chrome display name or on-disk directory (e.g. `Default`) | Required |
 | `profiles[].label` | Display label instead of the account email username | Email username |
-| `profiles[].providers` | Subset of providers to show for this profile | Both |
+| `profiles[].providers` | Chrome-provider subset to show for this profile | Claude / Codex / PixelLab |
 | `[antigravity].enabled` | Show the Antigravity row when detected | `true` |
 | `[antigravity].label` | Row label for Antigravity | `antigravity` |
 | `[antigravity].token_path` | Non-default OAuth token path | `~/.gemini/…` |
@@ -282,11 +285,12 @@ Precedence: **CLI flags > config file > auto-detection**.
 ```mermaid
 flowchart LR
     A[Chrome Profiles] --> B[Decrypt Cookies]
-    B --> C[Fetch Usage APIs]
-    C --> D[Render Table / JSON]
+    C[CLI OAuth Credentials] --> D[Fetch Usage APIs]
+    B --> D
+    D --> E[Render Table / JSON]
 ```
 
-For each Chrome profile it finds, `ai-usage`:
+For browser-backed profiles and CLI OAuth providers, `ai-usage`:
 
 1. **Decrypts** cookies from `~/Library/Application Support/Google/Chrome/<profile>/Cookies`
    using the **Chrome Safe Storage** key from your macOS Keychain (standard `v10`
@@ -302,7 +306,8 @@ For each Chrome profile it finds, `ai-usage`:
    `agy` is running, prefers the localhost quota server for the richer per-group payload;
    otherwise falls back to Google's `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`.
    Both nested and flat `remainingFraction` quota shapes are handled when choosing the most
-   constrained bucket for display. Local grouped quotas are labeled `1w` / `5h` from their
+   constrained bucket for display; buckets without a numeric value are skipped. Local grouped
+   quotas are labeled `1w` / `5h` from their
    actual window, while the OAuth fallback's daily quota is labeled `1d`.
 5. **PixelLab** — reads the `supabase-auth-token` cookie from `www.pixellab.ai`, refreshing
    the access token via `supabase.pixellab.ai/auth/v1/token` if it has expired, then calls
@@ -325,8 +330,8 @@ For each Chrome profile it finds, `ai-usage`:
 ([`wreq`](https://crates.io/crates/wreq)) emulates Chrome's TLS/HTTP2 fingerprint and
 replays the profile's `cf_clearance` cookie — a plain HTTP client just gets a `403`.
 
-Nothing leaves your machine except the same authenticated requests your browser already
-makes to Anthropic, OpenAI, and Google. No tokens or cookies are printed or stored.
+Nothing leaves your machine except authenticated usage requests to Anthropic, OpenAI,
+Google, PixelLab, and xAI. No tokens or cookies are printed or stored.
 
 ## Build Commands
 

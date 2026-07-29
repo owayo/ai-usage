@@ -5,7 +5,7 @@
 <h1 align="center">ai-usage</h1>
 
 <p align="center">
-  Chrome プロファイル横断で Claude / Codex / Antigravity / PixelLab / Grok の使用量を一覧表示する CLI
+  macOS で Claude / Codex / Antigravity / PixelLab / Grok の使用量を一覧表示する CLI
 </p>
 
 <p align="center">
@@ -30,9 +30,9 @@
 
 ---
 
-サインイン済みの各 Chrome プロファイルについて、**Claude** / **OpenAI Codex (ChatGPT)** / **PixelLab** の使用量
-— ローリング **5時間** 枠と **週次** 枠、そしてそれぞれのリセット時刻 — を1コマンドでまとめて表示する
-macOS 向け CLI です。PixelLab は月次生成枠を長期スロットで表示します。
+**Claude** / **OpenAI Codex (ChatGPT)** / **Antigravity** / **PixelLab** / **Grok** の
+使用量を1コマンドでまとめて表示する macOS 向け CLI です。ブラウザ認証のアカウントはサインイン済みの
+Chrome プロファイルを横断し、Antigravity と Grok は CLI の OAuth 情報から取得します。
 
 各 Chrome プロファイルのセッションをブラウザから直接読み取るため、ログインし直すことなく
 **複数アカウントを同時に**確認できます(例: `Work` と `Home` の2プロファイル × Claude/Codex の
@@ -61,12 +61,12 @@ macOS 向け CLI です。PixelLab は月次生成枠を長期スロットで表
 - **JSON 出力**: スクリプト・ダッシュボード向けの機械可読出力
 - **設定不要**: サインイン済みプロファイルを自動検出。固定したい場合のみ `~/.config/ai-usage/config.toml`
 - **ソート**: 長期枠の利用率、またはリセット時刻でランキング (`weekly-*` のオプション名は互換性のため維持)
-- **プライバシー**: ブラウザが Anthropic / OpenAI / Google に対して普段行うのと同じリクエスト以外は外部に出さない
+- **プライバシー**: 対応プロバイダへの認証付き使用量リクエスト以外は外部に出さない
 
 ## 動作要件
 
 - **OS**: macOS (Chrome の macOS `v10` Cookie 方式に対応。Windows の `v20` app-bound 方式は未対応)
-- **ブラウザ**: Google Chrome (Claude / Codex にサインイン済み)
+- **ブラウザ**: ブラウザ認証プロバイダ用の Google Chrome (Claude / Codex / PixelLab にサインイン済み)
 - **ビルド**: Rust ツールチェイン + **cmake** ([`wreq`](https://crates.io/crates/wreq) の BoringSSL に必要)
 - **任意**: Antigravity 使用量には `agy` CLI 起動中、または `~/.gemini` の OAuth トークンが必要
 - **任意**: Grok 使用量には `grok` CLI にサインイン済み (`~/.grok/auth.json`) が必要
@@ -113,7 +113,7 @@ brew install cmake
 cargo install --path .
 ```
 
-**初回実行時**は macOS の Keychain ダイアログ(*「"Chrome Safe Storage" キーを使用しようとしています」*)が
+**ブラウザ認証プロバイダの初回取得時**は macOS の Keychain ダイアログ(*「"Chrome Safe Storage" キーを使用しようとしています」*)が
 出るので **「常に許可」** を選んでください。
 
 ## クイックスタート
@@ -149,7 +149,7 @@ ai-usage --statusline
 | オプション | 短縮 | 説明 |
 |-----------|------|------|
 | `--profile <NAMES>` | `-p` | プロファイル名をカンマ区切りで指定 (Chrome 表示名または on-disk ディレクトリ名) |
-| `--only <PROVIDER>` | | `claude` / `codex` / `antigravity` / `pixellab` のみを表示 |
+| `--only <PROVIDER>` | | `claude` / `codex` / `antigravity` / `pixellab` / `grok` のみを表示 |
 
 #### 出力
 
@@ -170,7 +170,7 @@ ai-usage --statusline
 |-----------|------|
 | `--active-email <EMAIL>` | Claude 行のサインイン済みメールと照合 (既定: `$CLAUDE_CONFIG_DIR/.claude.json`) |
 | `--active-profile <NAME>` | プロファイル名で照合 |
-| `--active-provider <NAME>` | 1 プロバイダに固定: `claude` / `codex` / `antigravity` |
+| `--active-provider <NAME>` | 1 プロバイダに固定: `claude` / `codex` / `antigravity` / `pixellab` / `grok` |
 
 #### デバッグ・情報
 
@@ -192,6 +192,7 @@ ai-usage --only claude
 ai-usage --only codex
 ai-usage --only antigravity
 ai-usage --only pixellab
+ai-usage --only grok
 
 # 端末ステータスバー向け
 ai-usage --statusline
@@ -204,9 +205,10 @@ ai-usage --sort weekly-reset      # リセットが近い順
 
 ## 設定
 
-`ai-usage` は **設定なしでも動作** します。Claude / Codex セッションを持つ Chrome プロファイルを
-自動検出して全て表示します。表示対象のプロファイルを固定したい、表示名を変更したい、プロバイダを
-絞り込みたい場合は **`~/.config/ai-usage/config.toml`** (または
+`ai-usage` は **設定なしでも動作** します。Claude / Codex / PixelLab セッションを持つ Chrome
+プロファイルに加え、利用可能な Antigravity / Grok の OAuth 情報も自動検出します。表示対象の
+プロファイルを固定したい、表示名を変更したい、プロバイダを絞り込みたい場合は
+**`~/.config/ai-usage/config.toml`** (または
 `$XDG_CONFIG_HOME/ai-usage/config.toml`) を置いてください。
 
 ### 初期設定
@@ -230,7 +232,7 @@ ai-usage --init-config
 [[profiles]]
 match = "Work"                    # Chrome の表示名、またはディスク上のディレクトリ名 (例: "Default")
 label = "work"                    # 任意: アカウントメール username の代わりに表示
-# providers = ["claude", "codex"] # 任意: 表示するサブセット。省略時は両方
+# providers = ["claude", "codex"] # 任意: Chrome provider のサブセット。省略時は全て
 
 [[profiles]]
 match = "Home"
@@ -250,6 +252,11 @@ label = "antigravity"               # 任意: 行に表示するラベル
 # enabled = true                    # false なら検出されても非表示
 label = "grok"                      # 任意: 行に表示するラベル
 # auth_path = "~/.grok/auth.json"
+
+# statusline でのみ行を非表示にします。`--json` / table には影響しません。
+# CLI の `--statusline-hide` が指定された場合はそちらを優先します。
+[statusline]
+hide = ["antigravity"]              # claude / codex / antigravity / pixellab / grok
 ```
 
 ### 設定オプション
@@ -260,13 +267,14 @@ label = "grok"                      # 任意: 行に表示するラベル
 | `[[profiles]]` | 表示するプロファイル一覧 (空なら自動検出) | `[]` (自動) |
 | `profiles[].match` | Chrome 表示名または on-disk ディレクトリ名 (例: `Default`) | 必須 |
 | `profiles[].label` | アカウントメール username の代わりに表示するラベル | メール username |
-| `profiles[].providers` | 表示するプロバイダのサブセット | 両方 |
+| `profiles[].providers` | Chrome プロファイルで表示するプロバイダのサブセット | Claude / Codex / PixelLab |
 | `[antigravity].enabled` | 検出時に Antigravity 行を表示 | `true` |
 | `[antigravity].label` | Antigravity 行のラベル | `antigravity` |
 | `[antigravity].token_path` | 非既定の OAuth トークンパス | `~/.gemini/…` |
 | `[grok].enabled` | 検出時に Grok 行を表示 | `true` |
 | `[grok].label` | Grok 行のラベル | `grok` |
 | `[grok].auth_path` | 非既定の `auth.json` パス | `~/.grok/auth.json` |
+| `[statusline].hide` | `--statusline` で非表示にするプロバイダ (`--json` / table には表示) | `[]` |
 
 優先順位は **CLI フラグ > 設定ファイル > 自動検出** です。
 
@@ -275,11 +283,12 @@ label = "grok"                      # 任意: 行に表示するラベル
 ```mermaid
 flowchart LR
     A[Chrome プロファイル] --> B[Cookie 復号]
-    B --> C[使用量 API 取得]
-    C --> D[テーブル / JSON 描画]
+    C[CLI OAuth 情報] --> D[使用量 API 取得]
+    B --> D
+    D --> E[テーブル / JSON 描画]
 ```
 
-検出した各 Chrome プロファイルについて:
+ブラウザ認証プロファイルと CLI OAuth プロバイダについて:
 
 1. **Cookie 復号**: `~/Library/Application Support/Google/Chrome/<profile>/Cookies` の
    Cookie を、macOS Keychain の **Chrome Safe Storage** キーで復号 (標準の `v10`
@@ -294,7 +303,8 @@ flowchart LR
 4. **Antigravity** — `~/.gemini` の OAuth トークンを読み (必要に応じて refresh)、`agy`
    起動中は localhost の quota サーバー (グループ別の詳細ペイロード) を優先。停止時は
    Google の `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` にフォールバック。
-   表示用の最も制約が厳しい bucket は、nested / flat 両方の `remainingFraction` 形を読んで選びます。
+   表示用の最も制約が厳しい bucket は、nested / flat 両方の `remainingFraction` 形を読んで選び、
+   数値がない bucket は除外します。
    ローカル quota は実周期に応じて `1w` / `5h`、OAuth fallback の日次 quota は `1d` と表示します。
 5. **PixelLab** — `www.pixellab.ai` の `supabase-auth-token` Cookie から access/refresh
    token を取り出し、期限切れなら `supabase.pixellab.ai/auth/v1/token` で更新した上で
@@ -319,8 +329,8 @@ flowchart LR
 エミュレートし、プロファイルの `cf_clearance` Cookie を再送します (素の HTTP クライアントは
 `403` になります)。
 
-ブラウザが Anthropic / OpenAI / Google に対して普段行うのと同じ認証付きリクエスト以外、
-データは外部に出ません。トークンや Cookie を出力・保存することもありません。
+Anthropic / OpenAI / Google / PixelLab / xAI への認証付き使用量リクエスト以外、データは外部に
+出ません。トークンや Cookie を出力・保存することもありません。
 
 ## ビルドコマンド
 

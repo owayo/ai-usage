@@ -151,7 +151,13 @@ fn humanize(d: Duration) -> String {
     if s <= 0 {
         return "now".to_string();
     }
-    let (days, hours, mins) = (s / 86400, (s % 86400) / 3600, (s % 3600) / 60);
+    // 1〜59 秒だけを最低1分として扱い、以降の従来の切り捨て表示は維持する。
+    let display_seconds = s.max(60);
+    let (days, hours, mins) = (
+        display_seconds / 86400,
+        (display_seconds % 86400) / 3600,
+        (display_seconds % 3600) / 60,
+    );
     if days > 0 {
         format!("in {days}d {hours}h")
     } else if hours > 0 {
@@ -170,6 +176,11 @@ mod tests {
         // 0以下 は "now"、それ以上は単位ごとに丸める。
         assert_eq!(humanize(Duration::seconds(0)), "now");
         assert_eq!(humanize(Duration::seconds(-100)), "now");
+        assert_eq!(humanize(Duration::seconds(1)), "in 1m");
+        assert_eq!(humanize(Duration::seconds(59)), "in 1m");
+        assert_eq!(humanize(Duration::seconds(60)), "in 1m");
+        assert_eq!(humanize(Duration::seconds(61)), "in 1m");
+        assert_eq!(humanize(Duration::seconds(3599)), "in 59m");
         assert_eq!(humanize(Duration::minutes(5)), "in 5m");
         assert_eq!(humanize(Duration::minutes(125)), "in 2h 5m");
         assert_eq!(humanize(Duration::hours(25)), "in 1d 1h");

@@ -58,6 +58,8 @@ async fn local_fetch() -> Result<Vec<UsageRow>> {
     let local = Client::builder()
         .cert_verification(false)
         .verify_hostname(false)
+        // http.rs と同じく、wreq 5.3.0 の接続プールが通る lru の unsound 経路を避ける。
+        .pool_max_idle_per_host(0)
         .build()
         .context("building localhost client")?;
     for port in ports {
@@ -124,7 +126,9 @@ fn parse_summary(v: &Value, email: Option<String>, plan: Option<String>) -> Resu
             } else {
                 WindowKind::FiveHour
             };
-            let window = bucket_to_window(b, kind);
+            let Some(window) = bucket_to_window(b, kind) else {
+                continue;
+            };
             // 同じ window 種別の bucket が複数返る場合は、最も残量の少ない(used_percent が
             // 高い)= 最も制約の厳しいものを採用する。先勝ち / 後勝ちだと API のレスポンス
             // 順序次第で過小表示が起きる。
@@ -141,13 +145,17 @@ fn parse_summary(v: &Value, email: Option<String>, plan: Option<String>) -> Resu
                 *target = Some(window);
             }
         }
+        // 利用率を解釈できない group を 0% として表示しない。
+        if usage.short.is_none() && usage.long.is_none() {
+            continue;
+        }
         rows.push(UsageRow {
             group_label: label,
             usage,
         });
     }
     if rows.is_empty() {
-        bail!("no groups in quota summary");
+        bail!("quota summary has no usable groups");
     }
     Ok(rows)
 }
@@ -192,24 +200,23 @@ fn is_weekly(b: &Value) -> bool {
         .unwrap_or(true)
 }
 
-fn bucket_to_window(b: &Value, kind: WindowKind) -> Window {
+fn bucket_to_window(b: &Value, kind: WindowKind) -> Option<Window> {
     // language_server は `{remaining:{remainingFraction}}`、OAuth 経路はトップレベルの
     // `remainingFraction` を返すことがあるため両形式を許容する。
-    // どちらも欠落している場合は 1.0(未使用)として扱う。
-    let rf = remaining_fraction(b);
+    // どちらも欠落している場合は誤った 0% を作らず、その bucket を無効とする。
+    let rf = remaining_fraction(b)?;
     let used = ((1.0 - rf) * 100.0).clamp(0.0, 100.0);
-    Window {
+    Some(Window {
         kind,
         used_percent: used,
         resets_at: bucket_reset(b),
-    }
+    })
 }
 
-fn remaining_fraction(b: &Value) -> f64 {
+fn remaining_fraction(b: &Value) -> Option<f64> {
     b.pointer("/remaining/remainingFraction")
         .or_else(|| b.get("remainingFraction"))
         .and_then(Value::as_f64)
-        .unwrap_or(1.0)
 }
 
 fn bucket_reset(b: &Value) -> Option<DateTime<Utc>> {
@@ -343,18 +350,23 @@ fn parse_buckets(v: &Value) -> Result<Vec<UsageRow>> {
     let mut worst: Option<&Value> = None;
     let mut worst_rf = 2.0_f64;
     for b in buckets {
-        let rf = remaining_fraction(b);
+        let Some(rf) = remaining_fraction(b) else {
+            continue;
+        };
         if rf <= worst_rf {
             worst_rf = rf;
             worst = Some(b);
         }
     }
-    let b = worst.context("retrieveUserQuota returned no buckets")?;
+    let b = worst.context("retrieveUserQuota returned no usable buckets")?;
     // REQUESTS bucket は 1 日以内に reset されるため短期 window として出す。
     let usage = Usage {
         email: None,
         plan: None,
-        short: Some(bucket_to_window(b, WindowKind::Daily)),
+        short: Some(
+            bucket_to_window(b, WindowKind::Daily)
+                .context("representative quota bucket has no remainingFraction")?,
+        ),
         long: None,
     };
     Ok(vec![UsageRow {
@@ -614,12 +626,35 @@ mod tests {
             "remaining": {"remainingFraction": 0.2},
             "resetTime": "2026-06-15T06:28:32Z"
         });
-        let w = bucket_to_window(&b, WindowKind::Weekly);
+        let w = bucket_to_window(&b, WindowKind::Weekly).unwrap();
         assert!(
             (w.used_percent - 80.0).abs() < 0.01,
             "used should be 80% got {}",
             w.used_percent
         );
+    }
+
+    #[test]
+    fn missing_remaining_fraction_does_not_fabricate_zero_percent() {
+        // 利用率が欠落した応答を「残量 100% = 使用率 0%」と誤表示しない。
+        let oauth = json!({"buckets": [
+            {"modelId": "gemini", "resetTime": "2026-06-15T06:28:32Z"}
+        ]});
+        assert_eq!(
+            parse_buckets(&oauth).unwrap_err().to_string(),
+            "retrieveUserQuota returned no usable buckets"
+        );
+
+        let local = json!({"groups": [
+            {"displayName": "Gemini Models", "buckets": [
+                {"window": "weekly", "resetTime": "2026-06-19T05:06:39Z"}
+            ]}
+        ]});
+        assert_eq!(
+            parse_summary(&local, None, None).unwrap_err().to_string(),
+            "quota summary has no usable groups"
+        );
+        assert!(bucket_to_window(&json!({}), WindowKind::Weekly).is_none());
     }
 
     #[test]

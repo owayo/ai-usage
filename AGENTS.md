@@ -39,15 +39,25 @@ filtering, numeric session-cookie chunk name matching (`.0`, `.1`, ...)
 (`render.rs`), row sorting (`render/sort.rs`), table bar/humanize formatting
 (`render/table.rs`), statusline gauge/duration formatting
 (`render/statusline.rs`), Antigravity quota parsing including nested/flat
-`remainingFraction`, ISO-8601 and epoch-second `resetTime`, plus wrapped/flat
+`remainingFraction`, missing-quota rejection, ISO-8601 and epoch-second
+`resetTime`, plus wrapped/flat
 `GetUserStatus` shapes (`antigravity.rs`), PixelLab Supabase cookie parsing
 (legacy JSON-array + `base64-…` object forms + `.0/.1` chunk join), JWT `exp` /
 `email` extraction, `/get-account-data` + `/get-subscription` folding into the
 typed monthly long slot with `generation_reset_date` (`pixellab.rs`), report-DTO
 building with reset-countdown clamping and old-cache compatibility (`report.rs`),
-retryable HTTP marker classification (`http.rs`), and TOML-value escaping plus
-provider resolution (`main.rs`). Drive the network paths via `make build` + a
-real run.
+retryable HTTP marker classification including response-body failures
+(`http.rs`), TOML-value escaping, provider resolution, and Chrome-discovery
+bypass for cached / OAuth-only modes (`main.rs`). Drive the network paths via
+`make build` + a real run.
+
+## Dependency safety
+
+Stable `wreq` 5.3 currently pulls `lru` 0.13, which is covered by
+RUSTSEC-2026-0002. All `wreq::Client` builders therefore set
+`pool_max_idle_per_host(0)` so the affected idle-pool `iter_mut` path is not
+used. Keep this mitigation until a stable `wreq` release depends on a patched
+`lru`.
 
 ## Adding a provider
 
@@ -143,6 +153,8 @@ Quota sources, in CodexBar's preference order:
 Map to `Window`: `groups[].buckets[].remaining.remainingFraction` or flat
 `remainingFraction` → `used_percent = (1 - remainingFraction) * 100`; bucket
 reset metadata / `resetTime` (ISO-8601, epoch-seconds fallback) → `resets_at`.
+Buckets without a numeric `remainingFraction` are skipped instead of being
+rendered as fabricated `0%` usage; a response with no usable quota is an error.
 Local summary buckets get `WindowKind::Weekly` / `WindowKind::FiveHour`; the
 OAuth fallback's per-model bucket gets `WindowKind::Daily`, so its badge is
 `1d` rather than being mislabeled as `5h`.
@@ -222,6 +234,11 @@ cache compatibility, while each non-null window now includes a `kind`
 (`five_hour` / `daily` / `weekly` / `monthly`). `kind` is optional during
 deserialization so caches written by older binaries still render with the
 legacy slot/provider label fallback.
+
+`--statusline --input <cache>` is a cache-only render path: it must not discover
+Chrome profiles, access Keychain, or call the network. `--list-profiles` and
+`--init-config` remain higher-priority information modes when combined with
+cache flags.
 
 **Gotcha after a rename or reinstall:** when the binary name (or cache key)
 changes, the new cache file doesn't exist yet, so every usage row — Antigravity

@@ -112,8 +112,7 @@ fn is_auth_error(err: &anyhow::Error) -> bool {
 
 /// `/v1/user` と optional `/v1/billing` を Usage に畳み込む。
 ///
-/// - plan = `subscriptionTier`(null は "Free"、null で `hasGrokCodeAccess=true` の
-///   場合は "Free (Grok Build)" として grok CLI 利用可否も示す)。
+/// - plan = `subscriptionTier`(null または欠落時は "Free")。
 /// - long = billing の月次サイクル。`used / monthlyLimit * 100` を Monthly window に
 ///   入れる。`monthlyLimit == 0`(Free / まだ subscription を有効化していない)場合は、
 ///   billing period だけを 0% として表示し、reset 時刻の視認性は保つ。
@@ -140,13 +139,8 @@ fn plan_label(user: &Value) -> Option<String> {
         .get("subscriptionTier")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty());
-    let has_build = user
-        .get("hasGrokCodeAccess")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     match tier {
         Some(t) => Some(t.to_string()),
-        None if has_build => Some("Free".to_string()),
         None => Some("Free".to_string()),
     }
 }

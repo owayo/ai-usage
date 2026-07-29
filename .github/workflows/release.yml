@@ -35,7 +35,7 @@ jobs:
       - name: Bump version
         id: bump
         run: |
-          # YY.M.NNN scheme (2-digit year for MSI compatibility with future Windows builds)
+          # YY.M.NNN 形式(将来の Windows build で MSI と互換にするため年は2桁)
           YEAR=$(date +%y)
           MONTH=$(date +%-m)
 
@@ -46,7 +46,7 @@ jobs:
             OLD_YEAR=$(echo "${CURRENT}" | cut -d. -f1)
             OLD_MONTH=$(echo "${CURRENT}" | cut -d. -f2)
             OLD_COUNTER=$(echo "${CURRENT}" | cut -d. -f3)
-            OLD_YEAR_2DIGIT=$(echo "${OLD_YEAR}" | sed 's/^20//')
+            OLD_YEAR_2DIGIT="${OLD_YEAR#20}"
             if [ "${OLD_YEAR_2DIGIT}" = "${YEAR}" ] && [ "${OLD_MONTH}" = "${MONTH}" ]; then
               NEW_COUNTER=$((OLD_COUNTER + 1))
             else
@@ -59,15 +59,15 @@ jobs:
           NEW_VERSION="${YEAR}.${MONTH}.${NEW_COUNTER}"
           echo "New version: ${NEW_VERSION}"
 
-          # Only replace the first occurrence (package version, not dependency versions)
+          # 依存 version ではなく package version の最初の1箇所だけを置換する
           sed -i "0,/^version = \"[^\"]*\"/s//version = \"${NEW_VERSION}\"/" Cargo.toml
 
           if [ -f "Cargo.lock" ]; then
             cargo generate-lockfile 2>/dev/null || true
           fi
 
-          echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
-          echo "tag=v${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEW_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Commit and tag
         if: ${{ !inputs.dry_run }}
@@ -156,7 +156,7 @@ jobs:
           body: |
             ## ai-usage ${{ needs.prepare-release.outputs.version }}
 
-            Unified Claude + Codex + Antigravity usage limits across Chrome profiles (macOS only)
+            Unified Claude + Codex + Antigravity + PixelLab + Grok usage limits (macOS only)
 
             ### Installation
 
@@ -203,16 +203,16 @@ jobs:
           VERSION="${{ needs.prepare-release.outputs.version }}"
           TAG="${{ needs.prepare-release.outputs.tag }}"
 
-          # Source archive for the Formula's url/sha256
+          # Formula の url / sha256 に使う source archive
           curl -sL "https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz" -o source.tar.gz
           SHA256_SOURCE=$(sha256sum source.tar.gz | cut -d' ' -f1)
-          echo "sha256_source=${SHA256_SOURCE}" >> $GITHUB_OUTPUT
+          echo "sha256_source=${SHA256_SOURCE}" >> "$GITHUB_OUTPUT"
 
-          # Release binaries
+          # release binary
           curl -sL "https://github.com/${{ github.repository }}/releases/download/${TAG}/ai-usage-aarch64-apple-darwin.tar.gz" -o mac_arm64.tar.gz
           curl -sL "https://github.com/${{ github.repository }}/releases/download/${TAG}/ai-usage-x86_64-apple-darwin.tar.gz" -o mac_x86_64.tar.gz
 
-          # Build a Homebrew bottle tarball from a release binary
+          # release binary から Homebrew bottle tarball を作る
           create_bottle() {
             local src_tarball=$1
             local bottle_tag=$2
@@ -232,8 +232,8 @@ jobs:
           SHA256_BOTTLE_ARM64_SONOMA=$(create_bottle mac_arm64.tar.gz arm64_sonoma)
           SHA256_BOTTLE_SONOMA=$(create_bottle mac_x86_64.tar.gz sonoma)
 
-          echo "sha256_bottle_arm64_sonoma=${SHA256_BOTTLE_ARM64_SONOMA}" >> $GITHUB_OUTPUT
-          echo "sha256_bottle_sonoma=${SHA256_BOTTLE_SONOMA}" >> $GITHUB_OUTPUT
+          echo "sha256_bottle_arm64_sonoma=${SHA256_BOTTLE_ARM64_SONOMA}" >> "$GITHUB_OUTPUT"
+          echo "sha256_bottle_sonoma=${SHA256_BOTTLE_SONOMA}" >> "$GITHUB_OUTPUT"
 
       - name: Upload bottles to release
         env:
@@ -252,13 +252,12 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          VERSION="${{ needs.prepare-release.outputs.version }}"
           TAG="${{ needs.prepare-release.outputs.tag }}"
           SHA256_SOURCE="${{ steps.bottles.outputs.sha256_source }}"
           SHA256_BOTTLE_ARM64_SONOMA="${{ steps.bottles.outputs.sha256_bottle_arm64_sonoma }}"
           SHA256_BOTTLE_SONOMA="${{ steps.bottles.outputs.sha256_bottle_sonoma }}"
 
-          # Clone the tap
+          # tap repository を clone する
           git clone "https://x-access-token:${GH_TOKEN}@github.com/owayo/homebrew-ai-usage.git"
           cd homebrew-ai-usage
 
@@ -266,7 +265,7 @@ jobs:
 
           cat > Formula/ai-usage.rb << 'FORMULA'
           class AiUsage < Formula
-            desc "Unified Claude + Codex + Antigravity usage limits across Chrome profiles"
+            desc "Unified Claude + Codex + Antigravity + PixelLab + Grok usage limits"
             homepage "https://github.com/owayo/ai-usage"
             url "URL_SOURCE_PLACEHOLDER"
             sha256 "SHA256_SOURCE_PLACEHOLDER"
@@ -292,17 +291,17 @@ jobs:
           end
           FORMULA
 
-          # Strip leading heredoc indentation
+          # heredoc の先頭 indent を取り除く
           sed -i 's/^          //' Formula/ai-usage.rb
 
-          # Replace placeholders
+          # placeholder を実値へ置換する
           sed -i "s|URL_SOURCE_PLACEHOLDER|https://github.com/owayo/ai-usage/archive/refs/tags/${TAG}.tar.gz|g" Formula/ai-usage.rb
           sed -i "s|SHA256_SOURCE_PLACEHOLDER|${SHA256_SOURCE}|g" Formula/ai-usage.rb
           sed -i "s|ROOT_URL_PLACEHOLDER|https://github.com/owayo/ai-usage/releases/download/${TAG}|g" Formula/ai-usage.rb
           sed -i "s|SHA256_BOTTLE_ARM64_SONOMA_PLACEHOLDER|${SHA256_BOTTLE_ARM64_SONOMA}|g" Formula/ai-usage.rb
           sed -i "s|SHA256_BOTTLE_SONOMA_PLACEHOLDER|${SHA256_BOTTLE_SONOMA}|g" Formula/ai-usage.rb
 
-          # Commit and push
+          # commit して push する
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/ai-usage.rb
