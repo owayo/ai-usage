@@ -194,7 +194,7 @@ impl Auth {
         if self.expiry == 0 {
             return 0;
         }
-        self.expiry - Utc::now().timestamp()
+        self.expiry.saturating_sub(Utc::now().timestamp())
     }
 }
 
@@ -361,7 +361,7 @@ async fn refresh(client: &Client, auth: &Auth) -> Result<Auth> {
     let expiry = body
         .get("expires_in")
         .and_then(Value::as_i64)
-        .map(|s| Utc::now().timestamp() + s)
+        .map(|s| Utc::now().timestamp().saturating_add(s))
         .or_else(|| jwt_exp(&access))
         .unwrap_or(0);
     Ok(Auth {
@@ -540,6 +540,19 @@ mod tests {
         let jwt = make_jwt(&json!({"exp": 1_784_117_357_i64, "sub": "u"}));
         assert_eq!(jwt_exp(&jwt), Some(1_784_117_357));
         assert_eq!(jwt_exp("garbage"), None);
+    }
+
+    #[test]
+    fn expires_in_saturates_for_extreme_expiry() {
+        let auth = |expiry| Auth {
+            access: String::new(),
+            refresh: String::new(),
+            expiry,
+            token_url: String::new(),
+            client_id: String::new(),
+        };
+        assert_eq!(auth(i64::MIN).expires_in(), i64::MIN);
+        assert!(auth(i64::MAX).expires_in() > 0);
     }
 
     #[test]

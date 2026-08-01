@@ -69,7 +69,7 @@ Claude and a Codex subscription = four accounts) without you logging anything in
 - **OS**: macOS (Chrome uses macOS `v10` cookie encryption; Windows `v20` app-bound scheme is not handled)
 - **Browser**: Google Chrome (signed into Claude, Codex, and/or PixelLab) for browser-backed providers
 - **Build**: Rust toolchain + **cmake** (required by [`wreq`](https://crates.io/crates/wreq)'s BoringSSL)
-- **Optional**: `agy` CLI or `~/.gemini` OAuth token for Antigravity usage
+- **Optional**: Antigravity app, `agy` CLI, or `~/.gemini` OAuth token for Antigravity usage
 - **Optional**: `grok` CLI signed in (`~/.grok/auth.json`) for Grok usage
 
 ## Installation
@@ -239,9 +239,9 @@ label = "work"                    # optional: shown instead of the account email
 match = "Home"
 label = "home"
 
-# Antigravity (Google's `agy`). Auto-discovered when ~/.gemini token or a running
-# `agy` is found — config is optional. Use it only to relabel, pin a non-default
-# token, or disable the row.
+# Antigravity (Google's `agy`). Auto-discovered from ~/.gemini, Antigravity.app,
+# or a running `agy` — config is optional. Use it only to relabel, pin a
+# non-default token, or disable the row.
 [antigravity]
 # enabled = true                    # false to hide even when detected
 label = "antigravity"               # optional row label
@@ -303,8 +303,10 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
    token via `chatgpt.com/api/auth/session`, then calls `chatgpt.com/backend-api/wham/usage`
    → `rate_limit.primary_window` / `secondary_window`.
 4. **Antigravity** — reads the OAuth token from `~/.gemini` (refreshing as needed). When
-   `agy` is running, prefers the localhost quota server for the richer per-group payload;
-   otherwise falls back to Google's `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`.
+   Antigravity.app or `agy` is running, it prefers the localhost quota server for the richer
+   per-group payload. App/IDE processes are authenticated with the `--csrf_token` value from
+   their process arguments; `agy` exposes a tokenless local endpoint. If neither local path is
+   usable, it falls back to Google's `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`.
    Both nested and flat `remainingFraction` quota shapes are handled when choosing the most
    constrained bucket for display; buckets without a numeric value are skipped. Local grouped
    quotas are labeled `1w` / `5h` from their

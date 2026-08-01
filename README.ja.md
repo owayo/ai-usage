@@ -68,7 +68,7 @@ Chrome プロファイルを横断し、Antigravity と Grok は CLI の OAuth �
 - **OS**: macOS (Chrome の macOS `v10` Cookie 方式に対応。Windows の `v20` app-bound 方式は未対応)
 - **ブラウザ**: ブラウザ認証プロバイダ用の Google Chrome (Claude / Codex / PixelLab にサインイン済み)
 - **ビルド**: Rust ツールチェイン + **cmake** ([`wreq`](https://crates.io/crates/wreq) の BoringSSL に必要)
-- **任意**: Antigravity 使用量には `agy` CLI 起動中、または `~/.gemini` の OAuth トークンが必要
+- **任意**: Antigravity 使用量には Antigravity.app、`agy` CLI、または `~/.gemini` の OAuth トークンが必要
 - **任意**: Grok 使用量には `grok` CLI にサインイン済み (`~/.grok/auth.json`) が必要
 
 ## インストール
@@ -238,8 +238,8 @@ label = "work"                    # 任意: アカウントメール username �
 match = "Home"
 label = "home"
 
-# Antigravity (Google `agy`) 使用量。~/.gemini OAuth トークンまたは実行中の
-# `agy` があれば自動検出されるため、設定は任意です。ラベル変更、非既定トークンの
+# Antigravity (Google `agy`) 使用量。~/.gemini OAuth トークン、Antigravity.app、
+# または実行中の `agy` があれば自動検出されるため、設定は任意です。ラベル変更、非既定トークンの
 # 指定、またはオフにしたい場合だけ追加します。
 [antigravity]
 # enabled = true                    # false なら検出されても非表示
@@ -300,9 +300,11 @@ flowchart LR
 3. **Codex** — `__Secure-next-auth.session-token` Cookie を `chatgpt.com/api/auth/session` で
    Bearer トークンに交換し、`chatgpt.com/backend-api/wham/usage` を呼んで
    `rate_limit.primary_window` / `secondary_window` を取得。
-4. **Antigravity** — `~/.gemini` の OAuth トークンを読み (必要に応じて refresh)、`agy`
-   起動中は localhost の quota サーバー (グループ別の詳細ペイロード) を優先。停止時は
-   Google の `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` にフォールバック。
+4. **Antigravity** — `~/.gemini` の OAuth トークンを読み (必要に応じて refresh)、
+   Antigravity.app または `agy` の起動中は localhost の quota サーバー (グループ別の詳細
+   ペイロード)を優先します。app/IDE はプロセス引数の `--csrf_token` で認証し、`agy` は
+   token 不要のローカル endpoint を使います。どちらも利用できない場合は Google の
+   `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` にフォールバックします。
    表示用の最も制約が厳しい bucket は、nested / flat 両方の `remainingFraction` 形を読んで選び、
    数値がない bucket は除外します。
    ローカル quota は実周期に応じて `1w` / `5h`、OAuth fallback の日次 quota は `1d` と表示します。

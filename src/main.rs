@@ -342,7 +342,7 @@ async fn fetch_reports(
     if jobs.is_empty() {
         bail!(
             "No signed-in Claude/Codex/PixelLab sessions or Antigravity/Grok token found. Sign in \
-             via Chrome, run `agy` / `grok login`, or adjust --profile / --only / your config. \
+             via Chrome, open Antigravity, run `agy` / `grok login`, or adjust --profile / --only / your config. \
              (Try --list-profiles.)"
         );
     }

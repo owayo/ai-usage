@@ -45,14 +45,14 @@ pub fn available(cfg: Option<&AntigravityCfg>) -> bool {
     if matches!(cfg, Some(c) if c.enabled == Some(false)) {
         return false;
     }
-    token_path(cfg).map(|p| p.exists()).unwrap_or(false) || !agy_listen_ports().is_empty()
+    token_path(cfg).map(|p| p.exists()).unwrap_or(false) || !local_endpoints().is_empty()
 }
 
 // ============================ local language_server ============================
 
 async fn local_fetch() -> Result<Vec<UsageRow>> {
-    let ports = agy_listen_ports();
-    if ports.is_empty() {
+    let endpoints = local_endpoints();
+    if endpoints.is_empty() {
         bail!("agy/Antigravity not running");
     }
     let local = Client::builder()
@@ -62,8 +62,8 @@ async fn local_fetch() -> Result<Vec<UsageRow>> {
         .pool_max_idle_per_host(0)
         .build()
         .context("building localhost client")?;
-    for port in ports {
-        if let Ok(rows) = local_quota(&local, port).await
+    for endpoint in endpoints {
+        if let Ok(rows) = local_quota(&local, &endpoint).await
             && !rows.is_empty()
         {
             return Ok(rows);
@@ -72,26 +72,51 @@ async fn local_fetch() -> Result<Vec<UsageRow>> {
     bail!("no quota from local agy server")
 }
 
-async fn local_quota(local: &Client, port: u16) -> Result<Vec<UsageRow>> {
-    let base = format!("https://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService");
-    let summary = local_post(local, &format!("{base}/RetrieveUserQuotaSummary")).await?;
-    let (email, plan) = match local_post(local, &format!("{base}/GetUserStatus")).await {
+async fn local_quota(local: &Client, endpoint: &LocalEndpoint) -> Result<Vec<UsageRow>> {
+    let base = format!(
+        "https://127.0.0.1:{}/exa.language_server_pb.LanguageServerService",
+        endpoint.port
+    );
+    let summary = local_post(
+        local,
+        &format!("{base}/RetrieveUserQuotaSummary"),
+        endpoint.csrf_token.as_deref(),
+    )
+    .await?;
+    let (email, plan) = match local_post(
+        local,
+        &format!("{base}/GetUserStatus"),
+        endpoint.csrf_token.as_deref(),
+    )
+    .await
+    {
         Ok(s) => user_identity(&s),
         Err(_) => (None, None),
     };
     parse_summary(&summary, email, plan)
 }
 
-async fn local_post(local: &Client, url: &str) -> Result<Value> {
-    let resp = local
+async fn local_post(local: &Client, url: &str, csrf_token: Option<&str>) -> Result<Value> {
+    let mut request = local
         .post(url)
         .header("Connect-Protocol-Version", "1")
         .header("Content-Type", "application/json")
-        .body("{}")
+        .body("{}");
+    if let Some(token) = csrf_token {
+        request = request.header("X-Codeium-Csrf-Token", token);
+    }
+    let resp = request
         .send()
         .await
         .with_context(|| format!("POST {url}"))?;
-    let text = resp.text().await.unwrap_or_default();
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .with_context(|| format!("reading POST response from {url}"))?;
+    if !status.is_success() {
+        bail!("POST {url} returned HTTP {}", status.as_u16());
+    }
     serde_json::from_str(&text).with_context(|| format!("parsing {url}"))
 }
 
@@ -250,38 +275,109 @@ fn short_group_label(display: &str) -> String {
 
 // ============================ agy process discovery ============================
 
-fn agy_listen_ports() -> Vec<u16> {
-    let mut ports = Vec::new();
-    for pid in agy_pids() {
-        ports.extend(listen_ports(pid));
-    }
-    ports.sort_unstable();
-    ports.dedup();
-    ports
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct LocalEndpoint {
+    port: u16,
+    /// Antigravity.app / IDE は必須、`agy` CLI は不要。
+    csrf_token: Option<String>,
 }
 
-fn agy_pids() -> Vec<u32> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LocalProcess {
+    pid: u32,
+    csrf_token: Option<String>,
+}
+
+fn local_endpoints() -> Vec<LocalEndpoint> {
+    let mut endpoints = Vec::new();
+    for process in local_processes() {
+        endpoints.extend(
+            listen_ports(process.pid)
+                .into_iter()
+                .map(|port| LocalEndpoint {
+                    port,
+                    csrf_token: process.csrf_token.clone(),
+                }),
+        );
+    }
+    endpoints.sort_unstable();
+    endpoints.dedup();
+    endpoints
+}
+
+fn local_processes() -> Vec<LocalProcess> {
     let Ok(out) = Command::new("ps")
-        .args(["-ax", "-o", "pid=,comm="])
+        // app/IDE の CSRF token はコマンドライン引数にしかないため `comm` ではなく
+        // `command` を読む。token はリクエストヘッダー以外へ出力しない。
+        .args(["-ax", "-o", "pid=,command="])
         .output()
     else {
         return Vec::new();
     };
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut pids = Vec::new();
+    parse_local_processes(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_local_processes(text: &str) -> Vec<LocalProcess> {
+    let mut processes = Vec::new();
     for line in text.lines() {
         let line = line.trim();
-        let Some((pid, comm)) = line.split_once(char::is_whitespace) else {
+        let Some((pid, command)) = line.split_once(char::is_whitespace) else {
             continue;
         };
-        let name = comm.trim().rsplit('/').next().unwrap_or("").trim();
-        if (name == "agy" || name.starts_with("language_server"))
-            && let Ok(p) = pid.trim().parse()
-        {
-            pids.push(p);
+        // `.app` 名に空白があっても、最初の flag より前にある実行ファイル末尾を探せば
+        // `.../language_server` を復元できる。
+        let name = command
+            .split_whitespace()
+            .take_while(|part| !part.starts_with("--"))
+            .filter_map(|part| part.rsplit('/').next())
+            .find(|name| {
+                *name == "agy"
+                    || name.starts_with("language_server")
+                    || name.starts_with("language-server")
+            });
+        let Ok(pid) = pid.trim().parse() else {
+            continue;
+        };
+        if name == Some("agy") {
+            processes.push(LocalProcess {
+                pid,
+                csrf_token: None,
+            });
+            continue;
+        }
+        let antigravity_language_server =
+            name.is_some_and(|name| {
+                name.starts_with("language_server") || name.starts_with("language-server")
+            }) && command.to_ascii_lowercase().contains("antigravity");
+        if antigravity_language_server {
+            // desktop language server は token 無しでは必ず拒否する。tokenless process を
+            // endpoint 候補に入れると、有効な別プロセスより先に誤接続するため除外する。
+            // Antigravity の marker がない同名プロセスも別製品の可能性があるため採用しない。
+            if let Some(token) = process_arg(command, "--csrf_token") {
+                processes.push(LocalProcess {
+                    pid,
+                    csrf_token: Some(token.to_string()),
+                });
+            }
         }
     }
-    pids
+    processes
+}
+
+fn process_arg<'a>(command: &'a str, flag: &str) -> Option<&'a str> {
+    let assignment = format!("{flag}=");
+    let mut args = command.split_whitespace();
+    while let Some(arg) = args.next() {
+        if arg == flag {
+            return args.next().filter(|value| !value.starts_with("--"));
+        }
+        if let Some(value) = arg.strip_prefix(&assignment)
+            && !value.is_empty()
+        {
+            return Some(value);
+        }
+    }
+    None
 }
 
 fn listen_ports(pid: u32) -> Vec<u16> {
@@ -389,7 +485,7 @@ impl Token {
         if self.expiry == 0 {
             return 0;
         }
-        self.expiry - now_secs()
+        self.expiry.saturating_sub(now_secs())
     }
 }
 
@@ -489,7 +585,7 @@ async fn refresh(api: &Client, tok: &Token) -> Result<Token> {
     let expiry = body
         .get("expires_in")
         .and_then(Value::as_i64)
-        .map(|s| now_secs() + s)
+        .map(|s| now_secs().saturating_add(s))
         .unwrap_or(0);
     Ok(Token {
         access,
@@ -703,6 +799,59 @@ mod tests {
         );
         assert!(parse_expiry(&json!({"expiry": "2026-06-12T15:06:32.244434+09:00"})) > 0);
         assert_eq!(parse_expiry(&json!({})), 0);
+    }
+
+    #[test]
+    fn local_process_parser_extracts_csrf_and_accepts_tokenless_cli() {
+        let output = "\
+101 /Applications/Antigravity.app/Contents/Resources/app/language_server_macos_arm --csrf_token app-secret\n\
+202 /usr/local/bin/agy\n\
+303 /tmp/antigravity/language-server --csrf_token=ide-secret\n\
+304 /Applications/Antigravity IDE.app/Contents/Resources/language_server_macos --csrf_token spaced-secret\n\
+404 /tmp/language_server --other-flag value\n\
+505 /tmp/unrelated --csrf_token ignored\n\
+606 /tmp/language_server --csrf_token other-product\n";
+        assert_eq!(
+            parse_local_processes(output),
+            vec![
+                LocalProcess {
+                    pid: 101,
+                    csrf_token: Some("app-secret".to_string()),
+                },
+                LocalProcess {
+                    pid: 202,
+                    csrf_token: None,
+                },
+                LocalProcess {
+                    pid: 303,
+                    csrf_token: Some("ide-secret".to_string()),
+                },
+                LocalProcess {
+                    pid: 304,
+                    csrf_token: Some("spaced-secret".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn process_arg_rejects_missing_value() {
+        assert_eq!(
+            process_arg("server --csrf_token --next value", "--csrf_token"),
+            None
+        );
+        assert_eq!(process_arg("server --csrf_token=", "--csrf_token"), None);
+    }
+
+    #[test]
+    fn token_expiry_saturates_for_extreme_values() {
+        let token = |expiry| Token {
+            access: String::new(),
+            refresh: String::new(),
+            expiry,
+        };
+        assert_eq!(token(i64::MIN).expires_in(), i64::MIN);
+        assert!(token(i64::MAX).expires_in() > 0);
     }
 
     #[test]

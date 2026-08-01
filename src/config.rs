@@ -20,8 +20,8 @@ pub struct Config {
     /// 空または未指定なら、signed-in 済み profile をすべて auto-discover する。
     pub profiles: Vec<ProfileCfg>,
 
-    /// Antigravity(Google `agy`)使用量。ここで disabled にしない限り、`~/.gemini` または
-    /// 実行中の `agy` から auto-discover する。Chrome profile ではないため、
+    /// Antigravity(Google `agy`)使用量。ここで disabled にしない限り、`~/.gemini`、
+    /// 実行中の Antigravity.app、または `agy` から auto-discover する。Chrome profile ではないため、
     /// `[[profiles]]` 配下ではなく top-level に置く。
     pub antigravity: Option<AntigravityCfg>,
 
@@ -47,7 +47,7 @@ pub struct StatuslineCfg {
 #[derive(Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct AntigravityCfg {
-    /// `None` = auto(token または実行中 `agy` があれば表示)、`Some(false)` = off。
+    /// `None` = auto(token または実行中の app / `agy` があれば表示)、`Some(false)` = off。
     pub enabled: Option<bool>,
     /// OAuth token path を上書きする(default: `~/.gemini/...`)。
     pub token_path: Option<String>,

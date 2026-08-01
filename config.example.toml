@@ -25,8 +25,8 @@ label = "work"                    # optional: account email username の代わ�
 match = "Home"
 label = "home"
 
-# Antigravity(Google `agy`)使用量。~/.gemini OAuth token または実行中 `agy` があれば
-# auto-discover されるため config は不要です。label 変更、非 default token 指定、
+# Antigravity(Google `agy`)使用量。~/.gemini OAuth token、Antigravity.app、または
+# 実行中 `agy` があれば auto-discover されるため config は不要です。label 変更、非 default token 指定、
 # または off にしたい場合だけ追加します。
 [antigravity]
 # enabled = true          # false なら Antigravity が存在しても非表示

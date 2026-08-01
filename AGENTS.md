@@ -32,19 +32,23 @@ are fetched via OAuth alongside them.
 `-D warnings` + rustfmt) · `make test`.
 
 Each module ships unit tests next to its source (`#[cfg(test)] mod tests`),
-covering pure logic: cookie decryption round-trips, exact provider-domain
+covering pure logic: cookie decryption round-trips and malformed schema-v24
+prefix rejection, exact provider-domain
 filtering, numeric session-cookie chunk name matching (`.0`, `.1`, ...)
-(`cookies.rs`), org/window parsing (`claude.rs`/`codex.rs`), TOML config and
+(`cookies.rs`), Chrome profile discovery / cookie-store precedence
+(`profiles.rs`), org/window parsing (`claude.rs`/`codex.rs`), TOML config and
 `BrowserWants` (`config.rs`), display-name and active-row resolution
 (`render.rs`), row sorting (`render/sort.rs`), table bar/humanize formatting
 (`render/table.rs`), statusline gauge/duration formatting
 (`render/statusline.rs`), Antigravity quota parsing including nested/flat
 `remainingFraction`, missing-quota rejection, ISO-8601 and epoch-second
-`resetTime`, plus wrapped/flat
+`resetTime`, app/IDE CSRF process-argument extraction, overflow-safe token expiry,
+plus wrapped/flat
 `GetUserStatus` shapes (`antigravity.rs`), PixelLab Supabase cookie parsing
-(legacy JSON-array + `base64-…` object forms + `.0/.1` chunk join), JWT `exp` /
+(legacy JSON-array + `base64-…` object forms + `.0/.1` chunk join), overflow-safe JWT `exp` /
 `email` extraction, `/get-account-data` + `/get-subscription` folding into the
-typed monthly long slot with `generation_reset_date` (`pixellab.rs`), report-DTO
+typed monthly long slot with `generation_reset_date` (`pixellab.rs`), overflow-safe
+Grok token expiry (`grok.rs`), report-DTO
 building with reset-countdown clamping and old-cache compatibility (`report.rs`),
 retryable HTTP marker classification including response-body failures
 (`http.rs`), TOML-value escaping, provider resolution, and Chrome-discovery

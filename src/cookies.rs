@@ -60,8 +60,10 @@ fn decrypt(key: &[u8; 16], blob: &[u8], strip_sha256_prefix: bool) -> Option<Str
     let plain = Aes128CbcDec::new(&(*key).into(), &iv.into())
         .decrypt_padded_vec::<Pkcs7>(&blob[3..])
         .ok()?;
-    let value = if strip_sha256_prefix && plain.len() >= 32 {
-        &plain[32..]
+    let value = if strip_sha256_prefix {
+        // schema v24+ の平文は必ず 32 バイトの host hash で始まる。これより短い値を
+        // Cookie 本体として通すと、破損 DB を有効なセッションと誤認するため拒否する。
+        plain.get(32..)?
     } else {
         &plain[..]
     };
@@ -407,6 +409,17 @@ mod tests {
         plain.extend_from_slice(b"value");
         let blob = encrypt_for_test(&key(), b"v10", &plain);
         assert_eq!(decrypt(&key(), &blob, true).as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn decrypt_rejects_schema_v24_plaintext_shorter_than_hash_prefix() {
+        // schema v24+ では 32 バイト未満の平文に Cookie 本体は存在しない。
+        let short = encrypt_for_test(&key(), b"v10", &[0u8; 31]);
+        assert!(decrypt(&key(), &short, true).is_none());
+
+        // 32 バイトちょうどなら空の Cookie 値として境界上は有効。
+        let empty = encrypt_for_test(&key(), b"v10", &[0u8; 32]);
+        assert_eq!(decrypt(&key(), &empty, true).as_deref(), Some(""));
     }
 
     #[test]

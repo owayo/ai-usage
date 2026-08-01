@@ -60,3 +60,65 @@ pub fn cookies_db(root: &Path, dir: &str) -> Option<PathBuf> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "ai-usage-profiles-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn discover_reads_email_falls_back_to_dir_and_sorts_by_name() {
+        let root = temp_root("discover");
+        std::fs::write(
+            root.join("Local State"),
+            r#"{"profile":{"info_cache":{
+                "Profile 2":{"name":"Work","user_name":"work@example.com"},
+                "Default":{"name":"home","user_name":""},
+                "Profile 1":{}
+            }}}"#,
+        )
+        .unwrap();
+
+        let profiles = discover(&root).unwrap();
+        assert_eq!(
+            profiles
+                .iter()
+                .map(|p| (p.dir.as_str(), p.name.as_str(), p.email.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Default", "home", None),
+                ("Profile 1", "Profile 1", None),
+                ("Profile 2", "Work", Some("work@example.com")),
+            ]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cookies_db_prefers_network_store_and_falls_back_to_legacy_store() {
+        let root = temp_root("cookies-db");
+        let profile = root.join("Default");
+        std::fs::create_dir_all(profile.join("Network")).unwrap();
+        std::fs::write(profile.join("Cookies"), []).unwrap();
+        assert_eq!(cookies_db(&root, "Default"), Some(profile.join("Cookies")));
+
+        std::fs::write(profile.join("Network/Cookies"), []).unwrap();
+        assert_eq!(
+            cookies_db(&root, "Default"),
+            Some(profile.join("Network/Cookies"))
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

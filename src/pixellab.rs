@@ -24,7 +24,7 @@ use crate::http::{get_json, retryable_error};
 use crate::model::{Usage, UsageRow, Window, WindowKind};
 
 /// www.pixellab.ai の Supabase auth Cookie。大きい token は Next.js と同じ `…token.0` /
-/// `…token.1` に分割される。名前を 1 箇所で定義して cookie_bundle / has_session を揃える。
+/// `…token.1` に分割される。名前を 1 箇所で定義して joined_cookie_value / has_session を揃える。
 const SESSION_COOKIE: &str = "supabase-auth-token";
 
 /// PixelLab フロントの Supabase プロジェクト。auth endpoint は Cloudflare 経由。
@@ -201,7 +201,7 @@ fn access_token_fresh(access: &str) -> bool {
     let Some(exp) = claims.get("exp").and_then(Value::as_i64) else {
         return false;
     };
-    exp - Utc::now().timestamp() > 60
+    exp > Utc::now().timestamp().saturating_add(60)
 }
 
 fn jwt_email(access: &str) -> Option<String> {
@@ -458,6 +458,10 @@ mod tests {
         assert!(access_token_fresh(&valid));
         // 破損 JWT は不新鮮扱い(=refresh を試みる)。
         assert!(!access_token_fresh("garbage"));
+
+        // 外部入力の極端な exp でも減算オーバーフローを起こさない。
+        assert!(!access_token_fresh(&make_jwt(&json!({ "exp": i64::MIN }))));
+        assert!(access_token_fresh(&make_jwt(&json!({ "exp": i64::MAX }))));
     }
 
     #[test]
