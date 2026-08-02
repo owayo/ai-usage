@@ -48,7 +48,7 @@ pub fn available(cfg: Option<&AntigravityCfg>) -> bool {
     token_path(cfg).map(|p| p.exists()).unwrap_or(false) || !local_endpoints().is_empty()
 }
 
-// ============================ local language_server ============================
+// ============================ ローカル language_server ============================
 
 async fn local_fetch() -> Result<Vec<UsageRow>> {
     let endpoints = local_endpoints();
@@ -273,7 +273,7 @@ fn short_group_label(display: &str) -> String {
     }
 }
 
-// ============================ agy process discovery ============================
+// ============================ agy プロセス検出 ============================
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct LocalEndpoint {
@@ -406,7 +406,7 @@ fn listen_ports(pid: u32) -> Vec<u16> {
     ports
 }
 
-// ============================ OAuth remote ============================
+// ============================ リモート OAuth ============================
 
 async fn oauth_fetch(api: &Client, cfg: Option<&AntigravityCfg>) -> Result<Vec<UsageRow>> {
     let path = token_path(cfg).context("no ~/.gemini Antigravity token found")?;
@@ -471,7 +471,7 @@ fn parse_buckets(v: &Value) -> Result<Vec<UsageRow>> {
     }])
 }
 
-// ============================ token + refresh ============================
+// ============================ トークンと更新処理 ============================
 
 struct Token {
     access: String,

@@ -219,6 +219,32 @@ struct Job {
     fetch: FetchSpec,
 }
 
+impl Job {
+    /// Chrome profile の表示メタデータと認証材料を 1 job にまとめる。
+    fn chrome(target: &Target, fetch: FetchSpec) -> Self {
+        Self {
+            meta: JobMeta {
+                profile_name: target.profile.name.clone(),
+                profile_email: target.profile.email.clone(),
+                label: target.label.clone(),
+            },
+            fetch,
+        }
+    }
+
+    /// Chrome profile に属さない OAuth account 用の job を作る。
+    fn oauth(profile_name: &str, label: Option<String>, fetch: FetchSpec) -> Self {
+        Self {
+            meta: JobMeta {
+                profile_name: profile_name.to_string(),
+                profile_email: None,
+                label,
+            },
+            fetch,
+        }
+    }
+}
+
 /// 表示対象として解決済みの Chrome profile。label と表示 provider を持つ。
 struct Target {
     profile: Profile,
@@ -249,104 +275,53 @@ async fn fetch_with_retry(clients: &http::Clients, fetch: &FetchSpec) -> Result<
     }
 }
 
-/// 対象 profile の Cookie を復号し、signed-in 済み account を並行 fetch する。
-/// 結果は入力順を維持する。
-async fn fetch_reports(
-    root: &std::path::Path,
-    targets: &[Target],
-    want_antigravity: bool,
-    antigravity_cfg: Option<&config::AntigravityCfg>,
-    want_grok: bool,
-    grok_cfg: Option<&config::GrokCfg>,
-) -> Result<Vec<AccountReport>> {
-    let clients = http::clients()?;
-    let mut jobs: Vec<Job> = Vec::new();
+/// 必要な Chrome profile だけ Cookie を読み、signed-in provider の job を組み立てる。
+fn chrome_jobs(root: &std::path::Path, targets: &[Target]) -> Result<Vec<Job>> {
+    if !targets.iter().any(|target| target.wants.any()) {
+        return Ok(Vec::new());
+    }
 
-    // Chrome Cookie job(Claude/Codex/PixelLab)。必要な場合だけ Keychain に触る。
-    // `--only antigravity` では prompt 自体を避ける。
-    let wants_chrome = targets.iter().any(|t| t.wants.any());
-    if wants_chrome {
-        let password = cookies::safe_storage_key("Chrome Safe Storage")?;
-        let key = cookies::derive_key(&password);
-        for t in targets {
-            let Some(db) = profiles::cookies_db(root, &t.profile.dir) else {
+    let password = cookies::safe_storage_key("Chrome Safe Storage")?;
+    let key = cookies::derive_key(&password);
+    let mut jobs = Vec::new();
+    for target in targets {
+        let Some(db) = profiles::cookies_db(root, &target.profile.dir) else {
+            continue;
+        };
+        let profile_cookies = match cookies::load(&db, &key) {
+            Ok(profile_cookies) => profile_cookies,
+            Err(error) => {
+                eprintln!(
+                    "ai-usage: skipping Chrome profile {}: {error:#}",
+                    target.profile.name
+                );
                 continue;
-            };
-            let pc = match cookies::load(&db, &key) {
-                Ok(pc) => pc,
-                Err(e) => {
-                    eprintln!(
-                        "ai-usage: skipping Chrome profile {}: {e:#}",
-                        t.profile.name
-                    );
-                    continue;
-                }
-            };
-            if t.wants.claude && claude::has_session(&pc.claude) {
-                jobs.push(Job {
-                    meta: JobMeta {
-                        profile_name: t.profile.name.clone(),
-                        profile_email: t.profile.email.clone(),
-                        label: t.label.clone(),
-                    },
-                    fetch: FetchSpec::Claude(pc.claude),
-                });
             }
-            if t.wants.codex && codex::has_session(&pc.chatgpt) {
-                jobs.push(Job {
-                    meta: JobMeta {
-                        profile_name: t.profile.name.clone(),
-                        profile_email: t.profile.email.clone(),
-                        label: t.label.clone(),
-                    },
-                    fetch: FetchSpec::Codex(pc.chatgpt),
-                });
-            }
-            if t.wants.pixellab && pixellab::has_session(&pc.pixellab) {
-                jobs.push(Job {
-                    meta: JobMeta {
-                        profile_name: t.profile.name.clone(),
-                        profile_email: t.profile.email.clone(),
-                        label: t.label.clone(),
-                    },
-                    fetch: FetchSpec::PixelLab(pc.pixellab),
-                });
-            }
+        };
+        if target.wants.claude && claude::has_session(&profile_cookies.claude) {
+            jobs.push(Job::chrome(
+                target,
+                FetchSpec::Claude(profile_cookies.claude),
+            ));
+        }
+        if target.wants.codex && codex::has_session(&profile_cookies.chatgpt) {
+            jobs.push(Job::chrome(
+                target,
+                FetchSpec::Codex(profile_cookies.chatgpt),
+            ));
+        }
+        if target.wants.pixellab && pixellab::has_session(&profile_cookies.pixellab) {
+            jobs.push(Job::chrome(
+                target,
+                FetchSpec::PixelLab(profile_cookies.pixellab),
+            ));
         }
     }
+    Ok(jobs)
+}
 
-    // Antigravity job は Chrome profile に紐づかない単一 OAuth/local account。
-    if want_antigravity {
-        jobs.push(Job {
-            meta: JobMeta {
-                profile_name: "Antigravity".to_string(),
-                profile_email: None,
-                label: antigravity_cfg.and_then(|c| c.label.clone()),
-            },
-            fetch: FetchSpec::Antigravity(antigravity_cfg.cloned()),
-        });
-    }
-
-    // Grok job も Antigravity と同じく Chrome profile と独立した OAuth account。
-    if want_grok {
-        jobs.push(Job {
-            meta: JobMeta {
-                profile_name: "Grok".to_string(),
-                profile_email: None,
-                label: grok_cfg.and_then(|c| c.label.clone()),
-            },
-            fetch: FetchSpec::Grok(grok_cfg.cloned()),
-        });
-    }
-
-    if jobs.is_empty() {
-        bail!(
-            "No signed-in Claude/Codex/PixelLab sessions or Antigravity/Grok token found. Sign in \
-             via Chrome, open Antigravity, run `agy` / `grok login`, or adjust --profile / --only / your config. \
-             (Try --list-profiles.)"
-        );
-    }
-
+/// job を並行実行し、完了順ではなく入力順に AccountReport を返す。
+async fn run_jobs(clients: http::Clients, jobs: Vec<Job>) -> Vec<AccountReport> {
     let mut set = tokio::task::JoinSet::new();
     for (idx, job) in jobs.into_iter().enumerate() {
         let clients = clients.clone();
@@ -375,8 +350,8 @@ async fn fetch_reports(
     while let Some(joined) = set.join_next().await {
         let (idx, provider, meta, rows) = match joined {
             Ok(result) => result,
-            Err(e) => {
-                eprintln!("ai-usage: fetch task failed: {e}");
+            Err(error) => {
+                eprintln!("ai-usage: fetch task failed: {error}");
                 continue;
             }
         };
@@ -387,11 +362,55 @@ async fn fetch_reports(
                         .map(|row| (idx, meta.report_for(provider, row))),
                 );
             }
-            Err(e) => results.push((idx, meta.error_report(provider, e))),
+            Err(error) => results.push((idx, meta.error_report(provider, error))),
         }
     }
     results.sort_by_key(|(idx, _)| *idx);
-    Ok(results.into_iter().map(|(_, r)| r).collect())
+    results.into_iter().map(|(_, report)| report).collect()
+}
+
+/// 対象 profile の Cookie を復号し、signed-in 済み account を並行 fetch する。
+/// 結果は入力順を維持する。
+async fn fetch_reports(
+    root: &std::path::Path,
+    targets: &[Target],
+    want_antigravity: bool,
+    antigravity_cfg: Option<&config::AntigravityCfg>,
+    want_grok: bool,
+    grok_cfg: Option<&config::GrokCfg>,
+) -> Result<Vec<AccountReport>> {
+    let clients = http::clients()?;
+    // Chrome Cookie job(Claude/Codex/PixelLab)。必要な場合だけ Keychain に触るため、
+    // `--only antigravity` では prompt 自体を避けられる。
+    let mut jobs = chrome_jobs(root, targets)?;
+
+    // Antigravity job は Chrome profile に紐づかない単一 OAuth/local account。
+    if want_antigravity {
+        jobs.push(Job::oauth(
+            "Antigravity",
+            antigravity_cfg.and_then(|config| config.label.clone()),
+            FetchSpec::Antigravity(antigravity_cfg.cloned()),
+        ));
+    }
+
+    // Grok job も Antigravity と同じく Chrome profile と独立した OAuth account。
+    if want_grok {
+        jobs.push(Job::oauth(
+            "Grok",
+            grok_cfg.and_then(|config| config.label.clone()),
+            FetchSpec::Grok(grok_cfg.cloned()),
+        ));
+    }
+
+    if jobs.is_empty() {
+        bail!(
+            "No signed-in Claude/Codex/PixelLab sessions or Antigravity/Grok token found. Sign in \
+             via Chrome, open Antigravity, run `agy` / `grok login`, or adjust --profile / --only / your config. \
+             (Try --list-profiles.)"
+        );
+    }
+
+    Ok(run_jobs(clients, jobs).await)
 }
 
 /// Claude Code 設定 file の path。`$CLAUDE_CONFIG_DIR/.claude.json`、未設定なら

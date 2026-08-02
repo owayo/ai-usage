@@ -75,7 +75,7 @@ pub fn available(cfg: Option<&GrokCfg>) -> bool {
     auth_path(cfg).map(|p| p.exists()).unwrap_or(false)
 }
 
-// ================================ REST endpoints ================================
+// ================================ REST エンドポイント ================================
 
 async fn get_user(client: &Client, access: &str) -> Result<Value> {
     // `?include=subscription` を渡すと `subscriptionTier` が入る。
@@ -108,7 +108,7 @@ fn is_auth_error(err: &anyhow::Error) -> bool {
     msg.contains("HTTP 401") || msg.contains("HTTP 403")
 }
 
-// ================================ Usage build =================================
+// ================================ 使用量の構築 =================================
 
 /// `/v1/user` と optional `/v1/billing` を Usage に畳み込む。
 ///
@@ -175,7 +175,7 @@ fn number_val(v: Option<&Value>) -> Option<f64> {
     v.get("val").and_then(Value::as_f64).or_else(|| v.as_f64())
 }
 
-// ================================ Auth loading + refresh ================================
+// ================================ 認証情報の読み込みと更新 ================================
 
 #[derive(Clone)]
 struct Auth {

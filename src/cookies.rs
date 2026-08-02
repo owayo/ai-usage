@@ -80,7 +80,7 @@ pub struct ProfileCookies {
     pub pixellab: HashMap<String, String>,
 }
 
-fn sqlite_immutable_uri(path: &Path) -> String {
+fn sqlite_read_only_uri(path: &Path) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let path = path.to_string_lossy();
     let mut uri = String::with_capacity(path.len() + 24);
@@ -97,7 +97,9 @@ fn sqlite_immutable_uri(path: &Path) -> String {
             }
         }
     }
-    uri.push_str("?immutable=1");
+    // Chrome は起動中に DB と WAL を更新するため、変更されないことを SQLite に約束する
+    // `immutable=1` は使えない。`mode=ro` なら書き込みを防ぎつつ WAL の最新値も読める。
+    uri.push_str("?mode=ro");
     uri
 }
 
@@ -125,12 +127,12 @@ fn is_exact_or_numeric_chunk(name: &str, base: &str) -> bool {
         .is_some_and(|chunk| !chunk.is_empty() && chunk.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// live でロックされがちな Cookies DB を read-only + immutable で開き、
+/// live で更新される Cookies DB を read-only で開き、
 /// claude.ai / chatgpt.com の Cookie だけを復号する。
 pub fn load(db_path: &Path, key: &[u8; 16]) -> Result<ProfileCookies> {
     use rusqlite::{Connection, OpenFlags};
 
-    let uri = sqlite_immutable_uri(db_path);
+    let uri = sqlite_read_only_uri(db_path);
     let conn = Connection::open_with_flags(
         uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
@@ -202,7 +204,7 @@ pub struct DetectedSessions {
 
 pub fn detect_sessions(db_path: &Path) -> DetectedSessions {
     use rusqlite::{Connection, OpenFlags};
-    let uri = sqlite_immutable_uri(db_path);
+    let uri = sqlite_read_only_uri(db_path);
     let Ok(conn) = Connection::open_with_flags(
         uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
@@ -283,9 +285,45 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_immutable_uri_escapes_query_delimiters() {
-        let uri = sqlite_immutable_uri(Path::new("/tmp/ai usage?#.sqlite"));
-        assert_eq!(uri, "file:/tmp/ai%20usage%3F%23.sqlite?immutable=1");
+    fn sqlite_read_only_uri_escapes_query_delimiters() {
+        let uri = sqlite_read_only_uri(Path::new("/tmp/ai usage?#.sqlite"));
+        assert_eq!(uri, "file:/tmp/ai%20usage%3F%23.sqlite?mode=ro");
+    }
+
+    #[test]
+    fn detect_sessions_reads_uncheckpointed_wal_rows() {
+        let path = std::env::temp_dir().join(format!(
+            "ai-usage-cookies-wal-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.execute(
+            "CREATE TABLE cookies (
+                host_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                encrypted_value BLOB NOT NULL DEFAULT x''
+            )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cookies (host_key, name) VALUES (?1, ?2)",
+            rusqlite::params![CLAUDE_DOMAIN, "sessionKey"],
+        )
+        .unwrap();
+
+        // writer が開いたままで Cookie が WAL にしか無い状態でも、最新行を検出できる。
+        assert!(detect_sessions(&path).claude);
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
     }
 
     #[test]

@@ -33,7 +33,7 @@ are fetched via OAuth alongside them.
 
 Each module ships unit tests next to its source (`#[cfg(test)] mod tests`),
 covering pure logic: cookie decryption round-trips and malformed schema-v24
-prefix rejection, exact provider-domain
+prefix rejection, live WAL visibility through read-only Cookie DB access, exact provider-domain
 filtering, numeric session-cookie chunk name matching (`.0`, `.1`, ...)
 (`cookies.rs`), Chrome profile discovery / cookie-store precedence
 (`profiles.rs`), org/window parsing (`claude.rs`/`codex.rs`), TOML config and
@@ -45,7 +45,8 @@ filtering, numeric session-cookie chunk name matching (`.0`, `.1`, ...)
 `resetTime`, app/IDE CSRF process-argument extraction, overflow-safe token expiry,
 plus wrapped/flat
 `GetUserStatus` shapes (`antigravity.rs`), PixelLab Supabase cookie parsing
-(legacy JSON-array + `base64-…` object forms + `.0/.1` chunk join), overflow-safe JWT `exp` /
+(legacy JSON-array + `base64-…` unpadded Base64URL object forms + standard-Base64
+compatibility + `.0/.1` chunk join), overflow-safe JWT `exp` /
 `email` extraction, `/get-account-data` + `/get-subscription` folding into the
 typed monthly long slot with `generation_reset_date` (`pixellab.rs`), overflow-safe
 Grok token expiry (`grok.rs`), report-DTO
@@ -84,7 +85,7 @@ Auth flow:
    - the **legacy** Auth Helpers JSON array
      `[access_token, refresh_token, provider_token, provider_refresh_token, ...]`,
      or
-   - the **new** `base64-<base64_of_json>` form containing
+   - the **new** `base64-<unpadded_base64url_of_json>` form containing
      `{access_token, refresh_token, expires_at, ...}`.
 2. If the JWT's `exp` is within 60 s (or missing), refresh via
    `POST https://supabase.pixellab.ai/auth/v1/token?grant_type=refresh_token`

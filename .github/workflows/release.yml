@@ -208,7 +208,7 @@ jobs:
           SHA256_SOURCE=$(sha256sum source.tar.gz | cut -d' ' -f1)
           echo "sha256_source=${SHA256_SOURCE}" >> "$GITHUB_OUTPUT"
 
-          # release binary
+          # リリース済みバイナリ
           curl -sL "https://github.com/${{ github.repository }}/releases/download/${TAG}/ai-usage-aarch64-apple-darwin.tar.gz" -o mac_arm64.tar.gz
           curl -sL "https://github.com/${{ github.repository }}/releases/download/${TAG}/ai-usage-x86_64-apple-darwin.tar.gz" -o mac_x86_64.tar.gz
 

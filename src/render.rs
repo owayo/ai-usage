@@ -158,7 +158,7 @@ fn parse_utc(s: &str) -> Option<DateTime<Utc>> {
         .map(|d| d.with_timezone(&Utc))
 }
 
-// ===== JSON =================================================================
+// ===== JSON 出力 =============================================================
 
 /// Report を SortKey に従って並び替えてシリアライズする。元の `Report` を
 /// clone せずに参照のみで並べ替えるため、`accounts` を `Vec<&AccountOut>` に

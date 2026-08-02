@@ -294,7 +294,8 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
 
 1. **Decrypts** cookies from `~/Library/Application Support/Google/Chrome/<profile>/Cookies`
    using the **Chrome Safe Storage** key from your macOS Keychain (standard `v10`
-   AES‑128‑CBC scheme). Only cookies Chrome would send to `claude.ai` / `chatgpt.com`
+   AES‑128‑CBC scheme). The live SQLite database is opened read-only so current,
+   uncheckpointed WAL entries remain visible. Only cookies Chrome would send to `claude.ai` / `chatgpt.com`
    themselves are replayed — suffix lookalikes like `evilclaude.ai` are filtered out.
    Chunked session cookies are accepted only when their suffix is numeric (`.0`, `.1`, ...).
 2. **Claude** — uses the `sessionKey` cookie to call
@@ -311,7 +312,9 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
    constrained bucket for display; buckets without a numeric value are skipped. Local grouped
    quotas are labeled `1w` / `5h` from their
    actual window, while the OAuth fallback's daily quota is labeled `1d`.
-5. **PixelLab** — reads the `supabase-auth-token` cookie from `www.pixellab.ai`, refreshing
+5. **PixelLab** — reads the `supabase-auth-token` cookie from `www.pixellab.ai` in either
+   the legacy URL-encoded JSON-array form or Supabase's `base64-` + unpadded Base64URL
+   object form, refreshing
    the access token via `supabase.pixellab.ai/auth/v1/token` if it has expired, then calls
    `api.pixellab.ai/get-account-data` (monthly `imageGenerated / imageAmount` + prepaid
    `credits`) and `api.pixellab.ai/get-subscription` (plan name + `generation_reset_date`).

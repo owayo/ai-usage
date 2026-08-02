@@ -292,7 +292,8 @@ flowchart LR
 
 1. **Cookie 復号**: `~/Library/Application Support/Google/Chrome/<profile>/Cookies` の
    Cookie を、macOS Keychain の **Chrome Safe Storage** キーで復号 (標準の `v10`
-   AES‑128‑CBC 方式)。`claude.ai` / `chatgpt.com` 本体に Chrome が送信する Cookie だけを
+   AES‑128‑CBC 方式)。稼働中の SQLite DB は読み取り専用で開くため、未チェックポイントの
+   WAL にある最新 Cookie も取得できます。`claude.ai` / `chatgpt.com` 本体に Chrome が送信する Cookie だけを
    再送し、`evilclaude.ai` のような suffix 類似ドメインは無視します。分割された session
    Cookie は suffix が数値 (`.0`, `.1`, ...) の場合だけ受け入れます。
 2. **Claude** — `sessionKey` Cookie で `claude.ai/api/organizations/{org}/usage` を呼び
@@ -308,8 +309,10 @@ flowchart LR
    表示用の最も制約が厳しい bucket は、nested / flat 両方の `remainingFraction` 形を読んで選び、
    数値がない bucket は除外します。
    ローカル quota は実周期に応じて `1w` / `5h`、OAuth fallback の日次 quota は `1d` と表示します。
-5. **PixelLab** — `www.pixellab.ai` の `supabase-auth-token` Cookie から access/refresh
-   token を取り出し、期限切れなら `supabase.pixellab.ai/auth/v1/token` で更新した上で
+5. **PixelLab** — `www.pixellab.ai` の `supabase-auth-token` Cookie を、従来の URL
+   エンコード済み JSON 配列形式と Supabase の `base64-` + padding なし Base64URL
+   オブジェクト形式の両方から読み、access/refresh token を取り出します。期限切れなら
+   `supabase.pixellab.ai/auth/v1/token` で更新した上で
    `api.pixellab.ai/get-account-data` (月次生成枠 `imageGenerated / imageAmount` と
    プリペイド `credits`) と `api.pixellab.ai/get-subscription` (プラン名 +
    `generation_reset_date`) を取得。月次枠はレイアウト共通化のため長期スロットに

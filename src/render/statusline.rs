@@ -24,7 +24,7 @@ const PIXELLAB_LOGO: &str = "\u{100400}"; // PixelLab dragon。
 const GRAY: &str = "38;5;245";
 const DIM: &str = "38;5;242";
 const GREEN: &str = "38;5;35";
-const BOLD_RED: &str = "1;38;5;196"; // active account
+const BOLD_RED: &str = "1;38;5;196"; // アクティブなアカウント。
 const FIVE_H_TH: [i64; 3] = [3600, 7200, 10800];
 const DAILY_TH: [i64; 3] = [4 * 3600, 8 * 3600, 12 * 3600];
 const WEEK_TH: [i64; 3] = [86400, 172800, 259200];
@@ -95,7 +95,19 @@ fn render_row(
     opts: &StatuslineOpts,
     now: DateTime<Utc>,
 ) -> String {
-    let prov = match a.provider {
+    let mut rendered = render_identity(a, row_email, active, opts);
+    rendered += &render_windows(a, opts, now);
+    rendered
+}
+
+/// provider marker と表示名を、quota 部分に依存せず組み立てる。
+fn render_identity(
+    account: &AccountOut,
+    row_email: Option<&str>,
+    active: bool,
+    opts: &StatuslineOpts,
+) -> String {
+    let provider_label = match account.provider {
         Provider::Claude => "Claude",
         Provider::Codex => "Codex",
         Provider::Antigravity => "AGY",
@@ -103,51 +115,57 @@ fn render_row(
         Provider::Grok => "Grok",
     };
     let name = display_name(
-        a.label.as_deref(),
+        account.label.as_deref(),
         row_email,
-        a.profile_email.as_deref(),
-        &a.profile,
+        account.profile_email.as_deref(),
+        &account.profile,
     );
-    let mut s = String::from("  ");
+    let mut rendered = String::from("  ");
     // provider marker は `--logos` なら brand-logo glyph、そうでなければ text label。
     // どちらのモードでも Codex は teal brand color より white の方が読みやすいので
     // マーカー用の色は marker_color() に集約する。
-    let marker_color = marker_color(a.provider);
+    let marker_color = marker_color(account.provider);
     if opts.logos {
-        let logo = match a.provider {
+        let logo = match account.provider {
             Provider::Claude => CLAUDE_LOGO,
             Provider::Codex => CODEX_LOGO,
             Provider::Antigravity => ANTIGRAVITY_LOGO,
             Provider::PixelLab => PIXELLAB_LOGO,
             Provider::Grok => GROK_LOGO,
         };
-        s += &paint(opts.color, &marker_color, &format!("{logo}  "));
+        rendered += &paint(opts.color, &marker_color, &format!("{logo}  "));
     } else {
-        s += &paint(opts.color, &marker_color, &format!("{prov:<6} "));
+        rendered += &paint(opts.color, &marker_color, &format!("{provider_label:<6} "));
     }
     // Antigravity 行は単一 token で account name が冗長なため model-group を表示する。
     // それ以外は account name を表示する。"Claude&GPT" が入る幅で pad し、全行の gauge を揃える。
-    let display = a.group_label.as_deref().unwrap_or(&name);
-    s += &paint(
+    let display = account.group_label.as_deref().unwrap_or(&name);
+    rendered += &paint(
         opts.color,
         if active { BOLD_RED } else { GRAY },
         &format!("{display:<11}"),
     );
+    rendered
+}
+
+/// quota の空表示・単一枠・二枠表示を選び、statusline 後半を組み立てる。
+fn render_windows(account: &AccountOut, opts: &StatuslineOpts, now: DateTime<Utc>) -> String {
     // 長期(right)スロットの label は provider ごとの reset サイクルに合わせる。
     // PixelLab は月次生成枠なので "1m"、それ以外は従来どおり "1w"。
-    let short_label = window_label(a.short.as_ref().and_then(|w| w.kind), "5h");
+    let short_label = window_label(account.short.as_ref().and_then(|window| window.kind), "5h");
     let long_label = window_label(
-        a.long.as_ref().and_then(|w| w.kind),
-        legacy_long_window_label(a.provider),
+        account.long.as_ref().and_then(|window| window.kind),
+        legacy_long_window_label(account.provider),
     );
     let gauge_width = if opts.compact { 8 } else { 16 };
-    if !a.ok {
+    let mut rendered = String::new();
+    if !account.ok {
         // データ取得に失敗したアカウントも、データ有り行と桁位置を揃える。
         // window_seg の None 分岐(空ゲージ + "--")を短期 / 長期スロット双方で再利用する。
         // 短期スロットには reset_at を伝搬しない(長期限定のため false 固定)。
-        s += &window_seg(opts, "5h", None, now, FIVE_H_TH, false, gauge_width);
-        s += "   ";
-        s += &window_seg(
+        rendered += &window_seg(opts, "5h", None, now, FIVE_H_TH, false, gauge_width);
+        rendered += "   ";
+        rendered += &window_seg(
             opts,
             long_label,
             None,
@@ -156,19 +174,19 @@ fn render_row(
             opts.reset_at,
             gauge_width,
         );
-        return s;
+        return rendered;
     }
     // quota が短期 / 長期どちらか 1 枠だけなら、空スロットを巻き取って横長表示する。
     // PixelLab / local Antigravity は長期のみ、OAuth Antigravity は日次の短期のみ。
     // 横幅 = 2 スロット + 区切り 3 文字 と等しくなるよう wide_gauge = 2*gauge + 19。
-    let single_window = match (a.short.as_ref(), a.long.as_ref()) {
+    let single_window = match (account.short.as_ref(), account.long.as_ref()) {
         (Some(w), None) => Some((w, short_label, FIVE_H_TH, false)),
         (None, Some(w)) => Some((w, long_label, WEEK_TH, opts.reset_at)),
         _ => None,
     };
     if let Some((window, label, legacy_thresholds, show_reset_at)) = single_window {
         let wide_gauge = 2 * gauge_width + 19;
-        s += &window_seg(
+        rendered += &window_seg(
             opts,
             label,
             Some(window),
@@ -178,27 +196,27 @@ fn render_row(
             wide_gauge,
         );
     } else {
-        s += &window_seg(
+        rendered += &window_seg(
             opts,
             short_label,
-            a.short.as_ref(),
+            account.short.as_ref(),
             now,
-            window_thresholds(a.short.as_ref(), FIVE_H_TH),
+            window_thresholds(account.short.as_ref(), FIVE_H_TH),
             false,
             gauge_width,
         );
-        s += "   ";
-        s += &window_seg(
+        rendered += "   ";
+        rendered += &window_seg(
             opts,
             long_label,
-            a.long.as_ref(),
+            account.long.as_ref(),
             now,
-            window_thresholds(a.long.as_ref(), WEEK_TH),
+            window_thresholds(account.long.as_ref(), WEEK_TH),
             opts.reset_at,
             gauge_width,
         );
     }
-    s
+    rendered
 }
 
 fn window_thresholds(w: Option<&WindowOut>, legacy: [i64; 3]) -> [i64; 3] {

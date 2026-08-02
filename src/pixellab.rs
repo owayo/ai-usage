@@ -70,8 +70,12 @@ fn parse_session(cookies: &HashMap<String, String>) -> Result<SessionTokens> {
     // 新形式(base64 プレフィックス付きの `base64-…` JSON object)も、要素が
     // `access_token` / `refresh_token` を持つ dict なら同じ経路で扱える。
     let (access, refresh) = if let Some(rest) = decoded.strip_prefix("base64-") {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(rest.trim())
+        // Supabase SSR は padding なし Base64URL で保存する。旧実装・他 helper が書いた
+        // padding 付き標準 Base64 も読み続けられるよう、標準形式を fallback にする。
+        let encoded = rest.trim();
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded)
+            .or_else(|_| base64::engine::general_purpose::STANDARD.decode(encoded))
             .context("decoding base64 supabase cookie payload")?;
         let v: Value = serde_json::from_slice(&bytes)
             .context("parsing base64 supabase cookie payload as JSON")?;
@@ -429,18 +433,34 @@ mod tests {
 
     #[test]
     fn parse_session_reads_object_form_with_base64_prefix() {
-        // 新形式: base64-<base64({"access_token","refresh_token",...})>
+        // Supabase SSR の新形式: base64-<padding なし Base64URL(JSON)>。
+        let payload = json!({
+            // 標準 Base64 では扱えない `_` が確実に出る payload にする。
+            "access_token": "AAA???",
+            "refresh_token": "BBB",
+        });
+        let encoded = URL_SAFE_NO_PAD.encode(payload.to_string());
+        assert!(encoded.contains('-') || encoded.contains('_'));
+        let cookie = format!("base64-{encoded}");
+        let mut c = HashMap::new();
+        put(&mut c, SESSION_COOKIE, &cookie);
+        let s = parse_session(&c).unwrap();
+        assert_eq!(s.access, "AAA???");
+        assert_eq!(s.refresh, "BBB");
+    }
+
+    #[test]
+    fn parse_session_keeps_standard_base64_compatibility() {
         let payload = json!({
             "access_token": "AAA",
             "refresh_token": "BBB",
         });
         let encoded = base64::engine::general_purpose::STANDARD.encode(payload.to_string());
-        let cookie = format!("base64-{encoded}");
-        let mut c = HashMap::new();
-        put(&mut c, SESSION_COOKIE, &cookie);
-        let s = parse_session(&c).unwrap();
-        assert_eq!(s.access, "AAA");
-        assert_eq!(s.refresh, "BBB");
+        let mut cookies = HashMap::new();
+        put(&mut cookies, SESSION_COOKIE, &format!("base64-{encoded}"));
+        let session = parse_session(&cookies).unwrap();
+        assert_eq!(session.access, "AAA");
+        assert_eq!(session.refresh, "BBB");
     }
 
     #[test]
