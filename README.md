@@ -54,7 +54,7 @@ Claude and a Codex subscription = four accounts) without you logging anything in
 
 ## Features
 
-- **Multi-Account**: Reports every Chrome profile signed into Claude, Codex, or PixelLab — no re-login needed
+- **Multi-Account**: Reports every Chrome profile signed into Claude, Codex, or PixelLab — no re-login needed. Account labels fall back from the provider email to the Chrome profile email and then the profile name, skipping unusable email values
 - **Multi-Provider**: Claude (`claude.ai`), Codex (`chatgpt.com`), Antigravity (Google's `agy` CLI/IDE), PixelLab (`pixellab.ai`), and Grok (xAI's `grok` CLI) in one view
 - **Typed Windows**: Each quota carries its real cycle (5-hour, daily, weekly, or monthly) with a usage bar, percentage, and reset countdown — each row's badge (`5h` / `1d` / `1w` / `1m`) comes from the quota itself. Any row with only one window collapses both slots into a single wider bar
 - **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
@@ -334,6 +334,8 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
 `claude.ai` and `chatgpt.com` sit behind Cloudflare, so the HTTP client
 ([`wreq`](https://crates.io/crates/wreq)) emulates Chrome's TLS/HTTP2 fingerprint and
 replays the profile's `cf_clearance` cookie — a plain HTTP client just gets a `403`.
+Transport failures and HTTP `408` / `429` / `5xx` responses use the same bounded retry
+policy for GET and POST requests, with a 20-second deadline per provider job.
 
 Nothing leaves your machine except authenticated usage requests to Anthropic, OpenAI,
 Google, PixelLab, and xAI. No tokens or cookies are printed or stored.

@@ -4,8 +4,8 @@ use chrono::{DateTime, Local, Utc};
 
 use super::sort::{sorted_refs, statusline_default_cmp};
 use super::{
-    ActiveTarget, brand_rgb, display_name, legacy_long_window_label, parse_utc, resolve_active,
-    window_label,
+    ActiveTarget, brand_rgb, display_name, legacy_long_window_label, parse_utc, preferred_email,
+    resolve_active, window_label,
 };
 use crate::SortKey;
 use crate::model::{Provider, WindowKind};
@@ -78,7 +78,7 @@ pub fn statusline(
         // 同居しても、`--input` から読んだ report をそのまま filter するだけで済む。
         .filter(|a| !opts.hide.contains(&a.provider))
         .map(|a| {
-            let row_email = a.email.as_deref().or(a.profile_email.as_deref());
+            let row_email = preferred_email(a.email.as_deref(), a.profile_email.as_deref());
             // profile targeting は任意 provider 行を highlight できる。
             // email targeting は従来の Claude-only 挙動を保つ。`--debug` で各行の理由を出す。
             let is_active = resolve_active(active, a.provider, &a.profile, row_email, opts.debug);

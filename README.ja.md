@@ -53,7 +53,7 @@ Chrome プロファイルを横断し、Antigravity と Grok は CLI の OAuth �
 
 ## 特徴
 
-- **マルチアカウント**: サインイン済みの全 Chrome プロファイルを一覧表示。ログインし直し不要
+- **マルチアカウント**: サインイン済みの全 Chrome プロファイルを一覧表示。ログインし直し不要。表示名はプロバイダのメール、Chrome プロファイルのメール、プロファイル名の順に解決し、空値など使用不能なメールは読み飛ばす
 - **マルチプロバイダ**: Claude (`claude.ai`) / Codex (`chatgpt.com`) / Antigravity (Google `agy` CLI・IDE) / PixelLab (`pixellab.ai`) / Grok (xAI `grok` CLI) を同一ビューに集約
 - **型付き利用枠**: 各 quota が 5 時間・日次・週次・月次の実周期を保持し、利用率とリセット残時間を表示。行内バッジ (`5h` / `1d` / `1w` / `1m`) は quota 自身の周期から決定。利用枠が1つだけの行は 2 つのスロットを 1 本の横長バーに統合
 - **Cloudflare 対応**: [`wreq`](https://crates.io/crates/wreq) が Chrome の TLS/HTTP2 フィンガープリントをエミュレートし、`cf_clearance` を再送
@@ -333,6 +333,8 @@ flowchart LR
 ([`wreq`](https://crates.io/crates/wreq)) が Chrome の TLS/HTTP2 フィンガープリントを
 エミュレートし、プロファイルの `cf_clearance` Cookie を再送します (素の HTTP クライアントは
 `403` になります)。
+通信エラーと HTTP `408` / `429` / `5xx` は GET / POST とも同じ再試行ポリシーで処理し、
+各プロバイダのジョブは再試行を含めて 20 秒以内に打ち切ります。
 
 Anthropic / OpenAI / Google / PixelLab / xAI への認証付き使用量リクエスト以外、データは外部に
 出ません。トークンや Cookie を出力・保存することもありません。

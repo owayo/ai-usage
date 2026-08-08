@@ -57,6 +57,14 @@ pub fn is_retryable(error: &anyhow::Error) -> bool {
         .any(|cause| cause.downcast_ref::<RetryableHttpError>().is_some())
 }
 
+/// 待機後の再試行で回復し得る HTTP status を判定する。
+/// GET / POST の経路差で再試行ポリシーがずれないよう、ここを単一の正本にする。
+pub(crate) fn is_retryable_status(status: StatusCode) -> bool {
+    status == StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
 pub fn clients() -> Result<Clients> {
     let browser = Client::builder()
         .emulation(Emulation::Chrome137)
@@ -121,10 +129,7 @@ pub async fn get_json(
         }
         let snippet: String = body.chars().take(160).collect();
         let message = format!("HTTP {} from {url}: {snippet}", status.as_u16());
-        if status == StatusCode::REQUEST_TIMEOUT
-            || status == StatusCode::TOO_MANY_REQUESTS
-            || status.is_server_error()
-        {
+        if is_retryable_status(status) {
             return Err(retryable_error(message));
         }
         return Err(anyhow!(message));
@@ -141,6 +146,13 @@ async fn status_and_json(resp: Response, url: &str) -> Result<(StatusCode, serde
         .text()
         .await
         .map_err(|e| retryable_error(format!("reading POST response from {url}: {e}")))?;
+    if is_retryable_status(status) {
+        let snippet: String = text.chars().take(160).collect();
+        return Err(retryable_error(format!(
+            "HTTP {} from {url}: {snippet}",
+            status.as_u16()
+        )));
+    }
     let json = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     Ok((status, json))
 }
@@ -192,5 +204,25 @@ mod tests {
         let error = retryable_error("temporary".to_string()).context("provider fetch");
         assert!(is_retryable(&error));
         assert!(!is_retryable(&anyhow!("invalid session")));
+    }
+
+    #[test]
+    fn retryable_status_covers_timeout_rate_limit_and_server_errors() {
+        for status in [
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            assert!(is_retryable_status(status), "status={status}");
+        }
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+        ] {
+            assert!(!is_retryable_status(status), "status={status}");
+        }
     }
 }

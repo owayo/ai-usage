@@ -16,7 +16,7 @@ are fetched via OAuth alongside them.
 |------|------|
 | `src/profiles.rs` | Chrome profile discovery (`Local State`). |
 | `src/cookies.rs`  | macOS `v10` cookie decryption. |
-| `src/http.rs`     | `wreq` client with Chrome TLS/HTTP2 emulation (Cloudflare). |
+| `src/http.rs`     | `wreq` client with Chrome TLS/HTTP2 emulation (Cloudflare), deadlines, and shared transient-failure classification. |
 | `src/claude.rs` / `src/codex.rs` / `src/antigravity.rs` / `src/pixellab.rs` / `src/grok.rs` | Per-provider usage fetchers. |
 | `src/model.rs`    | `Provider` / `Usage` / `Window` / `WindowKind` data model. |
 | `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles + Antigravity/Grok tables) + `BrowserWants`. |
@@ -37,7 +37,8 @@ prefix rejection, live WAL visibility through read-only Cookie DB access, exact 
 filtering, numeric session-cookie chunk name matching (`.0`, `.1`, ...)
 (`cookies.rs`), Chrome profile discovery / cookie-store precedence
 (`profiles.rs`), org/window parsing (`claude.rs`/`codex.rs`), TOML config and
-`BrowserWants` (`config.rs`), display-name and active-row resolution
+`BrowserWants` (`config.rs`), display-name and active-row resolution including
+unusable provider-email fallback
 (`render.rs`), row sorting (`render/sort.rs`), table bar/humanize formatting
 (`render/table.rs`), statusline gauge/duration formatting
 (`render/statusline.rs`), Antigravity quota parsing including nested/flat
@@ -51,7 +52,8 @@ compatibility + `.0/.1` chunk join), overflow-safe JWT `exp` /
 typed monthly long slot with `generation_reset_date` (`pixellab.rs`), overflow-safe
 Grok token expiry (`grok.rs`), report-DTO
 building with reset-countdown clamping and old-cache compatibility (`report.rs`),
-retryable HTTP marker classification including response-body failures
+retryable HTTP marker/status classification including response-body failures and
+GET/POST `408` / `429` / `5xx` handling
 (`http.rs`), TOML-value escaping, provider resolution, and Chrome-discovery
 bypass for cached / OAuth-only modes (`main.rs`). Drive the network paths via
 `make build` + a real run.

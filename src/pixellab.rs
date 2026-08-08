@@ -20,7 +20,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use wreq::Client;
 
-use crate::http::{get_json, retryable_error};
+use crate::http::{get_json, is_retryable_status, retryable_error};
 use crate::model::{Usage, UsageRow, Window, WindowKind};
 
 /// www.pixellab.ai の Supabase auth Cookie。大きい token は Next.js と同じ `…token.0` /
@@ -279,10 +279,14 @@ async fn refresh_session(client: &Client, refresh: &str) -> Result<SessionTokens
         .map_err(|e| retryable_error(format!("reading POST response from {url}: {e}")))?;
     if !status.is_success() {
         let snippet: String = text.chars().take(160).collect();
-        bail!(
+        let message = format!(
             "Supabase refresh failed (HTTP {}): {snippet}",
             status.as_u16()
         );
+        if is_retryable_status(status) {
+            return Err(retryable_error(message));
+        }
+        bail!(message);
     }
     let v: Value =
         serde_json::from_str(&text).context("parsing Supabase refresh response as JSON")?;

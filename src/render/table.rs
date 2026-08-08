@@ -5,7 +5,7 @@ use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
 
 use super::sort::sorted_refs;
-use super::{ActiveTarget, brand_rgb, display_name, resolve_active};
+use super::{ActiveTarget, brand_rgb, display_name, preferred_email, resolve_active};
 use crate::SortKey;
 use crate::model::{AccountReport, Provider, Window};
 
@@ -42,11 +42,11 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
     // SortKey::Provider のときは入力(=ジョブ順)をそのまま保持。
     let ordered = sorted_refs(reports, sort, now, None);
     for r in ordered {
-        let row_email = match &r.usage {
+        let provider_email = match &r.usage {
             Ok(u) => u.email.as_deref(),
             Err(_) => None,
-        }
-        .or(r.profile_email.as_deref());
+        };
+        let row_email = preferred_email(provider_email, r.profile_email.as_deref());
         let name = display_name(
             r.label.as_deref(),
             row_email,

@@ -18,6 +18,20 @@ use crate::SortKey;
 use crate::model::{Provider, WindowKind};
 use crate::report::{AccountOut, Report};
 
+/// provider 側の email を優先し、表示・照合に使えない値なら Chrome profile 側へ
+/// フォールバックする。空文字と local-part のない値で有効な profile email を遮らない。
+fn preferred_email<'a>(
+    provider_email: Option<&'a str>,
+    profile_email: Option<&'a str>,
+) -> Option<&'a str> {
+    let usable = |email: Option<&'a str>| {
+        let email = email?.trim();
+        email.split('@').next().filter(|local| !local.is_empty())?;
+        Some(email)
+    };
+    usable(provider_email).or_else(|| usable(profile_email))
+}
+
 /// user に表示する account label。config label があればそれを使い、なければ provider account
 /// email の username 部(例: `work@example.com` → `work`)に fallback する。さらに Chrome
 /// profile email の username、profile 名の順で fallback する。
@@ -30,8 +44,7 @@ fn display_name<'a>(
     if let Some(l) = label.filter(|s| !s.is_empty()) {
         return l.to_string();
     }
-    email
-        .or(profile_email)
+    preferred_email(email, profile_email)
         .and_then(|e| e.split('@').next())
         .filter(|s| !s.is_empty())
         .map(str::to_string)
@@ -202,6 +215,24 @@ mod tests {
         // 行メール無し → プロファイルメール。
         let n = display_name(None, None, Some("bob@example.com"), "Work");
         assert_eq!(n, "bob");
+    }
+
+    #[test]
+    fn display_name_skips_unusable_provider_email() {
+        // provider 応答の空値や local-part 欠落が、有効な profile email を遮らない。
+        let empty = display_name(None, Some(""), Some("bob@example.com"), "Work");
+        assert_eq!(empty, "bob");
+        let missing_local = display_name(
+            None,
+            Some("@example.com"),
+            Some("carol@example.com"),
+            "Work",
+        );
+        assert_eq!(missing_local, "carol");
+        assert_eq!(
+            preferred_email(Some("  "), Some("dave@example.com")),
+            Some("dave@example.com")
+        );
     }
 
     #[test]
