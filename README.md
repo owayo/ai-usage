@@ -323,7 +323,9 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
    5-hour window, the 5-hour slot is collapsed and the long-window slot expands into a
    wider bar spanning the same total width as the two-slot layout.
 6. **Grok** — reads OAuth credentials from `~/.grok/auth.json` (written by `grok login`),
-   refreshing the access token via `auth.x.ai/oauth2/token` (`refresh_token` grant, public
+   choosing the newest complete credential when the file contains multiple entries and
+   ignoring incomplete entries, then refreshing the access token
+   via `auth.x.ai/oauth2/token` (`refresh_token` grant, public
    OAuth client — no secret) when it is about to expire. Calls
    `cli-chat-proxy.grok.com/v1/user?include=subscription` for the plan (`subscriptionTier`
    → falls back to `Free`) and `cli-chat-proxy.grok.com/v1/billing` for the monthly cycle

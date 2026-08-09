@@ -50,7 +50,7 @@ plus wrapped/flat
 compatibility + `.0/.1` chunk join), overflow-safe JWT `exp` /
 `email` extraction, `/get-account-data` + `/get-subscription` folding into the
 typed monthly long slot with `generation_reset_date` (`pixellab.rs`), overflow-safe
-Grok token expiry (`grok.rs`), report-DTO
+Grok token expiry and newest-usable multi-entry auth selection (`grok.rs`), report-DTO
 building with reset-countdown clamping and old-cache compatibility (`report.rs`),
 retryable HTTP marker/status classification including response-body failures and
 GET/POST `408` / `429` / `5xx` handling
@@ -190,8 +190,9 @@ Auth flow:
 1. Read `~/.grok/auth.json`. The top-level key is a dynamic
    `"<oidc_issuer>::<oidc_client_id>"` string; the entry value carries
    `key` (access-token JWT), `refresh_token`, `expires_at`, `oidc_issuer`,
-   `oidc_client_id`, `email`. If several entries are present the newest
-   `create_time` wins. A flat document (no wrapper key) is also accepted.
+   `oidc_client_id`, `email`. If several entries are present the newest complete
+   entry by `create_time` wins; incomplete entries are skipped. A flat document
+   (no wrapper key) is also accepted.
 2. Refresh via `POST <oidc_issuer>/oauth2/token` with
    `grant_type=refresh_token`, `refresh_token=…`, `client_id=…` when
    `expires_at` is within 60 s. `grok` CLI is a public OAuth client so

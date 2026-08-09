@@ -266,18 +266,31 @@ fn parse_auth_document(data: &str) -> Result<Auth> {
     })
 }
 
-/// `{"<issuer>::<client_id>": {...}}` 形式から最も新しい entry を選ぶ。
+/// 認証処理に必要な文字列がすべて揃っている entry だけを候補にする。
+fn is_usable_auth_entry(v: &Value) -> bool {
+    ["key", "refresh_token", "oidc_client_id"]
+        .into_iter()
+        .all(|key| {
+            v.get(key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        })
+}
+
+/// `{"<issuer>::<client_id>": {...}}` 形式から最も新しい使用可能な entry を選ぶ。
 /// 単一 entry しか無い一般的ケースで hashmap 順序に依存させないための helper。
 fn select_entry(v: &Value) -> Option<&Value> {
     let obj = v.as_object()?;
     // すでに `key` を持つトップレベルなら wrapper 無し形として扱う。
-    if obj.contains_key("key") && obj.contains_key("refresh_token") {
+    if is_usable_auth_entry(v) {
         return Some(v);
     }
     // 動的キーの中身から entry を選ぶ。create_time が新しい方を優先。
     let mut best: Option<(&Value, i64)> = None;
     for (_, val) in obj {
-        if !val.is_object() {
+        // 途中まで書かれた entry や将来追加されるメタデータを、有効な認証情報より
+        // 優先しない。parse_auth_document が必要とする 3 項目を選択時にも確認する。
+        if !is_usable_auth_entry(val) {
             continue;
         }
         let ts = val
@@ -507,6 +520,34 @@ mod tests {
         });
         let entry = select_entry(&doc).unwrap();
         assert_eq!(entry.get("key").and_then(Value::as_str), Some("new-token"));
+    }
+
+    #[test]
+    fn parse_auth_document_skips_newer_unusable_entry() {
+        let doc = json!({
+            "https://auth.x.ai::valid": {
+                "key": "valid-token",
+                "refresh_token": "valid-refresh",
+                "oidc_issuer": "https://auth.x.ai",
+                "oidc_client_id": "valid-client",
+                "create_time": "2026-06-01T00:00:00Z",
+            },
+            "https://auth.x.ai::incomplete": {
+                "key": "partial-token",
+                "create_time": "2026-07-01T00:00:00Z",
+            },
+            "https://auth.x.ai::empty": {
+                "key": "",
+                "refresh_token": "empty-refresh",
+                "oidc_client_id": "empty-client",
+                "create_time": "2026-08-01T00:00:00Z",
+            },
+        });
+
+        let auth = parse_auth_document(&doc.to_string()).unwrap();
+        assert_eq!(auth.access, "valid-token");
+        assert_eq!(auth.refresh, "valid-refresh");
+        assert_eq!(auth.client_id, "valid-client");
     }
 
     #[test]

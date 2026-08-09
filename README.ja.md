@@ -320,7 +320,9 @@ flowchart LR
    ない provider は 5h スロットを畳んで長期スロットを横長バー(通常の 2 スロット分の
    横幅)に拡張する。
 6. **Grok** — `~/.grok/auth.json` (`grok login` が書き出す) の OAuth 情報を読み、
-   期限が近ければ `auth.x.ai/oauth2/token` (`refresh_token` grant、public OAuth
+   複数の認証 entry がある場合は必要項目の揃った最新 entry を選び、不完全な entry は
+   無視する。期限が近ければ `auth.x.ai/oauth2/token`
+   (`refresh_token` grant、public OAuth
    client なので secret 不要) で更新した上で
    `cli-chat-proxy.grok.com/v1/user?include=subscription` でプラン (`subscriptionTier`
    → null は `Free`) を、`cli-chat-proxy.grok.com/v1/billing` で月次サイクル
