@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Working notes for `ai-usage`. See `README.md` for the user-facing overview.
 
@@ -38,7 +38,7 @@ filtering, numeric session-cookie chunk name matching (`.0`, `.1`, ...)
 (`cookies.rs`), Chrome profile discovery / cookie-store precedence
 (`profiles.rs`), org/window parsing (`claude.rs`/`codex.rs`), TOML config and
 `BrowserWants` (`config.rs`), display-name and active-row resolution including
-unusable provider-email fallback
+malformed provider-email fallback (missing/empty/duplicate `@` separators)
 (`render.rs`), row sorting (`render/sort.rs`), table bar/humanize formatting
 (`render/table.rs`), statusline gauge/duration formatting
 (`render/statusline.rs`), Antigravity quota parsing including nested/flat

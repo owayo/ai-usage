@@ -26,8 +26,8 @@ fn preferred_email<'a>(
 ) -> Option<&'a str> {
     let usable = |email: Option<&'a str>| {
         let email = email?.trim();
-        email.split('@').next().filter(|local| !local.is_empty())?;
-        Some(email)
+        let (local, domain) = email.split_once('@')?;
+        (!local.is_empty() && !domain.is_empty() && !domain.contains('@')).then_some(email)
     };
     usable(provider_email).or_else(|| usable(profile_email))
 }
@@ -155,10 +155,10 @@ fn window_label(kind: Option<WindowKind>, legacy: &'static str) -> &'static str 
 /// (`brand_sgr` の ANSI truecolor)で共有する単一 source。
 fn brand_rgb(p: Provider) -> (u8, u8, u8) {
     match p {
-        Provider::Claude => (217, 119, 87), // Anthropic coral #D97757
-        Provider::Codex => (16, 163, 127),  // OpenAI teal #10A37F
-        Provider::Antigravity => (66, 133, 244), // Google blue #4285F4
-        Provider::PixelLab => (132, 204, 22), // pixel-art yellow-green (Tailwind lime-500) #84CC16
+        Provider::Claude => (217, 119, 87), // Anthropic のコーラル #D97757
+        Provider::Codex => (16, 163, 127),  // OpenAI のティール #10A37F
+        Provider::Antigravity => (66, 133, 244), // Google のブルー #4285F4
+        Provider::PixelLab => (132, 204, 22), // ピクセルアート調の黄緑 #84CC16
         // xAI brand は白/黒基調で dark 背景では黒が沈むため、識別性の高い
         // 明るい cyan(Tailwind cyan-400 #22D3EE)を採用する。
         Provider::Grok => (34, 211, 238),
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn display_name_skips_unusable_provider_email() {
-        // provider 応答の空値や local-part 欠落が、有効な profile email を遮らない。
+        // provider 応答の空値や不正な形式が、有効な profile email を遮らない。
         let empty = display_name(None, Some(""), Some("bob@example.com"), "Work");
         assert_eq!(empty, "bob");
         let missing_local = display_name(
@@ -229,6 +229,12 @@ mod tests {
             "Work",
         );
         assert_eq!(missing_local, "carol");
+        for malformed in ["carol", "carol@", "carol@@example.com"] {
+            assert_eq!(
+                preferred_email(Some(malformed), Some("dave@example.com")),
+                Some("dave@example.com")
+            );
+        }
         assert_eq!(
             preferred_email(Some("  "), Some("dave@example.com")),
             Some("dave@example.com")
