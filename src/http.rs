@@ -69,9 +69,9 @@ pub fn clients() -> Result<Clients> {
     let browser = Client::builder()
         .emulation(Emulation::Chrome137)
         .user_agent(UA)
-        // wreq 5.3.0 が依存する lru 0.13.0 の IterMut には RUSTSEC-2026-0002 がある。
-        // wreq で該当 API を呼ぶのはアイドル接続プールだけなので、修正版 lru を使う
-        // 安定版 wreq が出るまではプールを無効化して問題経路を到達不能にする。
+        // wreq 5.3.0 が依存する lru 0.13.0 には、`iter_mut` の RUSTSEC-2026-0002 と
+        // `pop` の RUSTSEC-2026-0253 がある。修正版 lru を使う安定版 wreq が出るまでは、
+        // 接続プールを無効化して両方の問題経路を到達不能にする。
         .pool_max_idle_per_host(0)
         .timeout(REQUEST_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)

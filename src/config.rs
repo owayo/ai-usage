@@ -43,7 +43,7 @@ pub struct StatuslineCfg {
     pub hide: Vec<String>,
 }
 
-/// Antigravity provider config(top-level `[antigravity]`)。
+/// Antigravity プロバイダ設定(トップレベルの `[antigravity]`)。
 #[derive(Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct AntigravityCfg {
@@ -55,7 +55,7 @@ pub struct AntigravityCfg {
     pub label: Option<String>,
 }
 
-/// Grok provider config(top-level `[grok]`)。
+/// Grok プロバイダ設定(トップレベルの `[grok]`)。
 #[derive(Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct GrokCfg {

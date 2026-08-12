@@ -1,5 +1,5 @@
 //! profile の `sessionKey` Cookie で認証し、claude.ai web API から Claude 使用量を取得する:
-//!   GET /api/organizations            -> organization uuid
+//!   GET /api/organizations            -> 組織 UUID
 //!   GET /api/organizations/{id}/usage -> { five_hour, seven_day, ... }
 
 use std::collections::HashMap;

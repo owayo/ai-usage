@@ -111,3 +111,56 @@ pub struct AccountReport {
     pub group_label: Option<String>,
     pub usage: anyhow::Result<Usage>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_labels_and_ranks_cover_every_variant() {
+        let cases = [
+            (Provider::Claude, "Claude", 0),
+            (Provider::Codex, "Codex", 1),
+            (Provider::Antigravity, "Antigravity", 2),
+            (Provider::PixelLab, "PixelLab", 3),
+            (Provider::Grok, "Grok", 4),
+        ];
+
+        for (provider, label, rank) in cases {
+            assert_eq!(provider.label(), label);
+            assert_eq!(provider.rank(), rank);
+        }
+    }
+
+    #[test]
+    fn provider_json_names_remain_lowercase() {
+        let cases = [
+            (Provider::Claude, "\"claude\""),
+            (Provider::Codex, "\"codex\""),
+            (Provider::Antigravity, "\"antigravity\""),
+            (Provider::PixelLab, "\"pixellab\""),
+            (Provider::Grok, "\"grok\""),
+        ];
+
+        for (provider, json) in cases {
+            assert_eq!(serde_json::to_string(&provider).unwrap(), json);
+            assert_eq!(serde_json::from_str::<Provider>(json).unwrap(), provider);
+        }
+    }
+
+    #[test]
+    fn window_kind_labels_and_json_names_cover_every_variant() {
+        let cases = [
+            (WindowKind::FiveHour, "5h", "\"five_hour\""),
+            (WindowKind::Daily, "1d", "\"daily\""),
+            (WindowKind::Weekly, "1w", "\"weekly\""),
+            (WindowKind::Monthly, "1m", "\"monthly\""),
+        ];
+
+        for (kind, label, json) in cases {
+            assert_eq!(kind.label(), label);
+            assert_eq!(serde_json::to_string(&kind).unwrap(), json);
+            assert_eq!(serde_json::from_str::<WindowKind>(json).unwrap(), kind);
+        }
+    }
+}

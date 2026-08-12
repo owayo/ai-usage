@@ -61,10 +61,11 @@ bypass for cached / OAuth-only modes (`main.rs`). Drive the network paths via
 ## Dependency safety
 
 Stable `wreq` 5.3 currently pulls `lru` 0.13, which is covered by
-RUSTSEC-2026-0002. All `wreq::Client` builders therefore set
-`pool_max_idle_per_host(0)` so the affected idle-pool `iter_mut` path is not
-used. Keep this mitigation until a stable `wreq` release depends on a patched
-`lru`.
+RUSTSEC-2026-0002 (`iter_mut`) and RUSTSEC-2026-0253 (`pop`). All
+`wreq::Client` builders therefore set `pool_max_idle_per_host(0)`. In `wreq`
+5.3 this makes the pool configuration disabled, so neither affected idle-pool
+path is reachable. Keep this mitigation until a stable `wreq` release depends
+on a patched `lru`.
 
 ## Adding a provider
 

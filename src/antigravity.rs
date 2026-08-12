@@ -58,7 +58,7 @@ async fn local_fetch() -> Result<Vec<UsageRow>> {
     let local = Client::builder()
         .cert_verification(false)
         .verify_hostname(false)
-        // http.rs と同じく、wreq 5.3.0 の接続プールが通る lru の unsound 経路を避ける。
+        // http.rs と同じく接続プールを無効化し、lru 0.13.0 の健全性違反経路を避ける。
         .pool_max_idle_per_host(0)
         .build()
         .context("building localhost client")?;
