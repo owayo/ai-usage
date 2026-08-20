@@ -40,8 +40,9 @@ filtering, numeric session-cookie chunk name matching (`.0`, `.1`, ...)
 `BrowserWants` (`config.rs`), display-name and active-row resolution including
 malformed provider-email fallback (missing/empty/duplicate `@` separators)
 (`render.rs`), row sorting (`render/sort.rs`), table bar/humanize formatting
-(`render/table.rs`), statusline gauge/duration formatting
-(`render/statusline.rs`), Antigravity quota parsing including nested/flat
+(`render/table.rs`), statusline gauge/duration formatting and provider-aware
+monthly reset thresholds for legacy caches (`render/statusline.rs`), Antigravity
+quota parsing including nested/flat
 `remainingFraction`, missing-quota rejection, ISO-8601 and epoch-second
 `resetTime`, app/IDE CSRF process-argument extraction, overflow-safe token expiry,
 plus wrapped/flat
@@ -242,7 +243,9 @@ The serialized account keys remain `five_hour` / `weekly` for external and
 cache compatibility, while each non-null window now includes a `kind`
 (`five_hour` / `daily` / `weekly` / `monthly`). `kind` is optional during
 deserialization so caches written by older binaries still render with the
-legacy slot/provider label fallback.
+legacy slot/provider label fallback. Legacy PixelLab and Grok rows also use
+monthly reset-warning thresholds, matching their `1m` labels instead of the
+weekly defaults.
 
 `--statusline --input <cache>` is a cache-only render path: it must not discover
 Chrome profiles, access Keychain, or call the network. `--list-profiles` and

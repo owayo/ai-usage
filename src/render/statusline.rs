@@ -150,8 +150,8 @@ fn render_identity(
 
 /// quota の空表示・単一枠・二枠表示を選び、statusline 後半を組み立てる。
 fn render_windows(account: &AccountOut, opts: &StatuslineOpts, now: DateTime<Utc>) -> String {
-    // 長期(right)スロットの label は provider ごとの reset サイクルに合わせる。
-    // PixelLab は月次生成枠なので "1m"、それ以外は従来どおり "1w"。
+    // 長期(right)スロットのラベルはプロバイダーごとのリセット周期に合わせる。
+    // PixelLab / Grok は月次枠なので "1m"、それ以外は従来どおり "1w"。
     let short_label = window_label(account.short.as_ref().and_then(|window| window.kind), "5h");
     let long_label = window_label(
         account.long.as_ref().and_then(|window| window.kind),
@@ -170,7 +170,7 @@ fn render_windows(account: &AccountOut, opts: &StatuslineOpts, now: DateTime<Utc
             long_label,
             None,
             now,
-            WEEK_TH,
+            legacy_long_window_thresholds(account.provider),
             opts.reset_at,
             gauge_width,
         );
@@ -181,7 +181,12 @@ fn render_windows(account: &AccountOut, opts: &StatuslineOpts, now: DateTime<Utc
     // 横幅 = 2 スロット + 区切り 3 文字 と等しくなるよう wide_gauge = 2*gauge + 19。
     let single_window = match (account.short.as_ref(), account.long.as_ref()) {
         (Some(w), None) => Some((w, short_label, FIVE_H_TH, false)),
-        (None, Some(w)) => Some((w, long_label, WEEK_TH, opts.reset_at)),
+        (None, Some(w)) => Some((
+            w,
+            long_label,
+            legacy_long_window_thresholds(account.provider),
+            opts.reset_at,
+        )),
         _ => None,
     };
     if let Some((window, label, legacy_thresholds, show_reset_at)) = single_window {
@@ -211,7 +216,10 @@ fn render_windows(account: &AccountOut, opts: &StatuslineOpts, now: DateTime<Utc
             long_label,
             account.long.as_ref(),
             now,
-            window_thresholds(account.long.as_ref(), WEEK_TH),
+            window_thresholds(
+                account.long.as_ref(),
+                legacy_long_window_thresholds(account.provider),
+            ),
             opts.reset_at,
             gauge_width,
         );
@@ -226,6 +234,15 @@ fn window_thresholds(w: Option<&WindowOut>, legacy: [i64; 3]) -> [i64; 3] {
         Some(WindowKind::Weekly) => WEEK_TH,
         Some(WindowKind::Monthly) => MONTHLY_TH,
         None => legacy,
+    }
+}
+
+/// `kind` を持たない旧キャッシュ用の長期枠しきい値。
+/// ラベルと同じく PixelLab / Grok は月次、それ以外は週次として扱う。
+fn legacy_long_window_thresholds(provider: Provider) -> [i64; 3] {
+    match provider {
+        Provider::PixelLab | Provider::Grok => MONTHLY_TH,
+        _ => WEEK_TH,
     }
 }
 
@@ -498,5 +515,41 @@ mod tests {
             "short-only window must not show absolute reset time: {line:?}"
         );
         assert_eq!(gauge_glyphs, 51);
+    }
+
+    #[test]
+    fn legacy_monthly_window_uses_monthly_reset_thresholds() {
+        // 旧キャッシュでは kind が欠落する。PixelLab の 2 日後リセットは、
+        // 週次の黄色ではなく月次の危険域(3 日未満)として赤で表示する。
+        assert_eq!(legacy_long_window_thresholds(Provider::Grok), MONTHLY_TH);
+        assert_eq!(legacy_long_window_thresholds(Provider::Claude), WEEK_TH);
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let account = AccountOut {
+            profile: "PixelLab".to_string(),
+            provider: Provider::PixelLab,
+            ok: true,
+            plan: None,
+            email: None,
+            profile_email: None,
+            label: None,
+            group_label: None,
+            short: None,
+            long: Some(WindowOut {
+                kind: None,
+                used_percent: 10.0,
+                resets_at: Some("2026-06-17T00:00:00Z".to_string()),
+                resets_in_seconds: Some(2 * 86400),
+            }),
+            error: None,
+        };
+        let mut opts = plain_opts();
+        opts.color = true;
+
+        let rendered = render_windows(&account, &opts, now);
+        assert!(rendered.contains("1m "), "月次ラベルがない: {rendered:?}");
+        assert!(
+            rendered.contains("\x1b[38;5;196m2d00h "),
+            "月次しきい値の赤色になっていない: {rendered:?}"
+        );
     }
 }

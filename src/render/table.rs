@@ -27,7 +27,7 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
     let now = Utc::now();
     let mut table = Table::new();
     table
-        .load_preset(UTF8_FULL)
+        .load_style(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(vec![
             "Account",
