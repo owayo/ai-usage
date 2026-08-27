@@ -26,6 +26,39 @@ are fetched via OAuth alongside them.
 | `src/render/sort.rs` / `src/render/table.rs` / `src/render/statusline.rs` | Row sorting (`SortableRow`), human table, compact statusline. |
 | `src/main.rs`     | CLI, profile/provider resolution, concurrent fetch. |
 
+## Transient failures vs auth failures
+
+`http.rs` marks recoverable failures by wrapping them in a private
+`RetryableHttpError` and exposes `is_retryable()`; `main.rs` retries only those.
+Provider modules that refresh a token on 401/403 (`pixellab.rs`, `grok.rs`) must
+consult `is_retryable()` **before** matching on the message text. The Cloudflare
+challenge string is literally `Cloudflare challenge (HTTP 403). …`, so a naive
+`contains("HTTP 403")` classifies a transient block as an expired session: it
+burns a rotation-tracked refresh token, replaces the retryable marker with a
+non-retryable refresh error (killing the backoff retries), and reports
+"Re-run `grok login`" for what was a temporary block. Keep the marker check
+first in any new `is_auth_error`.
+
+Related: the whole tool is read-only with respect to credentials — it never
+writes a rotated refresh token back to the Chrome cookie or `auth.json`. Each
+`fetch` therefore refreshes **at most once**, so the stored token stays at most
+one generation behind.
+
+## Degrading instead of failing
+
+Chrome discovery failure is not fatal outside the Chrome-centric information
+modes. `--list-profiles` / `--init-config` still return the error, but a normal
+run reports `skipping Chrome profiles: …` on stderr and continues with zero
+browser profiles, so the OAuth-only providers (Antigravity, Grok) still render.
+Before this, a machine without Chrome produced output only when `--only
+antigravity` / `--only grok` was passed — the `needs_profile_discovery()` bypass
+existed but auto mode failed hard.
+
+`config::load` degrades to auto mode on any unreadable config, but only stays
+silent for "the *default* path does not exist". An explicitly passed `--config`
+that is missing, a directory, or unreadable is reported on stderr, so a typo
+does not masquerade as "my config is being ignored".
+
 ## Build / check
 
 `make build` · `make release` · `make install` · `make check` (clippy
@@ -36,22 +69,27 @@ covering pure logic: cookie decryption round-trips and malformed schema-v24
 prefix rejection, live WAL visibility through read-only Cookie DB access, exact provider-domain
 filtering, numeric session-cookie chunk name matching (`.0`, `.1`, ...)
 (`cookies.rs`), Chrome profile discovery / cookie-store precedence
-(`profiles.rs`), org/window parsing (`claude.rs`/`codex.rs`), TOML config and
+(`profiles.rs`), org/window parsing (`claude.rs`/`codex.rs`), TOML config
+loading including explicit-path and invalid-file fallbacks, and
 `BrowserWants` (`config.rs`), display-name and active-row resolution including
 malformed provider-email fallback (missing/empty/duplicate `@` separators)
 (`render.rs`), row sorting (`render/sort.rs`), table bar/humanize formatting
-(`render/table.rs`), statusline gauge/duration formatting and provider-aware
-monthly reset thresholds for legacy caches (`render/statusline.rs`), Antigravity
-quota parsing including nested/flat
+(`render/table.rs`), statusline gauge/duration formatting, provider-aware
+monthly reset thresholds for legacy caches, and display-width name padding
+(over-long / exactly-fitting / full-width names) (`render/statusline.rs`),
+Antigravity quota parsing including nested/flat
 `remainingFraction`, missing-quota rejection, ISO-8601 and epoch-second
 `resetTime`, app/IDE CSRF process-argument extraction, overflow-safe token expiry,
+the local-path timeout budget that keeps the OAuth fallback reachable,
 plus wrapped/flat
 `GetUserStatus` shapes (`antigravity.rs`), PixelLab Supabase cookie parsing
 (legacy JSON-array + `base64-…` unpadded Base64URL object forms + standard-Base64
 compatibility + `.0/.1` chunk join), overflow-safe JWT `exp` /
 `email` extraction, `/get-account-data` + `/get-subscription` folding into the
 typed monthly long slot with `generation_reset_date` (`pixellab.rs`), overflow-safe
-Grok token expiry and newest-usable multi-entry auth selection (`grok.rs`), report-DTO
+Grok token expiry and newest-usable multi-entry auth selection (`grok.rs`),
+auth-vs-retryable classification driven by the real Cloudflare-challenge string
+(`pixellab.rs` / `grok.rs`), report-DTO
 building with reset-countdown clamping and old-cache compatibility (`report.rs`),
 retryable HTTP marker/status classification including response-body failures and
 GET/POST `408` / `429` / `5xx` handling
@@ -61,12 +99,42 @@ bypass for cached / OAuth-only modes (`main.rs`). Drive the network paths via
 
 ## Dependency safety
 
-Stable `wreq` 5.3 currently pulls `lru` 0.13, which is covered by
-RUSTSEC-2026-0002 (`iter_mut`) and RUSTSEC-2026-0253 (`pop`). All
-`wreq::Client` builders therefore set `pool_max_idle_per_host(0)`. In `wreq`
-5.3 this makes the pool configuration disabled, so neither affected idle-pool
-path is reachable. Keep this mitigation until a stable `wreq` release depends
-on a patched `lru`.
+`wreq` 5.x and `wreq-util` 2.x were yanked in 2026-08 when upstream reset its
+version numbering (`wreq` 5.3.0 → 0.15.3, `wreq-util` 2.2.6 → 0.1.0; the
+`6.0.0-rc.*` / `3.0.0-rc.*` lines are frozen — see
+<https://github.com/0x676e67/wreq/issues/1254>). This project tracks the current
+`wreq` 0.16.x + `wreq-util` 0.2.x line. Upstream ships breaking changes as new
+minor versions (0.16 → 0.17), so bump both crates together and re-check the API
+surface used in `http.rs` / `antigravity.rs` (`emulation`,
+`tls_cert_verification`, `tls_verify_hostname`, `RequestBuilder::form`).
+
+`wreq` 0.16 depends on `lru` ≥ 0.18.2, which fixes RUSTSEC-2026-0002
+(`iter_mut`) and RUSTSEC-2026-0253 (`pop`). The former
+`pool_max_idle_per_host(0)` workaround that disabled connection pooling was
+therefore removed; run `cargo audit` after every dependency update.
+
+Feature flags on `wreq` 0.16: `form` is required for `RequestBuilder::form`
+(used by `post_form`), `system-proxy` keeps the macOS system-proxy detection
+that 5.x enabled by default (`macos-system-configuration`), and `charset` stays
+off because every endpoint returns UTF-8 JSON (`Response::text` then decodes as
+UTF-8 only). The browser client uses `Emulation::Chrome149` so the TLS/HTTP2
+fingerprint and `sec-ch-ua` brand version match the pinned `UA` constant.
+`ClientBuilder::emulation` overwrites the TLS / HTTP1 / HTTP2 / default-header
+sets in one call, so it must come **before** `user_agent` — the current order is
+correct and swapping it would silently drop the pinned `UA`.
+
+`system-proxy` pulls `system-configuration`, and that crate's version matters:
+0.6.x panics (`Attempted to create a NULL object`, `dynamic_store.rs`) when
+`SCDynamicStoreCreateWithOptions` returns NULL because `configd` is unreachable,
+which crashes the whole binary in sandboxed environments. 0.7.0 returns `None`
+instead, and `wreq` 0.16 handles that. The 0.16 line therefore also fixed a
+reachable panic — confirm `system-configuration` stays at ≥ 0.7 after dependency
+bumps (`cargo tree -p wreq -i system-configuration`).
+
+Note that `wreq` enables the system proxy by default (`auto_sys_proxy = true`)
+and applies **no loopback exclusion**, so any client that must not leave the
+machine has to call `no_proxy()` explicitly — see the Antigravity localhost
+client below.
 
 ## Adding a provider
 
@@ -159,6 +227,22 @@ Quota sources, in CodexBar's preference order:
    or override with `ANTIGRAVITY_OAUTH_CLIENT_ID` / `ANTIGRAVITY_OAUTH_CLIENT_SECRET`.
    Needs no running process.
 
+The localhost client is built separately from `http.rs`'s pair because it must
+disable TLS certificate **and** hostname verification for the self-signed
+`language_server`. Three properties are load-bearing and must survive edits:
+
+- `no_proxy()` — `wreq` applies the system/env proxy to `127.0.0.1` as well, and
+  with verification disabled a proxy could terminate TLS and read the
+  `X-Codeium-Csrf-Token`.
+- `timeout` / `connect_timeout` — `wreq`'s defaults are "no timeout", and its
+  only built-in fallback (`tcp_user_timeout`) is Linux-only.
+- An overall cap on the whole local path (`LOCAL_FETCH_TIMEOUT`), because
+  `local_endpoints()` returns the product of processes × listening ports and
+  issues two requests per endpoint. Without the cap, one hung language_server
+  consumes `main.rs`'s `JOB_DEADLINE` and the OAuth fallback never runs — the
+  row fails even with a valid token. `local_timeouts_leave_budget_for_the_oauth_fallback`
+  locks this relationship in.
+
 Map to `Window`: `groups[].buckets[].remaining.remainingFraction` or flat
 `remainingFraction` → `used_percent = (1 - remainingFraction) * 100`; bucket
 reset metadata / `resetTime` (ISO-8601, epoch-seconds fallback) → `resets_at`.
@@ -238,6 +322,16 @@ will revert to the dual-slot layout automatically (see the same fallback in
 (TTL ~120s, refreshed asynchronously so drawing never blocks), then renders it
 with `ai-usage --statusline --input <cache>`. The cache filename tracks the
 binary name.
+
+Unlike the table (where comfy-table measures widths), the statusline builds its
+columns by hand, so every field must be padded by **display width**, not
+`char` count. `format!("{s:<11}")` counts `char`s and never truncates: a
+full-width label takes two columns per `char`, a label of exactly the field
+width leaves no separator (`development5h ███…`), and a longer one shifts the
+whole row. `pad_display()` measures with `unicode-width`, truncates what does
+not fit, and always keeps at least one separator column. Labels come from
+user-supplied config, email local-parts, and Chrome profile names, so all three
+cases occur in practice.
 
 The serialized account keys remain `five_hour` / `weekly` for external and
 cache compatibility, while each non-null window now includes a `kind`

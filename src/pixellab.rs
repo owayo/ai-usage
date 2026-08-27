@@ -163,15 +163,22 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
 
     // access token が期限切れなら refresh してから叩く。期限内でも失敗したら
     // 401/403 fallback で refresh を試す(clock skew や revoke 対策)。
+    let mut refreshed = false;
     if !access_token_fresh(&session.access) {
         session = refresh_session(client, &session.refresh)
             .await
             .context("refreshing PixelLab access token")?;
+        refreshed = true;
     }
 
     let account = match get_account_data(client, &session.access).await {
         Ok(v) => v,
-        Err(e) if is_auth_error(&e) => {
+        // 1 回の fetch で refresh は 1 度だけ。直前に発行されたばかりの access token が
+        // 401 を返す状況は refresh では回復せず(revoke なら refresh token も無効)、
+        // Supabase は refresh token を rotation するため、2 回目を撃つと Cookie 側の
+        // token が現行の 2 世代前になる。ai-usage は Cookie を書き戻さない読み取り専用
+        // ツールなので、世代を進める回数は最小限にする。
+        Err(e) if is_auth_error(&e) && !refreshed => {
             session = refresh_session(client, &session.refresh)
                 .await
                 .context("refreshing after unauthorized response")?;
@@ -223,8 +230,18 @@ fn jwt_email(access: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Cloudflare の challenge / 401 / 403(auth 期限切れ)を detect する。
+/// token refresh で回復し得る auth 失敗(401 / 403 / `Invalid token`)を detect する。
+///
+/// retryable marker が付いたエラーは対象外。`http.rs` の Cloudflare challenge は
+/// "Cloudflare challenge (HTTP 403)..." という文言で、素朴な部分一致では 403 と
+/// 区別できない。それを auth 失敗と誤認すると (1) 無駄な refresh で Supabase の
+/// rotation 対象 refresh token を焼き、(2) refresh 側の失敗で retryable marker が
+/// 上書きされて backoff 再試行が丸ごと skip され、(3) 一時的な challenge なのに
+/// 認証切れの案内が出る。一過性の通信失敗は refresh ではなく再試行に回す。
 fn is_auth_error(err: &anyhow::Error) -> bool {
+    if crate::http::is_retryable(err) {
+        return false;
+    }
     let msg = format!("{err:#}");
     msg.contains("HTTP 401") || msg.contains("HTTP 403") || msg.contains("Invalid token")
 }
@@ -636,5 +653,33 @@ mod tests {
             "GET https://api.pixellab.ai/x: connection refused"
         )));
         assert!(!is_auth_error(&anyhow!("HTTP 500 from url")));
+    }
+
+    #[test]
+    fn is_auth_error_ignores_retryable_cloudflare_challenge() {
+        // http.rs が実際に組み立てる文言をそのまま使う。"(HTTP 403)" を含むため
+        // 素朴な部分一致では auth 失敗と区別できず、rotation 対象の refresh token を
+        // 無駄に焼いたうえ、refresh 側の失敗で retryable marker が上書きされて
+        // backoff 再試行が skip されていた。
+        let challenge = crate::http::retryable_error(
+            "Cloudflare challenge (HTTP 403). Open the site in this Chrome profile to \
+             refresh its session, then retry."
+                .to_string(),
+        );
+        assert!(crate::http::is_retryable(&challenge));
+        assert!(!is_auth_error(&challenge));
+
+        // context で包んでも marker は chain に残るので判定は変わらない。
+        let wrapped = challenge.context("fetching /get-account-data");
+        assert!(!is_auth_error(&wrapped));
+
+        // marker の無い素の 401/403/Invalid token は従来どおり auth 失敗のまま。
+        assert!(is_auth_error(&anyhow!(
+            "HTTP 401 from https://api.pixellab.ai/get-account-data: {{\"detail\":\"nope\"}}"
+        )));
+        // body の snippet に "Invalid token" が紛れ込んだ retryable な 5xx も除外する。
+        assert!(!is_auth_error(&crate::http::retryable_error(
+            "HTTP 503 from https://api.pixellab.ai/x: {{\"detail\":\"Invalid token\"}}".to_string()
+        )));
     }
 }

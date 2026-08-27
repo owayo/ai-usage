@@ -21,7 +21,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// installed Chrome と合わせた User-Agent。その Chrome で発行された `cf_clearance` Cookie を
-/// Cloudflare に有効と判定させる。
+/// Cloudflare に有効と判定させる。`Emulation::Chrome149` の既定 UA と同一だが、TLS/HTTP2
+/// fingerprint と UA の版数対応を見える形で固定するため、定数として明示している。
 pub const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
 
@@ -67,18 +68,15 @@ pub(crate) fn is_retryable_status(status: StatusCode) -> bool {
 
 pub fn clients() -> Result<Clients> {
     let browser = Client::builder()
-        .emulation(Emulation::Chrome137)
+        // UA 定数と同じ Chrome 149 の TLS/HTTP2/ヘッダ(`sec-ch-ua` のブランド版数を含む)
+        // プリセット。emulation は既存の HTTP1/HTTP2/TLS 設定を上書きするため先頭で呼ぶ。
+        .emulation(Emulation::Chrome149)
         .user_agent(UA)
-        // wreq 5.3.0 が依存する lru 0.13.0 には、`iter_mut` の RUSTSEC-2026-0002 と
-        // `pop` の RUSTSEC-2026-0253 がある。修正版 lru を使う安定版 wreq が出るまでは、
-        // 接続プールを無効化して両方の問題経路を到達不能にする。
-        .pool_max_idle_per_host(0)
         .timeout(REQUEST_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .context("building browser HTTP client")?;
     let api = Client::builder()
-        .pool_max_idle_per_host(0)
         .timeout(REQUEST_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()

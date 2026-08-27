@@ -67,7 +67,7 @@ Claude and a Codex subscription = four accounts) without you logging anything in
 ## Requirements
 
 - **OS**: macOS (Chrome uses macOS `v10` cookie encryption; Windows `v20` app-bound scheme is not handled)
-- **Browser**: Google Chrome (signed into Claude, Codex, and/or PixelLab) for browser-backed providers
+- **Browser**: Google Chrome (signed into Claude, Codex, and/or PixelLab) for browser-backed providers. Chrome is optional if you only use the OAuth-backed providers below — when it is missing, `ai-usage` notes it on stderr and reports the remaining providers
 - **Build**: Rust toolchain + **cmake** (required by [`wreq`](https://crates.io/crates/wreq)'s BoringSSL)
 - **Optional**: Antigravity app, `agy` CLI, or `~/.gemini` OAuth token for Antigravity usage
 - **Optional**: `grok` CLI signed in (`~/.grok/auth.json`) for Grok usage

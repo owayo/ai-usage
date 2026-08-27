@@ -66,7 +66,7 @@ Chrome プロファイルを横断し、Antigravity と Grok は CLI の OAuth �
 ## 動作要件
 
 - **OS**: macOS (Chrome の macOS `v10` Cookie 方式に対応。Windows の `v20` app-bound 方式は未対応)
-- **ブラウザ**: ブラウザ認証プロバイダ用の Google Chrome (Claude / Codex / PixelLab にサインイン済み)
+- **ブラウザ**: ブラウザ認証プロバイダ用の Google Chrome (Claude / Codex / PixelLab にサインイン済み)。下記の OAuth 認証プロバイダのみを使う場合は Chrome は不要 — 見つからない場合はその旨を stderr に出し、残りのプロバイダを表示する
 - **ビルド**: Rust ツールチェイン + **cmake** ([`wreq`](https://crates.io/crates/wreq) の BoringSSL に必要)
 - **任意**: Antigravity 使用量には Antigravity.app、`agy` CLI、または `~/.gemini` の OAuth トークンが必要
 - **任意**: Grok 使用量には `grok` CLI にサインイン済み (`~/.grok/auth.json`) が必要

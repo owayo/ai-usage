@@ -1,6 +1,7 @@
 //! compact / colored statusline 出力(1 account 1 行)。
 
 use chrono::{DateTime, Local, Utc};
+use unicode_width::UnicodeWidthChar;
 
 use super::sort::{sorted_refs, statusline_default_cmp};
 use super::{
@@ -25,6 +26,9 @@ const GRAY: &str = "38;5;245";
 const DIM: &str = "38;5;242";
 const GREEN: &str = "38;5;35";
 const BOLD_RED: &str = "1;38;5;196"; // アクティブなアカウント。
+/// account 名 / model-group 名の欄幅(末尾の区切り 1 桁を含む)。最長の想定値
+/// "Claude&GPT"(10 桁)がちょうど収まり、その右に区切りが 1 桁残る。
+const NAME_FIELD_WIDTH: usize = 11;
 const FIVE_H_TH: [i64; 3] = [3600, 7200, 10800];
 const DAILY_TH: [i64; 3] = [4 * 3600, 8 * 3600, 12 * 3600];
 const WEEK_TH: [i64; 3] = [86400, 172800, 259200];
@@ -143,9 +147,35 @@ fn render_identity(
     rendered += &paint(
         opts.color,
         if active { BOLD_RED } else { GRAY },
-        &format!("{display:<11}"),
+        &pad_display(display, NAME_FIELD_WIDTH),
     );
     rendered
+}
+
+/// 表示名を欄幅ちょうどに整える。
+///
+/// `format!("{display:<11}")` は幅を **char 数**で数え、超過分を切り詰めない。そのため
+/// 全角を含む label は 1 文字 2 桁ぶん右へずれ、11 文字以上の label は gauge 位置がずれ、
+/// ちょうど 11 文字だと padding が 0 になって次の window ラベルと地続きになる
+/// (`development5h ███…`)。label は config のユーザー入力・email の local part・
+/// Chrome profile 名から来るため、いずれも現実に起こる。
+///
+/// ここでは端末上の表示幅で数え、溢れる分は切り詰め、右端に必ず 1 桁以上の区切りを残す。
+fn pad_display(s: &str, field_width: usize) -> String {
+    // 1 桁は区切り用に確保するので、本文が使えるのは field_width - 1 桁まで。
+    let budget = field_width.saturating_sub(1);
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in s.chars() {
+        let width = c.width().unwrap_or(0);
+        if used + width > budget {
+            break;
+        }
+        out.push(c);
+        used += width;
+    }
+    out.push_str(&" ".repeat(field_width - used));
+    out
 }
 
 /// quota の空表示・単一枠・二枠表示を選び、statusline 後半を組み立てる。
@@ -551,5 +581,64 @@ mod tests {
             rendered.contains("\x1b[38;5;196m2d00h "),
             "月次しきい値の赤色になっていない: {rendered:?}"
         );
+    }
+
+    /// 表示幅を東アジア文字幅で数える(テスト側の期待値を組み立てるための補助)。
+    fn display_width(s: &str) -> usize {
+        s.chars().map(|c| c.width().unwrap_or(0)).sum()
+    }
+
+    #[test]
+    fn pad_display_keeps_short_names_byte_identical_to_plain_padding() {
+        // 欄に収まる ASCII 名は従来の `{:<11}` と 1 バイトも変わってはいけない。
+        // ここが変わると既存 statusline の桁揃えが丸ごとずれる。
+        for name in ["", "a", "owa", "home", "work", "Claude&GPT"] {
+            assert_eq!(
+                pad_display(name, NAME_FIELD_WIDTH),
+                format!("{name:<11}"),
+                "収まる名前で従来出力と差が出た: {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pad_display_always_leaves_a_separator_column() {
+        // ちょうど欄幅と同じ 11 文字は、従来 padding が 0 になり
+        // 次の window ラベルと地続きになっていた("development5h ...")。
+        // 切り詰めて必ず 1 桁以上の空白を残す。
+        for name in [
+            "development",          // ちょうど 11 文字
+            "christopher.anderson", // 11 文字超
+            "antigravity",          // README のサンプル label
+        ] {
+            let padded = pad_display(name, NAME_FIELD_WIDTH);
+            assert_eq!(
+                display_width(&padded),
+                NAME_FIELD_WIDTH,
+                "欄幅に揃っていない: {padded:?}"
+            );
+            assert!(
+                padded.ends_with(' '),
+                "区切りの空白が残っていない: {padded:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pad_display_counts_full_width_characters_as_two_columns() {
+        // 全角は 1 文字 = 2 桁。char 数で数えると 1 文字ごとに 1 桁ずつ溢れる。
+        let padded = pad_display("業務用アカウント", NAME_FIELD_WIDTH);
+        assert_eq!(display_width(&padded), NAME_FIELD_WIDTH);
+        // 10 桁ぶん = 全角 5 文字だけ入り、残り 1 桁が区切りになる。
+        assert_eq!(padded, "業務用アカ ");
+    }
+
+    #[test]
+    fn pad_display_does_not_split_a_character_across_the_boundary() {
+        // 全角は 2 桁なので、残り 1 桁の位置では入れずに打ち切る(半端な桁を作らない)。
+        // "a" (1 桁) + 全角 4 文字 (8 桁) = 9 桁。次の全角は 11 桁目に食い込むため入らない。
+        let padded = pad_display("a業務用ア業", NAME_FIELD_WIDTH);
+        assert_eq!(padded, "a業務用ア  ");
+        assert_eq!(display_width(&padded), NAME_FIELD_WIDTH);
     }
 }

@@ -797,7 +797,20 @@ async fn run(cli: Cli) -> Result<()> {
 
     let root = profiles::chrome_root()?;
     let all = if needs_profile_discovery(&cli) {
-        profiles::discover(&root)?
+        match profiles::discover(&root) {
+            Ok(all) => all,
+            // profile 一覧と設定生成は Chrome そのものが目的なので、従来どおり失敗させる。
+            Err(error) if cli.list_profiles || cli.init_config => return Err(error),
+            // それ以外は Chrome を「provider 0 件」に縮退させる。Antigravity / Grok は
+            // Chrome ではなく OAuth token を見るため、Chrome 未導入や Local State 破損で
+            // これらまで道連れにすると、`--only` を付けたときだけ結果が出るという
+            // 説明のつかない非対称が残る。個々の profile 読み取り失敗を握りつぶして
+            // 続行する既存方針(fetch_reports)とも揃う。
+            Err(error) => {
+                eprintln!("ai-usage: skipping Chrome profiles: {error:#}");
+                Vec::new()
+            }
+        }
     } else {
         Vec::new()
     };

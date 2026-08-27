@@ -103,7 +103,17 @@ async fn get_billing(client: &Client, access: &str) -> Result<Value> {
     .context("fetching /v1/billing")
 }
 
+/// token refresh で回復し得る auth 失敗(401 / 403)を detect する。
+///
+/// retryable marker が付いたエラーは対象外。`cli-chat-proxy.grok.com` は Cloudflare
+/// 前面で、しかも Chrome エミュレーションなしの plain client で叩くため challenge を
+/// 踏み得る。その文言 "Cloudflare challenge (HTTP 403)..." を auth 失敗と誤認すると、
+/// 無駄な refresh の末に "Re-run `grok login`" という誤った案内が出たうえ、
+/// retryable marker が失われて backoff 再試行も行われなくなる。
 fn is_auth_error(err: &anyhow::Error) -> bool {
+    if crate::http::is_retryable(err) {
+        return false;
+    }
     let msg = format!("{err:#}");
     msg.contains("HTTP 401") || msg.contains("HTTP 403")
 }
@@ -645,6 +655,33 @@ mod tests {
         )));
         assert!(is_auth_error(&anyhow::anyhow!("HTTP 403 from ...")));
         assert!(!is_auth_error(&anyhow::anyhow!("connection refused")));
+    }
+
+    #[test]
+    fn is_auth_error_ignores_retryable_cloudflare_challenge() {
+        // http.rs が実際に組み立てる文言をそのまま使う。"(HTTP 403)" を含むため
+        // 素朴な部分一致では auth 失敗と区別できず、無駄な refresh の末に
+        // "Re-run `grok login`" という誤った案内が出ていた。
+        let challenge = crate::http::retryable_error(
+            "Cloudflare challenge (HTTP 403). Open the site in this Chrome profile to \
+             refresh its session, then retry."
+                .to_string(),
+        );
+        assert!(crate::http::is_retryable(&challenge));
+        assert!(!is_auth_error(&challenge));
+
+        // context で包んでも marker は chain に残るので判定は変わらない。
+        let wrapped = challenge.context("fetching /v1/user");
+        assert!(!is_auth_error(&wrapped));
+
+        // marker の無い素の 401/403 は従来どおり auth 失敗のまま。
+        assert!(is_auth_error(&anyhow::anyhow!(
+            "HTTP 403 from https://cli-chat-proxy.grok.com/v1/user: {{\"detail\":\"nope\"}}"
+        )));
+        // retryable な 429 / 5xx も refresh ではなく再試行に回す。
+        assert!(!is_auth_error(&crate::http::retryable_error(
+            "HTTP 503 from https://cli-chat-proxy.grok.com/v1/user: HTTP 401 unrelated".to_string()
+        )));
     }
 
     #[test]

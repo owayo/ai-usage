@@ -6,6 +6,7 @@
 //! "active" account を選べる。優先順は CLI flags > config file > auto-detection。
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -145,8 +146,20 @@ pub fn load(explicit: Option<&Path>) -> Config {
     let Some(path) = path else {
         return Config::default();
     };
-    let Ok(text) = fs::read_to_string(&path) else {
-        return Config::default(); // file なし → auto mode
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        // 既定パスに file が無いのは正常系(auto mode)。一方、`--config` で明示された
+        // パスが読めない場合や、権限・ディレクトリ指定などの NotFound 以外の I/O error は
+        // 利用者の意図が失われているので必ず報告する。黙って auto mode に落ちると、
+        // パスの打ち間違いが「config を書いたのに反映されない」として現れる
+        // (構文エラーだけ報告される既存の非対称もここで解消する)。
+        Err(error) if explicit.is_none() && error.kind() == io::ErrorKind::NotFound => {
+            return Config::default();
+        }
+        Err(error) => {
+            eprintln!("ai-usage: ignoring config {}: {error}", path.display());
+            return Config::default();
+        }
     };
     toml::from_str(&text).unwrap_or_else(|e| {
         eprintln!("ai-usage: ignoring invalid config {}: {e}", path.display());
@@ -283,5 +296,60 @@ mod tests {
         assert!(parsed.active_email.is_none());
         assert!(parsed.profiles.is_empty());
         assert!(parsed.antigravity.is_none());
+    }
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "ai-usage-config-{name}-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn load_reads_an_explicit_path() {
+        let path = temp_path("explicit");
+        fs::write(
+            &path,
+            "active_email = \"you@example.com\"\n\n[[profiles]]\nmatch = \"Work\"\nlabel = \"work\"\n",
+        )
+        .unwrap();
+        let loaded = load(Some(path.as_path()));
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(loaded.active_email.as_deref(), Some("you@example.com"));
+        assert_eq!(loaded.profiles.len(), 1);
+        assert_eq!(loaded.profiles[0].label.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn load_falls_back_to_defaults_when_the_file_is_unreadable() {
+        // 読めない指定は auto mode に縮退する(abort しない)。stderr への報告有無は
+        // 呼び出し側の契約ではないため、ここでは戻り値が default であることだけを固定する。
+        let missing = temp_path("missing");
+        assert!(!missing.exists());
+        let loaded = load(Some(missing.as_path()));
+        assert!(loaded.profiles.is_empty());
+        assert!(loaded.active_email.is_none());
+
+        // ディレクトリ指定(NotFound ではない I/O error)も同じく縮退する。
+        let dir = std::env::temp_dir();
+        let loaded = load(Some(dir.as_path()));
+        assert!(loaded.profiles.is_empty());
+        assert!(loaded.active_email.is_none());
+    }
+
+    #[test]
+    fn load_falls_back_to_defaults_for_invalid_toml() {
+        let path = temp_path("invalid");
+        fs::write(&path, "this is not toml =\n").unwrap();
+        let loaded = load(Some(path.as_path()));
+        let _ = fs::remove_file(&path);
+
+        assert!(loaded.profiles.is_empty());
+        assert!(loaded.active_email.is_none());
     }
 }

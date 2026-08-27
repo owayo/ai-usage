@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, TimeZone, Utc};
@@ -28,10 +28,25 @@ use crate::model::{Usage, UsageRow, Window, WindowKind};
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const CODE_ASSIST: &str = "https://cloudcode-pa.googleapis.com/v1internal";
 
+/// localhost language_server 向けの deadline。相手は同一マシン上のプロセスなので、
+/// 正常時は数十 ms で返る。`http.rs` の client と違って未設定だと無期限に待つため、
+/// TCP は繋がるが応答を返さない瀕死の language_server にぶら下がると
+/// `fetch()` が OAuth へ進めないまま外側の deadline で打ち切られる。
+const LOCAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// local 経路全体の上限。`local_endpoints()` は「プロセス × 待受ポート」の直積を返すため、
+/// endpoint ごとの timeout だけでは最悪ケースが endpoint 数に比例して伸び、
+/// OAuth フォールバックに残る時間が無くなる。local は諦めが早い方が総合的に速い。
+const LOCAL_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// 情報量の多い local 経路を優先し、失敗時は OAuth remote にフォールバックする。
 /// 戻り値は model group ごとに 1 行。
 pub async fn fetch(api: &Client, cfg: Option<&AntigravityCfg>) -> Result<Vec<UsageRow>> {
-    if let Ok(rows) = local_fetch().await
+    // local 経路は「速いか、すぐ諦めるか」のどちらかであるべき。ここで頭打ちにしないと、
+    // 応答を返さない language_server にぶら下がった時間がそのまま OAuth の取り分を食い、
+    // 有効な token があるのに fetch 全体が呼び出し側の deadline で失敗する。
+    if let Ok(Ok(rows)) = tokio::time::timeout(LOCAL_FETCH_TIMEOUT, local_fetch()).await
         && !rows.is_empty()
     {
         return Ok(rows);
@@ -56,10 +71,16 @@ async fn local_fetch() -> Result<Vec<UsageRow>> {
         bail!("agy/Antigravity not running");
     }
     let local = Client::builder()
-        .cert_verification(false)
-        .verify_hostname(false)
-        // http.rs と同じく接続プールを無効化し、lru 0.13.0 の健全性違反経路を避ける。
-        .pool_max_idle_per_host(0)
+        // language_server は自己署名証明書の localhost HTTPS なので、証明書とホスト名の検証を外す。
+        .tls_cert_verification(false)
+        .tls_verify_hostname(false)
+        // 宛先は必ず 127.0.0.1。wreq は既定でシステム / 環境変数のプロキシを自動適用し、
+        // loopback を除外しないため、`HTTPS_PROXY` 設定下では localhost 宛てまで
+        // プロキシへ送られてしまう。上で証明書検証を外している以上、CSRF token を
+        // 第三者へ渡す経路を作らないよう、この client だけプロキシを明示的に無効化する。
+        .no_proxy()
+        .timeout(LOCAL_REQUEST_TIMEOUT)
+        .connect_timeout(LOCAL_CONNECT_TIMEOUT)
         .build()
         .context("building localhost client")?;
     for endpoint in endpoints {
@@ -642,6 +663,27 @@ fn find_secret(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_timeouts_leave_budget_for_the_oauth_fallback() {
+        // local 経路は「速いか、すぐ諦めるか」でなければならない。ここが JOB_DEADLINE を
+        // 食い尽くすと、応答しない language_server にぶら下がっただけで OAuth へ進めず、
+        // 有効な token があるのに Antigravity 行が丸ごと error になる。
+        // 定数を緩めるときはこの関係を壊していないか必ず確認すること。
+        assert!(
+            LOCAL_CONNECT_TIMEOUT <= LOCAL_REQUEST_TIMEOUT,
+            "接続 deadline がリクエスト全体より長い"
+        );
+        assert!(
+            LOCAL_REQUEST_TIMEOUT <= LOCAL_FETCH_TIMEOUT,
+            "1 リクエストすら完了できない local 経路 deadline"
+        );
+        // OAuth フォールバックに最低でも半分は残す。
+        assert!(
+            LOCAL_FETCH_TIMEOUT * 2 <= crate::JOB_DEADLINE,
+            "local 経路が JOB_DEADLINE を食い尽くし、OAuth フォールバックが機能しない"
+        );
+    }
 
     #[test]
     fn parses_local_summary_into_groups() {
