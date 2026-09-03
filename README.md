@@ -164,6 +164,8 @@ ai-usage --statusline
 | `--statusline-hide <PROVIDERS>` | Comma-separated providers to skip in statusline only (`--json` / table unaffected). E.g. `--statusline-hide antigravity,codex` |
 | `--sort weekly-usage` | Rank rows by long-window utilization (closest to the cap first) |
 | `--sort weekly-reset` | Rank rows by long-window reset time (soonest first) |
+| `--no-color` | Disable ANSI colors. Colors are also suppressed when `NO_COLOR` is set or `TERM=dumb` |
+| `--input <PATH>` | Render the statusline from a cached `--json` file instead of fetching. Touches neither Chrome, Keychain, nor the network — used for fast status-bar redraws |
 
 #### Active row selection
 
@@ -173,10 +175,11 @@ ai-usage --statusline
 | `--active-profile <NAME>` | Match a profile by name |
 | `--active-provider <NAME>` | Pin to a single provider: `claude`, `codex`, `antigravity`, `pixellab`, or `grok` |
 
-#### Debug & Info
+#### Config, Debug & Info
 
 | Option | Description |
 |--------|-------------|
+| `--config <PATH>` | Use this config file instead of `~/.config/ai-usage/config.toml` |
 | `--debug` | Print per-row match decisions to stderr as JSONL (stdout stays clean for pipes) |
 | `--help` | Print help |
 | `--version` | Print version |
@@ -360,9 +363,20 @@ Google, PixelLab, and xAI. No tokens or cookies are printed or stored.
 
 - **macOS + Google Chrome only**. Chrome uses `v10` cookie encryption on macOS; Windows'
   `v20` app-bound scheme is not handled.
+- Chrome is optional for the OAuth-only providers. When Chrome isn't installed — or its
+  `Local State` can't be read — a normal run prints `skipping Chrome profiles: …` on stderr
+  and still renders Antigravity and Grok. Only `--list-profiles` / `--init-config` fail
+  outright, since Chrome is the whole point of those modes.
+- An unreadable config falls back to auto-discovery. A missing *default* config is silent,
+  but a `--config` path you passed explicitly is reported on stderr, so a typo doesn't
+  masquerade as "my config is being ignored".
 - If a `cf_clearance` cookie has gone stale you'll see a *Cloudflare challenge* error for
   that one account — open the relevant site once in that Chrome profile to refresh it, then
   re-run. Other accounts are unaffected.
+- Antigravity's grouped weekly quota is served only by the local `language_server`, so
+  Antigravity.app or `agy` has to be running to see both model groups. With just the
+  `~/.gemini` OAuth token, Google may reject `retrieveUserQuota` with a `403`, and the row
+  reads *OAuth token lacks quota permission — open `agy` for full data*.
 - The usage endpoints are **undocumented / reverse-engineered** and may change.
 - This tool depends on `wreq-util`, which is **GPL‑3.0**; this project is therefore licensed
   GPL‑3.0.

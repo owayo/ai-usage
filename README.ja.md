@@ -163,6 +163,8 @@ ai-usage --statusline
 | `--statusline-hide <PROVIDERS>` | statusline でのみ非表示にする provider (comma 区切り)。`--json` / table には影響なし。例: `--statusline-hide antigravity,codex` |
 | `--sort weekly-usage` | 長期枠の使用率が高い順 (リミットに近いアカウントを上に) |
 | `--sort weekly-reset` | 長期枠のリセット時刻が近い順 (リセット待ちが短いアカウントを上に) |
+| `--no-color` | ANSI カラーを無効化 (`NO_COLOR` 環境変数または `TERM=dumb` でも無効になります) |
+| `--input <PATH>` | フェッチせず、キャッシュ済み `--json` ファイルから statusline を描画。Chrome・Keychain・ネットワークのいずれにも触れないため、ステータスバーの再描画が高速 |
 
 #### アクティブ行の選択
 
@@ -172,10 +174,11 @@ ai-usage --statusline
 | `--active-profile <NAME>` | プロファイル名で照合 |
 | `--active-provider <NAME>` | 1 プロバイダに固定: `claude` / `codex` / `antigravity` / `pixellab` / `grok` |
 
-#### デバッグ・情報
+#### 設定・デバッグ・情報
 
 | オプション | 説明 |
 |-----------|------|
+| `--config <PATH>` | `~/.config/ai-usage/config.toml` の代わりにこの設定ファイルを使う |
 | `--debug` | 行ごとの判定結果を stderr に JSONL で出力 (stdout はクリーンなまま) |
 | `--help` | ヘルプを表示 |
 | `--version` | バージョンを表示 |
@@ -359,8 +362,19 @@ Anthropic / OpenAI / Google / PixelLab / xAI への認証付き使用量リク�
 
 - **macOS + Google Chrome 専用** (Chrome は macOS で `v10` Cookie 方式を使用。
   Windows の `v20` app-bound 方式には未対応)
+- OAuth 系プロバイダには Chrome は不要です。Chrome が未インストール、または `Local State` を
+  読めない場合、通常実行では stderr に `skipping Chrome profiles: …` を出したうえで
+  Antigravity / Grok は描画を続けます。Chrome そのものが目的の
+  `--list-profiles` / `--init-config` だけがエラーになります
+- 設定ファイルが読めない場合は自動検出にフォールバックします。既定パスに設定が無いケースは
+  無言ですが、`--config` で明示指定したパスが読めないときは stderr に報告します
+  (パスのタイプミスが「設定が無視されている」ように見えるのを防ぐため)
 - `cf_clearance` Cookie が失効していると、その 1 アカウントだけ *Cloudflare challenge* エラーになります。
   該当サイトをその Chrome プロファイルで一度開いて更新し、再実行してください (他アカウントには影響しません)
+- Antigravity のモデルグループ別の週次クォータはローカルの `language_server` からしか取得できないため、
+  両グループを表示するには Antigravity.app または `agy` が起動している必要があります。`~/.gemini` の
+  OAuth トークンだけの場合、Google が `retrieveUserQuota` を `403` で拒否し、その行は
+  *OAuth token lacks quota permission — open `agy` for full data* と表示されます
 - 使用量エンドポイントは **非公式 / リバースエンジニアリング** によるもので、変更される可能性があります
 - 依存の `wreq-util` が **GPL‑3.0** のため、本プロジェクトも GPL‑3.0 ライセンスです
 
