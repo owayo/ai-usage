@@ -340,7 +340,10 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
 ([`wreq`](https://crates.io/crates/wreq)) emulates Chrome's TLS/HTTP2 fingerprint and
 replays the profile's `cf_clearance` cookie — a plain HTTP client just gets a `403`.
 Transport failures and HTTP `408` / `429` / `5xx` responses use the same bounded retry
-policy for GET and POST requests, with a 20-second deadline per provider job.
+policy for GET and POST requests, with a 20-second deadline per provider job. Once a
+token refresh has been sent for a provider, its remaining failures are *not* retried:
+ai-usage never writes a rotated refresh token back, so replaying that fetch would resend
+a token the server may already have rotated away.
 
 Nothing leaves your machine except authenticated usage requests to Anthropic, OpenAI,
 Google, PixelLab, and xAI. No tokens or cookies are printed or stored.
@@ -363,10 +366,12 @@ Google, PixelLab, and xAI. No tokens or cookies are printed or stored.
 
 - **macOS + Google Chrome only**. Chrome uses `v10` cookie encryption on macOS; Windows'
   `v20` app-bound scheme is not handled.
-- Chrome is optional for the OAuth-only providers. When Chrome isn't installed — or its
-  `Local State` can't be read — a normal run prints `skipping Chrome profiles: …` on stderr
-  and still renders Antigravity and Grok. Only `--list-profiles` / `--init-config` fail
-  outright, since Chrome is the whole point of those modes.
+- Chrome is optional for the OAuth-only providers. When Chrome isn't installed, its
+  `Local State` can't be read, or you decline the Keychain prompt, a normal run prints
+  `skipping Chrome profiles: …` on stderr and still renders Antigravity and Grok. Only
+  `--list-profiles` / `--init-config` fail outright, since Chrome is the whole point of
+  those modes — and when Chrome is the *only* target, the Keychain error is reported
+  verbatim so you know to approve the prompt and re-run.
 - An unreadable config falls back to auto-discovery. A missing *default* config is silent,
   but a `--config` path you passed explicitly is reported on stderr, so a typo doesn't
   masquerade as "my config is being ignored".

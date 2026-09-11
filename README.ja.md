@@ -339,7 +339,9 @@ flowchart LR
 エミュレートし、プロファイルの `cf_clearance` Cookie を再送します (素の HTTP クライアントは
 `403` になります)。
 通信エラーと HTTP `408` / `429` / `5xx` は GET / POST とも同じ再試行ポリシーで処理し、
-各プロバイダのジョブは再試行を含めて 20 秒以内に打ち切ります。
+各プロバイダのジョブは再試行を含めて 20 秒以内に打ち切ります。ただしトークンの refresh を
+送信したあとの失敗は再試行しません。ai-usage はローテーション後の refresh token を書き戻さない
+ため、フェッチをやり直すとサーバ側で既にローテーション済みのトークンを再送してしまうためです。
 
 Anthropic / OpenAI / Google / PixelLab / xAI への認証付き使用量リクエスト以外、データは外部に
 出ません。トークンや Cookie を出力・保存することもありません。
@@ -362,10 +364,12 @@ Anthropic / OpenAI / Google / PixelLab / xAI への認証付き使用量リク�
 
 - **macOS + Google Chrome 専用** (Chrome は macOS で `v10` Cookie 方式を使用。
   Windows の `v20` app-bound 方式には未対応)
-- OAuth 系プロバイダには Chrome は不要です。Chrome が未インストール、または `Local State` を
-  読めない場合、通常実行では stderr に `skipping Chrome profiles: …` を出したうえで
-  Antigravity / Grok は描画を続けます。Chrome そのものが目的の
-  `--list-profiles` / `--init-config` だけがエラーになります
+- OAuth 系プロバイダには Chrome は不要です。Chrome が未インストール、`Local State` を
+  読めない、Keychain のダイアログを拒否した、いずれの場合も、通常実行では stderr に
+  `skipping Chrome profiles: …` を出したうえで Antigravity / Grok は描画を続けます。
+  Chrome そのものが目的の `--list-profiles` / `--init-config` だけがエラーになります。
+  取得対象が Chrome だけのときは Keychain のエラーをそのまま報告するので、
+  ダイアログを承認して再実行すべきことが分かります
 - 設定ファイルが読めない場合は自動検出にフォールバックします。既定パスに設定が無いケースは
   無言ですが、`--config` で明示指定したパスが読めないときは stderr に報告します
   (パスのタイプミスが「設定が無視されている」ように見えるのを防ぐため)

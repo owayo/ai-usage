@@ -445,6 +445,52 @@ mod tests {
     }
 
     #[test]
+    fn gauge_lights_one_block_for_any_nonzero_usage() {
+        let filled = |pct| gauge(false, pct, 16).chars().filter(|c| *c == '█').count();
+        let empty = |pct| gauge(false, pct, 16).chars().filter(|c| *c == '░').count();
+
+        // 0% は空のまま。ごく僅かな使用は四捨五入で 0 ブロックになるが、
+        // 「使っているのに空バー」に見せないため必ず 1 ブロックは点灯させる。
+        assert_eq!(filled(0.0), 0);
+        assert_eq!(filled(0.1), 1);
+        assert_eq!(filled(50.0), 8);
+        assert_eq!(filled(100.0), 16);
+
+        // 範囲外の値(API 側の race / 破損データ)でも panic せず幅を超えない。
+        assert_eq!(filled(150.0), 16);
+        assert_eq!(filled(-10.0), 0);
+        // 桁揃えの不変条件: 点灯 + 空白の合計は常に gauge 幅と一致する。
+        for pct in [-10.0, 0.0, 0.1, 42.0, 99.9, 100.0, 150.0] {
+            assert_eq!(filled(pct) + empty(pct), 16, "pct={pct}");
+        }
+    }
+
+    #[test]
+    fn usage_colors_escalate_at_60_80_90_percent() {
+        // gauge とパーセント表示は同じ境界で段階的に警告色へ上げる。
+        for code in [level_code, pct_code] {
+            assert_eq!(code(0.0), code(59.9), "60% 未満は同じ色");
+            assert_ne!(code(60.0), code(59.9), "60% で 1 段上がる");
+            assert_ne!(code(80.0), code(79.9), "80% で 1 段上がる");
+            assert_ne!(code(90.0), code(89.9), "90% で 1 段上がる");
+        }
+    }
+
+    #[test]
+    fn reset_colors_use_exclusive_thresholds() {
+        // しきい値ちょうどは「まだ余裕がある側」に入る(`<` 判定)。境界がずれると
+        // リセット直前の赤が 1 段早く/遅く出る。
+        let th = WEEK_TH;
+        assert_eq!(reset_code(th[0] - 1, th), "38;5;196");
+        assert_eq!(reset_code(th[0], th), "38;5;208");
+        assert_eq!(reset_code(th[1], th), "38;5;178");
+        assert_eq!(reset_code(th[2], th), "38;5;35");
+        // 月次枠は同じ関数をより長いしきい値で使う(2 日後は月次なら危険域)。
+        assert_eq!(reset_code(2 * 86400, MONTHLY_TH), "38;5;196");
+        assert_eq!(reset_code(2 * 86400, WEEK_TH), "38;5;178");
+    }
+
+    #[test]
     fn window_seg_appends_reset_at_only_when_enabled() {
         // 未来のリセット時刻 + show_reset_at=true → 末尾に "(MM/DD HH:MM)" が付く。
         // ローカル TZ 依存の具体値は検証せず、括弧の有無で機能を確認。

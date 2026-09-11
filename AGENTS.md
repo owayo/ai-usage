@@ -41,8 +41,22 @@ first in any new `is_auth_error`.
 
 Related: the whole tool is read-only with respect to credentials — it never
 writes a rotated refresh token back to the Chrome cookie or `auth.json`. Each
-`fetch` therefore refreshes **at most once**, so the stored token stays at most
-one generation behind.
+`fetch` therefore refreshes **at most once** — `pixellab.rs` and `grok.rs` both
+gate the 401/403 retry behind a `refreshed` flag — so the stored token stays at
+most one generation behind.
+
+That guarantee only holds if the *retry loop* cannot re-enter a fetch that has
+already sent a refresh. `fetch_with_retry` re-runs the whole provider `fetch`,
+which re-reads the unchanged cookie / `auth.json` and would put the same stale
+refresh token back on the wire — and a refresh whose response never arrived may
+well have rotated server-side (one request may burn the full 10 s
+`REQUEST_TIMEOUT`, so a backoff retry lands outside Supabase's default reuse
+grace). `http::no_retry_after_refresh` therefore strips the retryable marker
+from every error raised once a refresh has been sent, folding the chain into a
+single message with `{:#}` so the cause still reaches the user. Losing one row
+to a transient failure is cheaper than burning a token family that has reuse
+detection. Any new provider that refreshes must route its post-refresh errors
+through the same helper.
 
 ## Degrading instead of failing
 
@@ -53,6 +67,14 @@ browser profiles, so the OAuth-only providers (Antigravity, Grok) still render.
 Before this, a machine without Chrome produced output only when `--only
 antigravity` / `--only grok` was passed — the `needs_profile_discovery()` bypass
 existed but auto mode failed hard.
+
+The Keychain is treated the same way. `chrome_jobs` needs the "Chrome Safe
+Storage" secret before it can decrypt any cookie, so declining the macOS prompt
+fails the entire call — and used to take Antigravity / Grok down with it even
+though neither reads a cookie. `chrome_jobs_or_degrade` turns that into the same
+`skipping Chrome profiles: …` warning **only while an OAuth provider is still in
+the run**; when Chrome is the only target the original error survives, because
+that is the one telling the user to approve the prompt and retry.
 
 `config::load` degrades to auto mode on any unreadable config, but only stays
 silent for "the *default* path does not exist". An explicitly passed `--config`
@@ -69,19 +91,23 @@ covering pure logic: cookie decryption round-trips and malformed schema-v24
 prefix rejection, live WAL visibility through read-only Cookie DB access, exact provider-domain
 filtering, numeric session-cookie chunk name matching (`.0`, `.1`, ...)
 (`cookies.rs`), Chrome profile discovery / cookie-store precedence
-(`profiles.rs`), org/window parsing (`claude.rs`/`codex.rs`), TOML config
+(`profiles.rs`), org/window parsing plus duration-based (not position-based)
+primary/secondary window classification with its 8-hour boundary
+(`claude.rs`/`codex.rs`), TOML config
 loading including explicit-path and invalid-file fallbacks, and
 `BrowserWants` (`config.rs`), display-name and active-row resolution including
 malformed provider-email fallback (missing/empty/duplicate `@` separators)
 (`render.rs`), row sorting (`render/sort.rs`), table bar/humanize formatting
-(`render/table.rs`), statusline gauge/duration formatting, provider-aware
+(`render/table.rs`), statusline gauge/duration formatting including the
+"any non-zero usage lights at least one block" rule and the usage/reset colour
+thresholds, provider-aware
 monthly reset thresholds for legacy caches, and display-width name padding
 (over-long / exactly-fitting / full-width names) (`render/statusline.rs`),
 Antigravity quota parsing including nested/flat
 `remainingFraction`, missing-quota rejection, ISO-8601 and epoch-second
 `resetTime`, app/IDE CSRF process-argument extraction, overflow-safe token expiry,
 the local-path timeout budget that keeps the OAuth fallback reachable,
-plus wrapped/flat
+loopback-only `lsof` listen-port parsing, plus wrapped/flat
 `GetUserStatus` shapes (`antigravity.rs`), PixelLab Supabase cookie parsing
 (legacy JSON-array + `base64-…` unpadded Base64URL object forms + standard-Base64
 compatibility + `.0/.1` chunk join), overflow-safe JWT `exp` /
@@ -91,11 +117,14 @@ Grok token expiry and newest-usable multi-entry auth selection (`grok.rs`),
 auth-vs-retryable classification driven by the real Cloudflare-challenge string
 (`pixellab.rs` / `grok.rs`), report-DTO
 building with reset-countdown clamping and old-cache compatibility (`report.rs`),
-retryable HTTP marker/status classification including response-body failures and
-GET/POST `408` / `429` / `5xx` handling
-(`http.rs`), TOML-value escaping, provider resolution, and Chrome-discovery
-bypass for cached / OAuth-only modes (`main.rs`). Drive the network paths via
-`make build` + a real run.
+retryable HTTP marker/status classification including response-body failures,
+GET/POST `408` / `429` / `5xx` handling, and post-refresh marker stripping that
+keeps the original message
+(`http.rs`), TOML-value escaping, provider resolution, Chrome-discovery
+bypass for cached / OAuth-only modes, target building across the
+`--profile` / config / auto-discovery precedence, statusline hide resolution,
+and the Chrome-failure degradation that spares OAuth providers (`main.rs`).
+Drive the network paths via `make build` + a real run.
 
 ## Dependency safety
 

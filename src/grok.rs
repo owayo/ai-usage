@@ -22,7 +22,7 @@ use serde_json::Value;
 use wreq::{Client, StatusCode};
 
 use crate::config::GrokCfg;
-use crate::http::{get_json, post_form};
+use crate::http::{get_json, no_retry_after_refresh, post_form};
 use crate::model::{Usage, UsageRow, Window, WindowKind};
 
 /// CLI が読み書きする通信先。debug ログでも公開されているので固定で埋めてよい。
@@ -38,20 +38,33 @@ pub async fn fetch(client: &Client, cfg: Option<&GrokCfg>) -> Result<Vec<UsageRo
     let mut auth =
         load_auth(&path).with_context(|| format!("reading Grok auth file {}", path.display()))?;
 
+    // 1 回の fetch で refresh は 1 度だけ(pixellab.rs と同じ制約)。xAI も Supabase と同じく
+    // refresh token を rotation するが、ai-usage は auth.json を書き戻さない読み取り専用
+    // ツールなので、2 回撃つとディスク上の token が現行の 2 世代前になる。直前に発行された
+    // ばかりの access token が 401 を返す状況は revoke 等であり、refresh では回復しない。
+    let mut refreshed = false;
     if auth.expires_in() < 60 {
         auth = refresh(client, &auth)
             .await
+            .map_err(no_retry_after_refresh)
             .context("refreshing Grok OAuth token")?;
+        refreshed = true;
     }
 
     let user = match get_user(client, &auth.access).await {
         Ok(v) => v,
-        Err(e) if is_auth_error(&e) => {
+        Err(e) if is_auth_error(&e) && !refreshed => {
             auth = refresh(client, &auth)
                 .await
+                .map_err(no_retry_after_refresh)
                 .context("refreshing after unauthorized user response")?;
-            get_user(client, &auth.access).await?
+            get_user(client, &auth.access)
+                .await
+                .map_err(no_retry_after_refresh)?
         }
+        // refresh 済みの経路で出た失敗は、外側の backoff 再試行に回さない。job ごと
+        // やり直すと auth.json を読み直して同じ(古い)refresh token を再送してしまう。
+        Err(e) if refreshed => return Err(no_retry_after_refresh(e)),
         Err(e) => return Err(e),
     };
     // billing endpoint は Free 相当のアカウントでも 200 を返す(monthlyLimit=0)。

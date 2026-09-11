@@ -88,11 +88,26 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
         .get("plan_type")
         .and_then(|p| p.as_str())
         .map(str::to_string);
-    let rate = usage.get("rate_limit");
+    let (short, long) = classify_windows(usage.get("rate_limit"));
 
-    let mut five = None;
-    let mut weekly = None;
-    // primary/secondary の位置ではなく window duration で分類する。
+    Ok(UsageRow::single(Usage {
+        email,
+        plan,
+        short,
+        long,
+    }))
+}
+
+/// 短期スロットとみなす window duration の上限。5 時間枠に多少の余裕を見た値で、
+/// これを超える window は長期(週次)スロットへ回す。
+const SHORT_WINDOW_MAX_SECONDS: i64 = 8 * 3600;
+
+/// `rate_limit` の primary / secondary window を、**JSON 上の位置ではなく window duration**
+/// で短期 / 長期スロットに振り分ける。どちらが 5 時間枠かは応答の順序に依存しないため、
+/// primary/secondary が入れ替わっても表示が崩れない。
+fn classify_windows(rate: Option<&serde_json::Value>) -> (Option<Window>, Option<Window>) {
+    let mut short = None;
+    let mut long = None;
     for key in ["primary_window", "secondary_window"] {
         let Some(w) = rate.and_then(|r| r.get(key)) else {
             continue;
@@ -104,25 +119,20 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
             .get("limit_window_seconds")
             .and_then(serde_json::Value::as_i64)
             .unwrap_or(0);
-        let kind = if secs <= 8 * 3600 {
+        let is_short = secs <= SHORT_WINDOW_MAX_SECONDS;
+        let kind = if is_short {
             WindowKind::FiveHour
         } else {
             WindowKind::Weekly
         };
         let window = parse_window(w, kind);
-        if secs <= 8 * 3600 {
-            five = window;
+        if is_short {
+            short = window;
         } else {
-            weekly = window;
+            long = window;
         }
     }
-
-    Ok(UsageRow::single(Usage {
-        email,
-        plan,
-        short: five,
-        long: weekly,
-    }))
+    (short, long)
 }
 
 fn parse_window(w: &serde_json::Value, kind: WindowKind) -> Option<Window> {
@@ -244,6 +254,56 @@ mod tests {
     #[test]
     fn parse_window_missing_percent_returns_none() {
         assert!(parse_window(&json!({}), WindowKind::Weekly).is_none());
+    }
+
+    #[test]
+    fn classify_windows_splits_by_duration_not_position() {
+        // primary が週次・secondary が 5 時間、という順序で返っても duration で振り分ける。
+        // 位置で決めると、応答の順序が変わっただけで 5h と 1w が入れ替わって表示される。
+        let rate = json!({
+            "primary_window": {"limit_window_seconds": 604_800, "used_percent": 12.0},
+            "secondary_window": {"limit_window_seconds": 18_000, "used_percent": 34.0},
+        });
+        let (short, long) = classify_windows(Some(&rate));
+        let short = short.expect("5 時間枠が短期スロットに入る");
+        assert_eq!(short.kind, WindowKind::FiveHour);
+        assert_eq!(short.used_percent, 34.0);
+        let long = long.expect("週次枠が長期スロットに入る");
+        assert_eq!(long.kind, WindowKind::Weekly);
+        assert_eq!(long.used_percent, 12.0);
+    }
+
+    #[test]
+    fn classify_windows_boundary_is_eight_hours_inclusive() {
+        // 8 時間ちょうどは短期、1 秒でも超えれば長期。境界値そのものを固定したいので、
+        // 実装側の定数ではなくリテラルで書く(定数を動かしたらこのテストが落ちる)。
+        let boundary = json!({
+            "primary_window": {"limit_window_seconds": 28_800, "used_percent": 1.0},
+            "secondary_window": {"limit_window_seconds": 28_801, "used_percent": 2.0},
+        });
+        let (short, long) = classify_windows(Some(&boundary));
+        assert_eq!(short.unwrap().kind, WindowKind::FiveHour);
+        assert_eq!(long.unwrap().kind, WindowKind::Weekly);
+    }
+
+    #[test]
+    fn classify_windows_skips_missing_and_null_entries() {
+        // rate_limit 自体が無い / null の window は、そのスロットを空のままにする。
+        let (short, long) = classify_windows(None);
+        assert!(short.is_none() && long.is_none());
+
+        let partial = json!({
+            "primary_window": {"limit_window_seconds": 18_000, "used_percent": 7.0},
+            "secondary_window": null,
+        });
+        let (short, long) = classify_windows(Some(&partial));
+        assert_eq!(short.unwrap().used_percent, 7.0);
+        assert!(long.is_none(), "null の window は長期スロットを埋めない");
+
+        // used_percent が読めない window はスロットを埋めない。
+        let unusable = json!({"primary_window": {"limit_window_seconds": 604_800}});
+        let (short, long) = classify_windows(Some(&unusable));
+        assert!(short.is_none() && long.is_none());
     }
 
     #[test]

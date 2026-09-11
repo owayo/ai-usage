@@ -58,6 +58,27 @@ pub fn is_retryable(error: &anyhow::Error) -> bool {
         .any(|cause| cause.downcast_ref::<RetryableHttpError>().is_some())
 }
 
+/// refresh token を送信した後のエラーから retryable marker を落とす。
+///
+/// PixelLab(Supabase)と Grok は refresh のたびに refresh token を rotation するが、
+/// ai-usage は Cookie / `auth.json` を書き戻さない読み取り専用ツールなので、保存された
+/// token の世代は進まない。ここで marker を残すと `main.rs` の `fetch_with_retry` が
+/// provider の `fetch` 全体をやり直し、ディスク上の同じ(古い)refresh token をもう一度
+/// 送ってしまう。refresh の応答を受け取れなかった場合はサーバ側で rotation 済みか
+/// 判別できず、reuse detection を持つ発行側では session ごと失効し得る
+/// (1 リクエストの deadline は 10 秒なので、backoff を挟んだ再送は Supabase の
+/// 既定 reuse 猶予をまたぎ得る)。一時的な失敗で 1 行が空くより、資格情報を焼かない
+/// 方を選ぶ。
+pub(crate) fn no_retry_after_refresh(error: anyhow::Error) -> anyhow::Error {
+    if is_retryable(&error) {
+        // marker は source chain に埋まっているため、chain ごと 1 つの message に畳む。
+        // `{:#}` は chain 全体を ": " 区切りで連結するので、原因の文面は失われない。
+        anyhow!("{error:#}")
+    } else {
+        error
+    }
+}
+
 /// 待機後の再試行で回復し得る HTTP status を判定する。
 /// GET / POST の経路差で再試行ポリシーがずれないよう、ここを単一の正本にする。
 pub(crate) fn is_retryable_status(status: StatusCode) -> bool {
@@ -202,6 +223,35 @@ mod tests {
         let error = retryable_error("temporary".to_string()).context("provider fetch");
         assert!(is_retryable(&error));
         assert!(!is_retryable(&anyhow!("invalid session")));
+    }
+
+    #[test]
+    fn no_retry_after_refresh_drops_the_marker_but_keeps_the_message() {
+        // refresh を送った後の一時エラーは再試行に回さない(rotation 済みの refresh token を
+        // もう一度送らないため)。ただし原因の文面はそのまま利用者に見せる。
+        let error = retryable_error("POST token endpoint: timed out".to_string())
+            .context("refreshing Grok OAuth token");
+        assert!(is_retryable(&error));
+
+        let suppressed = no_retry_after_refresh(error);
+        assert!(!is_retryable(&suppressed));
+        let message = format!("{suppressed:#}");
+        assert!(
+            message.contains("refreshing Grok OAuth token"),
+            "context が失われた: {message}"
+        );
+        assert!(
+            message.contains("POST token endpoint: timed out"),
+            "原因が失われた: {message}"
+        );
+    }
+
+    #[test]
+    fn no_retry_after_refresh_leaves_non_retryable_errors_untouched() {
+        // marker の無いエラーは加工しない(auth 失敗の文面判定を壊さない)。
+        let kept = no_retry_after_refresh(anyhow!("HTTP 401 from https://example.test"));
+        assert!(!is_retryable(&kept));
+        assert_eq!(kept.to_string(), "HTTP 401 from https://example.test");
     }
 
     #[test]

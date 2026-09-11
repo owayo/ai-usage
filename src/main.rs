@@ -320,6 +320,25 @@ fn chrome_jobs(root: &std::path::Path, targets: &[Target]) -> Result<Vec<Job>> {
     Ok(jobs)
 }
 
+/// Chrome 由来の job 取得失敗を、OAuth provider の有無で「縮退」と「致命的」に振り分ける。
+///
+/// Keychain の許可ダイアログを拒否した場合など、Cookie 復号鍵が取れないと `chrome_jobs`
+/// 全体が失敗する。これをそのまま伝播させると、Chrome と無関係な Antigravity / Grok の
+/// 行まで消える。Chrome profile の検出失敗を `run()` で縮退させているのと同じ方針で、
+/// OAuth provider が取得対象に残っているなら Chrome 行だけを諦めて続行する。
+/// 取得対象が Chrome だけのときは、原因の分かる元のエラー(「Keychain のダイアログを
+/// 承認して再実行」)をそのまま返す。
+fn chrome_jobs_or_degrade(jobs: Result<Vec<Job>>, has_oauth_targets: bool) -> Result<Vec<Job>> {
+    match jobs {
+        Ok(jobs) => Ok(jobs),
+        Err(error) if has_oauth_targets => {
+            eprintln!("ai-usage: skipping Chrome profiles: {error:#}");
+            Ok(Vec::new())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// job を並行実行し、完了順ではなく入力順に AccountReport を返す。
 async fn run_jobs(clients: http::Clients, jobs: Vec<Job>) -> Vec<AccountReport> {
     let mut set = tokio::task::JoinSet::new();
@@ -382,7 +401,8 @@ async fn fetch_reports(
     let clients = http::clients()?;
     // Chrome Cookie job(Claude/Codex/PixelLab)。必要な場合だけ Keychain に触るため、
     // `--only antigravity` では prompt 自体を避けられる。
-    let mut jobs = chrome_jobs(root, targets)?;
+    let mut jobs =
+        chrome_jobs_or_degrade(chrome_jobs(root, targets), want_antigravity || want_grok)?;
 
     // Antigravity job は Chrome profile に紐づかない単一 OAuth/local account。
     if want_antigravity {
@@ -950,6 +970,154 @@ mod tests {
             Provider::Antigravity
         );
         assert_eq!(FetchSpec::Grok(None).provider(), Provider::Grok);
+    }
+
+    #[test]
+    fn chrome_failure_degrades_only_when_oauth_targets_remain() {
+        // Keychain 拒否などで Chrome 系 job が取れなくても、Antigravity / Grok が対象に
+        // 残っているなら Chrome 行だけを諦めて続行する(OAuth provider を巻き添えにしない)。
+        let degraded =
+            chrome_jobs_or_degrade(Err(anyhow::anyhow!("keychain denied")), true).unwrap();
+        assert!(degraded.is_empty());
+
+        // Chrome だけが対象なら、原因の分かる元のエラーをそのまま返す。
+        let fatal = chrome_jobs_or_degrade(Err(anyhow::anyhow!("keychain denied")), false)
+            .err()
+            .expect("Chrome だけが対象なら失敗を握り潰さない");
+        assert_eq!(fatal.to_string(), "keychain denied");
+
+        // 成功時は job をそのまま通す(OAuth 対象の有無で中身を変えない)。
+        for has_oauth in [true, false] {
+            let jobs = chrome_jobs_or_degrade(
+                Ok(vec![Job::oauth("Grok", None, FetchSpec::Grok(None))]),
+                has_oauth,
+            )
+            .unwrap();
+            assert_eq!(jobs.len(), 1);
+            assert_eq!(jobs[0].fetch.provider(), Provider::Grok);
+        }
+    }
+
+    fn profile(dir: &str, name: &str) -> Profile {
+        Profile {
+            dir: dir.to_string(),
+            name: name.to_string(),
+            email: None,
+        }
+    }
+
+    fn profile_cfg(
+        matcher: &str,
+        label: Option<&str>,
+        providers: Option<&[&str]>,
+    ) -> config::ProfileCfg {
+        config::ProfileCfg {
+            matcher: matcher.to_string(),
+            label: label.map(str::to_string),
+            providers: providers.map(|list| list.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    fn target_names(targets: &[Target]) -> Vec<&str> {
+        targets.iter().map(|t| t.profile.name.as_str()).collect()
+    }
+
+    #[test]
+    fn build_targets_filters_by_cli_profile_using_name_or_dir() {
+        // --profile は表示名と on-disk dir のどちらでも照合し、discovery 順を保つ。
+        let all = || vec![profile("Default", "home"), profile("Profile 2", "Work")];
+        let cfg = config::Config::default();
+
+        let by_name = Cli::parse_from(["ai-usage", "--profile", "work"]);
+        assert_eq!(
+            target_names(&build_targets(all(), &by_name, &cfg)),
+            vec!["Work"]
+        );
+
+        let by_dir = Cli::parse_from(["ai-usage", "--profile", "default"]);
+        assert_eq!(
+            target_names(&build_targets(all(), &by_dir, &cfg)),
+            vec!["home"]
+        );
+
+        // 複数指定は discovery 順(config 順ではない)で返る。
+        let both = Cli::parse_from(["ai-usage", "--profile", "Work,home"]);
+        assert_eq!(
+            target_names(&build_targets(all(), &both, &cfg)),
+            vec!["home", "Work"]
+        );
+
+        // 一致しない指定は空になる(存在しない profile を勝手に補完しない)。
+        let missing = Cli::parse_from(["ai-usage", "--profile", "nope"]);
+        assert!(build_targets(all(), &missing, &cfg).is_empty());
+    }
+
+    #[test]
+    fn build_targets_uses_config_order_then_falls_back_to_auto_discovery() {
+        let all = || vec![profile("Default", "home"), profile("Profile 2", "Work")];
+        let cli = Cli::parse_from(["ai-usage"]);
+
+        // config [[profiles]] があれば、その記述順で並べ label / providers も反映する。
+        let cfg = config::Config {
+            profiles: vec![
+                profile_cfg("Work", Some("work"), None),
+                profile_cfg("home", None, Some(&["claude"])),
+                // 検出されなかった profile 行は黙って落とす。
+                profile_cfg("Missing", None, None),
+            ],
+            ..Default::default()
+        };
+        let targets = build_targets(all(), &cli, &cfg);
+        assert_eq!(target_names(&targets), vec!["Work", "home"]);
+        assert_eq!(targets[0].label.as_deref(), Some("work"));
+        assert_eq!(targets[0].wants, BrowserWants::all());
+        assert!(targets[1].label.is_none());
+        assert_eq!(targets[1].wants, bw(true, false, false));
+
+        // config が空なら auto-discover。discovery 順のまま label 無し・全 provider。
+        let auto = build_targets(all(), &cli, &config::Config::default());
+        assert_eq!(target_names(&auto), vec!["home", "Work"]);
+        assert!(auto.iter().all(|t| t.label.is_none()));
+        assert!(auto.iter().all(|t| t.wants == BrowserWants::all()));
+
+        // --profile は config 選択より優先される(config 順ではなく discovery 順になる)。
+        let pinned = Cli::parse_from(["ai-usage", "--profile", "home"]);
+        assert_eq!(
+            target_names(&build_targets(all(), &pinned, &cfg)),
+            vec!["home"]
+        );
+    }
+
+    #[test]
+    fn statusline_hide_prefers_cli_over_config_and_drops_unknown_names() {
+        let cfg = config::Config {
+            statusline: Some(config::StatuslineCfg {
+                hide: vec![
+                    "claude".to_string(),
+                    "GROK".to_string(),
+                    "unknown".to_string(),
+                ],
+            }),
+            ..Default::default()
+        };
+
+        // CLI 指定があれば config を完全に置き換える(部分マージはしない)。
+        let cli = Cli::parse_from(["ai-usage", "--statusline-hide", "codex,pixellab"]);
+        assert_eq!(
+            resolve_statusline_hide(&cli, &cfg),
+            vec![Provider::Codex, Provider::PixelLab]
+        );
+
+        // CLI 未指定なら config を使う。大文字小文字は無視し、未知の名前は黙って捨てる
+        // (新しい provider 名が書かれた config を古い binary が読んでも落とさないため)。
+        let cli = Cli::parse_from(["ai-usage"]);
+        assert_eq!(
+            resolve_statusline_hide(&cli, &cfg),
+            vec![Provider::Claude, Provider::Grok]
+        );
+
+        // [statusline] が無ければ何も隠さない。
+        assert!(resolve_statusline_hide(&cli, &config::Config::default()).is_empty());
     }
 
     #[test]

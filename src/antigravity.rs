@@ -408,7 +408,13 @@ fn listen_ports(pid: u32) -> Vec<u16> {
     else {
         return Vec::new();
     };
-    let text = String::from_utf8_lossy(&out.stdout);
+    parse_listen_ports(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// `lsof -nP -iTCP -sTCP:LISTEN` の出力から loopback の待受ポートだけを拾う。
+/// language_server は 127.0.0.1 / [::1] にしか bind しないため、外部 interface への
+/// 待受(`*:8080` 等)は別プロセスの port とみなして採用しない。
+fn parse_listen_ports(text: &str) -> Vec<u16> {
     let mut ports = Vec::new();
     for line in text.lines().skip(1) {
         if !(line.contains("127.0.0.1") || line.contains("[::1]")) {
@@ -873,6 +879,28 @@ mod tests {
                     csrf_token: Some("spaced-secret".to_string()),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn parse_listen_ports_takes_loopback_only() {
+        // lsof のヘッダ行は捨て、127.0.0.1 / [::1] の待受だけを採用する。
+        // ワイルドカード待受(`*:8080`)や非 loopback の LISTEN は language_server ではない。
+        let lsof = "\
+COMMAND     PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\n\
+language_   101  you   30u  IPv4 0x1111111111111111      0t0  TCP 127.0.0.1:52847 (LISTEN)\n\
+language_   101  you   31u  IPv6 0x2222222222222222      0t0  TCP [::1]:52848 (LISTEN)\n\
+language_   101  you   32u  IPv4 0x3333333333333333      0t0  TCP *:8080 (LISTEN)\n\
+language_   101  you   33u  IPv4 0x4444444444444444      0t0  TCP 192.168.1.9:9000 (LISTEN)\n";
+        assert_eq!(parse_listen_ports(lsof), vec![52847, 52848]);
+    }
+
+    #[test]
+    fn parse_listen_ports_handles_empty_and_header_only_output() {
+        // プロセスが待受を持たないと lsof は何も出さない(ヘッダすら出ない)。
+        assert!(parse_listen_ports("").is_empty());
+        assert!(
+            parse_listen_ports("COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n").is_empty()
         );
     }
 

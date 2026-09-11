@@ -20,7 +20,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use wreq::Client;
 
-use crate::http::{get_json, is_retryable_status, retryable_error};
+use crate::http::{get_json, is_retryable_status, no_retry_after_refresh, retryable_error};
 use crate::model::{Usage, UsageRow, Window, WindowKind};
 
 /// www.pixellab.ai の Supabase auth Cookie。大きい token は Next.js と同じ `…token.0` /
@@ -167,6 +167,7 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
     if !access_token_fresh(&session.access) {
         session = refresh_session(client, &session.refresh)
             .await
+            .map_err(no_retry_after_refresh)
             .context("refreshing PixelLab access token")?;
         refreshed = true;
     }
@@ -181,9 +182,15 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
         Err(e) if is_auth_error(&e) && !refreshed => {
             session = refresh_session(client, &session.refresh)
                 .await
+                .map_err(no_retry_after_refresh)
                 .context("refreshing after unauthorized response")?;
-            get_account_data(client, &session.access).await?
+            get_account_data(client, &session.access)
+                .await
+                .map_err(no_retry_after_refresh)?
         }
+        // refresh 済みの経路で出た失敗は、外側の backoff 再試行に回さない。job ごと
+        // やり直すと Cookie を読み直して同じ(古い)refresh token を再送してしまう。
+        Err(e) if refreshed => return Err(no_retry_after_refresh(e)),
         Err(e) => return Err(e),
     };
     // /get-subscription はサブスク未加入の profile では 200 で `{}` を返すことがある。
