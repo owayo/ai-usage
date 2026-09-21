@@ -115,21 +115,30 @@ fn classify_windows(rate: Option<&serde_json::Value>) -> (Option<Window>, Option
         if w.is_null() {
             continue;
         }
-        let secs = w
+        // duration が欠落 / null の window を「0 秒 = 短期」と見なさない。0 に倒すと
+        // 週次枠が 5h スロットへ入り、使用率が誤ったラベルで表示される。duration が
+        // 読めないときだけ、従来どおり JSON 上の位置へ fallback する。
+        let is_short = match w
             .get("limit_window_seconds")
             .and_then(serde_json::Value::as_i64)
-            .unwrap_or(0);
-        let is_short = secs <= SHORT_WINDOW_MAX_SECONDS;
+        {
+            Some(secs) => secs <= SHORT_WINDOW_MAX_SECONDS,
+            None => key == "primary_window",
+        };
         let kind = if is_short {
             WindowKind::FiveHour
         } else {
             WindowKind::Weekly
         };
-        let window = parse_window(w, kind);
+        // used_percent が読めない window は、すでに埋まったスロットを壊さずに読み飛ばす。
+        // 無条件代入だと、後続 window の None が先に解析済みの window を消してしまう。
+        let Some(window) = parse_window(w, kind) else {
+            continue;
+        };
         if is_short {
-            short = window;
+            short = Some(window);
         } else {
-            long = window;
+            long = Some(window);
         }
     }
     (short, long)
@@ -304,6 +313,54 @@ mod tests {
         let unusable = json!({"primary_window": {"limit_window_seconds": 604_800}});
         let (short, long) = classify_windows(Some(&unusable));
         assert!(short.is_none() && long.is_none());
+    }
+
+    #[test]
+    fn classify_windows_keeps_a_parsed_window_when_the_other_is_unusable() {
+        // used_percent を持たない window が、すでに埋まったスロットを上書きして消さない。
+        // 無条件代入だと 5h の 7.0% が secondary の None で消え、行ごと空になる。
+        let rate = json!({
+            "primary_window": {"limit_window_seconds": 18_000, "used_percent": 7.0},
+            "secondary_window": {},
+        });
+        let (short, long) = classify_windows(Some(&rate));
+        assert_eq!(short.expect("5h 枠が残る").used_percent, 7.0);
+        assert!(long.is_none());
+
+        // 順序が逆(先に長期が埋まる)でも同じ。
+        let reversed = json!({
+            "primary_window": {"limit_window_seconds": 604_800, "used_percent": 61.0},
+            "secondary_window": {"limit_window_seconds": 18_000},
+        });
+        let (short, long) = classify_windows(Some(&reversed));
+        assert!(short.is_none());
+        assert_eq!(long.expect("週次枠が残る").used_percent, 61.0);
+    }
+
+    #[test]
+    fn classify_windows_falls_back_to_position_when_duration_is_missing() {
+        // limit_window_seconds が欠落 / null のとき、0 秒(=短期)に倒さず位置で振り分ける。
+        // 0 に倒すと週次の使用率が 5h ラベルで表示され、長期スロットが空になる。
+        let rate = json!({
+            "primary_window": {"limit_window_seconds": 18_000, "used_percent": 7.0},
+            "secondary_window": {"limit_window_seconds": null, "used_percent": 61.0},
+        });
+        let (short, long) = classify_windows(Some(&rate));
+        let short = short.expect("5h 枠は短期スロットに残る");
+        assert_eq!(short.kind, WindowKind::FiveHour);
+        assert_eq!(short.used_percent, 7.0);
+        let long = long.expect("duration 不明の secondary は長期スロットへ");
+        assert_eq!(long.kind, WindowKind::Weekly);
+        assert_eq!(long.used_percent, 61.0);
+
+        // フィールドごと無い場合も同じ扱い。
+        let absent = json!({
+            "primary_window": {"used_percent": 7.0},
+            "secondary_window": {"used_percent": 61.0},
+        });
+        let (short, long) = classify_windows(Some(&absent));
+        assert_eq!(short.expect("primary は短期").used_percent, 7.0);
+        assert_eq!(long.expect("secondary は長期").used_percent, 61.0);
     }
 
     #[test]

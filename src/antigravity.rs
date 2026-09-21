@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use wreq::{Client, StatusCode};
 
 use crate::config::AntigravityCfg;
-use crate::http::{post_form, post_json};
+use crate::http::{no_retry_after_refresh, post_form, post_json};
 use crate::model::{Usage, UsageRow, Window, WindowKind};
 
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -228,6 +228,10 @@ fn is_weekly(b: &Value) -> bool {
         return w.to_ascii_lowercase().contains("week");
     }
     if let Some(id) = b.get("bucketId").and_then(|i| i.as_str()) {
+        // `window` / `displayName` と同様に小文字へ揃えてから照合する。ここだけ素の
+        // まま比べると `"WeeklyQuota"` のような id が週次と判定されず、displayName も
+        // 読まずに末尾の時刻 fallback へ落ちる(v1internal は版ごとに表記が動く)。
+        let id = id.to_ascii_lowercase();
         if id.contains("week") {
             return true;
         }
@@ -440,17 +444,35 @@ async fn oauth_fetch(api: &Client, cfg: Option<&AntigravityCfg>) -> Result<Vec<U
     let mut tok = load_token(&path)
         .with_context(|| format!("reading Antigravity token {}", path.display()))?;
 
+    // 1 回の fetch で refresh は 1 度だけ(pixellab.rs / grok.rs と同じ制約)。refresh 済みの
+    // 経路で出た一時エラーに retryable marker を残すと、`main.rs` の `fetch_with_retry` が
+    // `fetch` ごとやり直し、ディスク上の(更新していない)token を読み直して同じ refresh を
+    // 撃ち直す。expiry 起点で最大 4 回、401 が絡めば 1 回の呼び出しで 2 回撃つため合計 8 回に
+    // なり、再試行のたびに local_fetch の 5 秒も積み上がって JOB_DEADLINE を食い潰す。
+    let mut refreshed = false;
     if tok.expires_in() < 300 {
         tok = refresh(api, &tok)
             .await
+            .map_err(no_retry_after_refresh)
             .context("refreshing Antigravity OAuth token")?;
+        refreshed = true;
     }
 
     let url = format!("{CODE_ASSIST}:retrieveUserQuota");
-    let (mut status, mut body) = post_json(api, &url, &tok.access, &json!({})).await?;
-    if status == StatusCode::UNAUTHORIZED {
-        tok = refresh(api, &tok).await.context("refreshing after 401")?;
-        let r = post_json(api, &url, &tok.access, &json!({})).await?;
+    let (mut status, mut body) = match post_json(api, &url, &tok.access, &json!({})).await {
+        Ok(r) => r,
+        Err(e) if refreshed => return Err(no_retry_after_refresh(e)),
+        Err(e) => return Err(e),
+    };
+    // refresh 直後の 401 は revoke 等であり、もう一度 refresh しても回復しない。
+    if status == StatusCode::UNAUTHORIZED && !refreshed {
+        tok = refresh(api, &tok)
+            .await
+            .map_err(no_retry_after_refresh)
+            .context("refreshing after 401")?;
+        let r = post_json(api, &url, &tok.access, &json!({}))
+            .await
+            .map_err(no_retry_after_refresh)?;
         status = r.0;
         body = r.1;
     }
@@ -761,6 +783,28 @@ mod tests {
         assert!(is_weekly(&json!({"window": "weekly"})));
         assert!(is_weekly(&json!({"bucketId": "gemini-weekly"})));
         assert!(!is_weekly(&json!({"bucketId": "gemini-5h"})));
+    }
+
+    #[test]
+    fn weekly_detection_is_case_insensitive_on_every_field() {
+        // v1internal は版ごとに表記が動く。window / bucketId / displayName のどれで
+        // 来ても、大文字混じりで判定が崩れない(bucketId だけ素で比較していた退行の回帰)。
+        assert!(is_weekly(&json!({"window": "WEEKLY"})));
+        assert!(is_weekly(&json!({"bucketId": "GeminiWeeklyQuota"})));
+        assert!(!is_weekly(&json!({"bucketId": "Gemini5H"})));
+        assert!(!is_weekly(&json!({"bucketId": "GeminiFiveHour"})));
+        assert!(is_weekly(&json!({"displayName": "Weekly limit"})));
+    }
+
+    #[test]
+    fn weekly_falls_back_to_reset_distance_when_no_label_matches() {
+        // ラベルが一切手がかりにならないときだけ、reset までの距離(8h 超)で判定する。
+        let soon = (Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        let far = (Utc::now() + chrono::Duration::days(3)).to_rfc3339();
+        assert!(!is_weekly(&json!({"resetTime": soon})));
+        assert!(is_weekly(&json!({"resetTime": far})));
+        // 手がかりも reset も無ければ週次側に倒す(長期スロットの方が誤りが目立たない)。
+        assert!(is_weekly(&json!({})));
     }
 
     #[test]

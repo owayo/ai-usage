@@ -164,14 +164,14 @@ ai-usage --statusline
 | `--statusline-hide <PROVIDERS>` | Comma-separated providers to skip in statusline only (`--json` / table unaffected). E.g. `--statusline-hide antigravity,codex` |
 | `--sort weekly-usage` | Rank rows by long-window utilization (closest to the cap first) |
 | `--sort weekly-reset` | Rank rows by long-window reset time (soonest first) |
-| `--no-color` | Disable ANSI colors. Colors are also suppressed when `NO_COLOR` is set or `TERM=dumb` |
+| `--no-color` | Disable ANSI colors. Colors are also suppressed when `NO_COLOR` holds a non-empty value (per [no-color.org](https://no-color.org/)) or `TERM=dumb` |
 | `--input <PATH>` | Render the statusline from a cached `--json` file instead of fetching. Touches neither Chrome, Keychain, nor the network — used for fast status-bar redraws |
 
 #### Active row selection
 
 | Option | Description |
 |--------|-------------|
-| `--active-email <EMAIL>` | Match the signed-in email of a Claude row (default: `$CLAUDE_CONFIG_DIR/.claude.json`) |
+| `--active-email <EMAIL>` | Match the signed-in email of a Claude row (default: `$CLAUDE_CONFIG_DIR/.claude.json`, falling back to `~/.claude.json` when that variable is unset or empty) |
 | `--active-profile <NAME>` | Match a profile by name |
 | `--active-provider <NAME>` | Pin to a single provider: `claude`, `codex`, `antigravity`, `pixellab`, or `grok` |
 
@@ -268,7 +268,7 @@ hide = ["antigravity"]              # subset of: claude / codex / antigravity / 
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `active_email` | Highlight this account's Claude row as active | Auto-detected from `CLAUDE_CONFIG_DIR/.claude.json` |
+| `active_email` | Highlight this account's Claude row as active | Auto-detected from `CLAUDE_CONFIG_DIR/.claude.json` (or `~/.claude.json`) |
 | `[[profiles]]` | Explicit list of profiles to show (empty = auto-discover all) | `[]` (auto) |
 | `profiles[].match` | Chrome display name or on-disk directory (e.g. `Default`) | Required |
 | `profiles[].label` | Display label instead of the account email username | Email username |

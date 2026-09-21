@@ -16,6 +16,7 @@ mod report;
 mod sort;
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -56,8 +57,9 @@ struct Cli {
     #[arg(long)]
     logos: bool,
 
-    /// network fetch の代わりに、この JSON file(cached `--json` output)から account を読む
-    /// statusline の高速描画で使う。
+    /// `--statusline` と併用し、network fetch の代わりにこの JSON file
+    /// (cached `--json` output)から account を読む。statusline の高速描画で使う
+    /// (`--statusline` なしでは無視され、通常どおり fetch する)。
     #[arg(long, value_name = "PATH")]
     input: Option<PathBuf>,
 
@@ -436,9 +438,21 @@ async fn fetch_reports(
 /// Claude Code 設定 file の path。`$CLAUDE_CONFIG_DIR/.claude.json`、未設定なら
 /// home 直下の `~/.claude.json`。
 fn claude_config_path() -> PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR")
+    resolve_claude_config_path(std::env::var_os("CLAUDE_CONFIG_DIR"), dirs::home_dir())
+}
+
+/// `claude_config_path` の解決規則。環境に触れずテストできるよう入力を引数で受ける。
+///
+/// 空文字の `CLAUDE_CONFIG_DIR` は未設定と同じ扱いにする。Unix の environ は `FOO=` を
+/// 「値が空の存在する変数」として持つため、`export CLAUDE_CONFIG_DIR="$未定義変数"` を
+/// 書いた shell から起動すると `var_os` が `Some("")` を返し、join の結果が相対 path
+/// `.claude.json` になって cwd 直下の無関係な file を読んでしまう
+/// (`profiles.rs` / `pixellab.rs` の「空文字は未設定」と規約を揃える)。
+fn resolve_claude_config_path(env_dir: Option<OsString>, home: Option<PathBuf>) -> PathBuf {
+    env_dir
+        .filter(|d| !d.is_empty())
         .map(|d| PathBuf::from(d).join(".claude.json"))
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude.json"))
+        .unwrap_or_else(|| home.unwrap_or_default().join(".claude.json"))
 }
 
 /// Claude Code 設定 file から signed-in account email(`oauthAccount.emailAddress`)を読む。
@@ -521,10 +535,27 @@ fn resolve_active_email(
 }
 
 fn color_enabled(no_color_flag: bool) -> bool {
-    if no_color_flag || std::env::var_os("NO_COLOR").is_some() {
+    resolve_color_enabled(
+        no_color_flag,
+        std::env::var_os("NO_COLOR"),
+        std::env::var("TERM").ok(),
+    )
+}
+
+/// `color_enabled` の判定規則。環境に触れずテストできるよう入力を引数で受ける。
+///
+/// NO_COLOR の仕様(no-color.org)は「存在し、かつ空文字列でない」ときだけ無効化と
+/// 定める。`is_some()` だけで見ると `export NO_COLOR="$未定義変数"` のような空値でも
+/// 色が落ちるため、明示的に空文字を除外する。
+fn resolve_color_enabled(
+    no_color_flag: bool,
+    no_color: Option<OsString>,
+    term: Option<String>,
+) -> bool {
+    if no_color_flag || no_color.is_some_and(|v| !v.is_empty()) {
         return false;
     }
-    std::env::var("TERM").map(|t| t != "dumb").unwrap_or(true)
+    term.map(|t| t != "dumb").unwrap_or(true)
 }
 
 /// TOML の basic string としてシリアライズした文字列を返す(クオート込み)。
@@ -877,6 +908,60 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_config_path_treats_empty_env_as_unset() {
+        let home = PathBuf::from("/home/u");
+
+        // 通常: $CLAUDE_CONFIG_DIR/.claude.json。
+        assert_eq!(
+            resolve_claude_config_path(Some(OsString::from("/cfg")), Some(home.clone())),
+            PathBuf::from("/cfg/.claude.json")
+        );
+        // 未設定: home 直下。
+        assert_eq!(
+            resolve_claude_config_path(None, Some(home.clone())),
+            PathBuf::from("/home/u/.claude.json")
+        );
+
+        // 空文字は未設定と同じ。`export CLAUDE_CONFIG_DIR="$未定義変数"` を書いた shell から
+        // 起動しても、相対 path `.claude.json` に落ちて cwd の無関係な file を読まない。
+        let from_empty = resolve_claude_config_path(Some(OsString::new()), Some(home));
+        assert_eq!(from_empty, PathBuf::from("/home/u/.claude.json"));
+        assert!(
+            from_empty.is_absolute(),
+            "cwd 相対に落ちてはいけない: {}",
+            from_empty.display()
+        );
+    }
+
+    #[test]
+    fn color_is_disabled_only_by_flag_non_empty_no_color_or_dumb_term() {
+        let xterm = || Some("xterm-256color".to_string());
+
+        // --no-color が最優先。
+        assert!(!resolve_color_enabled(true, None, xterm()));
+        // NO_COLOR は値の中身を問わず無効化する(仕様どおり "0" でも無効)。
+        assert!(!resolve_color_enabled(
+            false,
+            Some(OsString::from("1")),
+            xterm()
+        ));
+        assert!(!resolve_color_enabled(
+            false,
+            Some(OsString::from("0")),
+            xterm()
+        ));
+        // 空の NO_COLOR は「未設定」と同じ(no-color.org: "present and not an empty string")。
+        assert!(resolve_color_enabled(false, Some(OsString::new()), xterm()));
+        // TERM=dumb は色なし、TERM 未設定 / 非 UTF-8 は色あり。
+        assert!(!resolve_color_enabled(
+            false,
+            None,
+            Some("dumb".to_string())
+        ));
+        assert!(resolve_color_enabled(false, None, None));
+    }
 
     #[test]
     fn toml_str_roundtrips_through_toml_parser() {

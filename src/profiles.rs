@@ -107,6 +107,65 @@ mod tests {
     }
 
     #[test]
+    fn discover_fails_on_missing_unreadable_and_shapeless_local_state() {
+        let root = temp_root("discover-errors");
+
+        // Local State が無い → path 付きのエラー(利用者が原因を特定できること)。
+        let err = discover(&root).unwrap_err().to_string();
+        assert!(err.contains("Local State"), "path が message に無い: {err}");
+
+        // JSON として壊れている。
+        std::fs::write(root.join("Local State"), "{ not json").unwrap();
+        assert!(discover(&root).is_err());
+
+        // JSON ではあるが profile.info_cache が無い。
+        std::fs::write(root.join("Local State"), r#"{"profile":{}}"#).unwrap();
+        let err = discover(&root).unwrap_err().to_string();
+        assert!(err.contains("info_cache"), "原因が伝わらない: {err}");
+
+        // info_cache が object でない(配列)場合も同じ経路で弾く。
+        std::fs::write(root.join("Local State"), r#"{"profile":{"info_cache":[]}}"#).unwrap();
+        assert!(discover(&root).is_err());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discover_falls_back_to_dir_when_name_is_not_a_string() {
+        // Chrome が name を文字列以外で書いた場合でも profile を落とさず、
+        // directory 名を表示名として採用する(行が消える方が困る)。
+        let root = temp_root("discover-name-type");
+        std::fs::write(
+            root.join("Local State"),
+            r#"{"profile":{"info_cache":{
+                "Profile 3":{"name":42,"user_name":"a@example.com"},
+                "Profile 4":{"name":null}
+            }}}"#,
+        )
+        .unwrap();
+
+        let profiles = discover(&root).unwrap();
+        assert_eq!(
+            profiles
+                .iter()
+                .map(|p| (p.dir.as_str(), p.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("Profile 3", "Profile 3"), ("Profile 4", "Profile 4")]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cookies_db_returns_none_when_neither_store_exists() {
+        let root = temp_root("cookies-db-none");
+        // profile directory 自体が無い場合も、存在するが Cookie DB が無い場合も None。
+        assert_eq!(cookies_db(&root, "Default"), None);
+        std::fs::create_dir_all(root.join("Default/Network")).unwrap();
+        assert_eq!(cookies_db(&root, "Default"), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cookies_db_prefers_network_store_and_falls_back_to_legacy_store() {
         let root = temp_root("cookies-db");
         let profile = root.join("Default");

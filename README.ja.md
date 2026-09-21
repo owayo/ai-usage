@@ -163,14 +163,14 @@ ai-usage --statusline
 | `--statusline-hide <PROVIDERS>` | statusline でのみ非表示にする provider (comma 区切り)。`--json` / table には影響なし。例: `--statusline-hide antigravity,codex` |
 | `--sort weekly-usage` | 長期枠の使用率が高い順 (リミットに近いアカウントを上に) |
 | `--sort weekly-reset` | 長期枠のリセット時刻が近い順 (リセット待ちが短いアカウントを上に) |
-| `--no-color` | ANSI カラーを無効化 (`NO_COLOR` 環境変数または `TERM=dumb` でも無効になります) |
+| `--no-color` | ANSI カラーを無効化 (`NO_COLOR` 環境変数に空でない値が入っている場合 ([no-color.org](https://no-color.org/) の仕様) または `TERM=dumb` でも無効になります) |
 | `--input <PATH>` | フェッチせず、キャッシュ済み `--json` ファイルから statusline を描画。Chrome・Keychain・ネットワークのいずれにも触れないため、ステータスバーの再描画が高速 |
 
 #### アクティブ行の選択
 
 | オプション | 説明 |
 |-----------|------|
-| `--active-email <EMAIL>` | Claude 行のサインイン済みメールと照合 (既定: `$CLAUDE_CONFIG_DIR/.claude.json`) |
+| `--active-email <EMAIL>` | Claude 行のサインイン済みメールと照合 (既定: `$CLAUDE_CONFIG_DIR/.claude.json`。環境変数が未設定または空なら `~/.claude.json`) |
 | `--active-profile <NAME>` | プロファイル名で照合 |
 | `--active-provider <NAME>` | 1 プロバイダに固定: `claude` / `codex` / `antigravity` / `pixellab` / `grok` |
 
@@ -266,7 +266,7 @@ hide = ["antigravity"]              # claude / codex / antigravity / pixellab / 
 
 | オプション | 説明 | 既定値 |
 |-----------|------|--------|
-| `active_email` | このアカウントの Claude 行をアクティブとしてハイライト | `CLAUDE_CONFIG_DIR/.claude.json` から自動検出 |
+| `active_email` | このアカウントの Claude 行をアクティブとしてハイライト | `CLAUDE_CONFIG_DIR/.claude.json` (未設定なら `~/.claude.json`) から自動検出 |
 | `[[profiles]]` | 表示するプロファイル一覧 (空なら自動検出) | `[]` (自動) |
 | `profiles[].match` | Chrome 表示名または on-disk ディレクトリ名 (例: `Default`) | 必須 |
 | `profiles[].label` | アカウントメール username の代わりに表示するラベル | メール username |

@@ -41,9 +41,9 @@ first in any new `is_auth_error`.
 
 Related: the whole tool is read-only with respect to credentials — it never
 writes a rotated refresh token back to the Chrome cookie or `auth.json`. Each
-`fetch` therefore refreshes **at most once** — `pixellab.rs` and `grok.rs` both
-gate the 401/403 retry behind a `refreshed` flag — so the stored token stays at
-most one generation behind.
+`fetch` therefore refreshes **at most once** — `pixellab.rs`, `grok.rs`, and
+`antigravity.rs` all gate their post-401 retry behind a `refreshed` flag — so the
+stored token stays at most one generation behind.
 
 That guarantee only holds if the *retry loop* cannot re-enter a fetch that has
 already sent a refresh. `fetch_with_retry` re-runs the whole provider `fetch`,
@@ -90,9 +90,13 @@ Each module ships unit tests next to its source (`#[cfg(test)] mod tests`),
 covering pure logic: cookie decryption round-trips and malformed schema-v24
 prefix rejection, live WAL visibility through read-only Cookie DB access, exact provider-domain
 filtering, numeric session-cookie chunk name matching (`.0`, `.1`, ...)
-(`cookies.rs`), Chrome profile discovery / cookie-store precedence
+(`cookies.rs`), Chrome profile discovery / cookie-store precedence, plus the
+`Local State` failure modes (missing file, malformed JSON, absent or non-object
+`profile.info_cache`, non-string profile names)
 (`profiles.rs`), org/window parsing plus duration-based (not position-based)
-primary/secondary window classification with its 8-hour boundary
+primary/secondary window classification with its 8-hour boundary, the
+position fallback taken when `limit_window_seconds` is absent or null, and the
+rule that an unparsable window never overwrites an already-filled slot
 (`claude.rs`/`codex.rs`), TOML config
 loading including explicit-path and invalid-file fallbacks, and
 `BrowserWants` (`config.rs`), display-name and active-row resolution including
@@ -105,7 +109,9 @@ monthly reset thresholds for legacy caches, and display-width name padding
 (over-long / exactly-fitting / full-width names) (`render/statusline.rs`),
 Antigravity quota parsing including nested/flat
 `remainingFraction`, missing-quota rejection, ISO-8601 and epoch-second
-`resetTime`, app/IDE CSRF process-argument extraction, overflow-safe token expiry,
+`resetTime`, case-insensitive weekly detection across `window` / `bucketId` /
+`displayName` with its reset-distance fallback,
+app/IDE CSRF process-argument extraction, overflow-safe token expiry,
 the local-path timeout budget that keeps the OAuth fallback reachable,
 loopback-only `lsof` listen-port parsing, plus wrapped/flat
 `GetUserStatus` shapes (`antigravity.rs`), PixelLab Supabase cookie parsing
@@ -123,7 +129,10 @@ keeps the original message
 (`http.rs`), TOML-value escaping, provider resolution, Chrome-discovery
 bypass for cached / OAuth-only modes, target building across the
 `--profile` / config / auto-discovery precedence, statusline hide resolution,
-and the Chrome-failure degradation that spares OAuth providers (`main.rs`).
+empty-string `CLAUDE_CONFIG_DIR` / `NO_COLOR` handling (both mean "unset", so a
+`FOO=` in the environment neither redirects the config path to the cwd nor drops
+colours), and the Chrome-failure degradation that spares OAuth providers
+(`main.rs`).
 Drive the network paths via `make build` + a real run.
 
 ## Dependency safety
