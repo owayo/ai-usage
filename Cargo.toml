@@ -2,6 +2,7 @@
 name = "ai-usage"
 version = "26.7.100"
 edition = "2024"
+rust-version = "1.98"
 description = "Unified AI provider usage limits across Chrome profiles and CLI OAuth accounts"
 license = "GPL-3.0"
 
