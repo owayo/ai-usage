@@ -3,8 +3,9 @@ name = "ai-usage"
 version = "26.7.100"
 edition = "2024"
 rust-version = "1.98"
-description = "Unified AI provider usage limits across Chrome profiles and CLI OAuth accounts"
-license = "GPL-3.0"
+description = "macOS CLI that shows Claude, Codex, Antigravity, PixelLab, and Grok usage limits across all Chrome profiles and CLI OAuth accounts"
+license = "MIT"
+repository = "https://github.com/owayo/ai-usage"
 
 [dependencies]
 # 暗号: RustCrypto — AES-128-CBC + PBKDF2-HMAC-SHA1(Chrome macOS "v10" Cookie 方式)
@@ -39,5 +40,6 @@ anyhow = "1.0.104"
 toml = "1.1.5"
 
 [profile.release]
-strip = true
 lto = true
+codegen-units = 1
+strip = true
