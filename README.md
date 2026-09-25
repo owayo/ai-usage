@@ -5,52 +5,33 @@
 <h1 align="center">ai-usage</h1>
 
 <p align="center">
-  Unified Claude + Codex + Antigravity + PixelLab + Grok usage limits on macOS
+  macOS CLI that shows Claude, Codex, Antigravity, PixelLab, and Grok usage limits across all Chrome profiles and CLI OAuth accounts
+</p>
+
+<!-- standard:badges:start -->
+<h3 align="center">Supported Platforms</h3>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/macOS-000000?logo=apple&amp;logoColor=white" alt="macOS">
 </p>
 
 <p align="center">
-  <a href="https://github.com/owayo/ai-usage/actions/workflows/release.yml">
-    <img alt="Release" src="https://github.com/owayo/ai-usage/actions/workflows/release.yml/badge.svg?branch=main">
-  </a>
-  <a href="https://github.com/owayo/ai-usage/actions/workflows/ci.yml">
-    <img alt="CI" src="https://github.com/owayo/ai-usage/actions/workflows/ci.yml/badge.svg?branch=main">
-  </a>
-  <a href="https://github.com/owayo/ai-usage/releases/latest">
-    <img alt="Version" src="https://img.shields.io/github/v/release/owayo/ai-usage">
-  </a>
-  <a href="LICENSE">
-    <img alt="License" src="https://img.shields.io/github/license/owayo/ai-usage">
-  </a>
+  <a href="https://github.com/owayo/ai-usage/actions/workflows/ci.yml"><img src="https://github.com/owayo/ai-usage/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/owayo/ai-usage/releases/latest"><img src="https://img.shields.io/github/v/release/owayo/ai-usage" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/owayo/ai-usage" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="README.md">English</a> |
   <a href="README.ja.md">日本語</a>
 </p>
+<!-- standard:badges:end -->
 
 ---
 
-One command to see usage limits for **Claude**, **OpenAI Codex (ChatGPT)**,
-**Antigravity**, **PixelLab**, and **Grok**. Browser-backed accounts are collected
-across every signed-in Chrome profile, while Antigravity and Grok use their CLI OAuth
-credentials.
+One command to see usage limits for **Claude**, **OpenAI Codex (ChatGPT)**, **Antigravity**, **PixelLab**, and **Grok**. Browser-backed accounts are collected across every signed-in Chrome profile, while Antigravity and Grok use their CLI OAuth credentials.
 
-It reads each Chrome profile's session straight from the browser, so it can report
-**multiple accounts at once** (e.g. a `Work` and a `Home` profile, each with both a
-Claude and a Codex subscription = four accounts) without you logging anything in or out.
-
-```
-┌─────────┬──────────┬──────────────────────────┬─────────────────────────────┬─────────────────────────────┐
-│ Account ┆ Service  ┆ Plan                     ┆ Short window                ┆ Long window                 │
-╞═════════╪══════════╪══════════════════════════╪═════════════════════════════╪═════════════════════════════╡
-│ work    ┆ Claude   ┆ max                      ┆ 5h █░░░░░░░░░    4%  · in 2h ┆ 1w █░░░░░░░░░    3%  · in 4d │
-│ work    ┆ Codex    ┆ team                     ┆ 5h █░░░░░░░░░    1%  · in 5h ┆ 1w ░░░░░░░░░░    0%  · in 7d │
-│ home    ┆ Claude   ┆ max                      ┆ 5h █░░░░░░░░░   12%  · in 1h ┆ 1w █░░░░░░░░░    3%  · in 5d │
-│ home    ┆ Codex    ┆ prolite                  ┆ 5h █░░░░░░░░░   10%  · in 4h ┆ 1w ███░░░░░░░   31%  · in 4d │
-│ home    ┆ PixelLab ┆ Tier 1: Pixel Apprentice ┆ —                           ┆ 1m █████░░░░░   46%  · in 5d │
-└─────────┴──────────┴──────────────────────────┴─────────────────────────────┴─────────────────────────────┘
-  updated 21:46 · bars = usage, time = until reset
-```
+It reads each Chrome profile's session straight from the browser, so it can report **multiple accounts at once** (e.g. a `Work` and a `Home` profile, each with both a Claude and a Codex subscription = four accounts) without you logging anything in or out.
 
 ## Features
 
@@ -66,130 +47,78 @@ Claude and a Codex subscription = four accounts) without you logging anything in
 
 ## Requirements
 
-- **OS**: macOS (Chrome uses macOS `v10` cookie encryption; Windows `v20` app-bound scheme is not handled)
 - **Browser**: Google Chrome (signed into Claude, Codex, and/or PixelLab) for browser-backed providers. Chrome is optional if you only use the OAuth-backed providers below — when it is missing, `ai-usage` notes it on stderr and reports the remaining providers
-- **Build**: Rust toolchain + **cmake** (required by [`wreq`](https://crates.io/crates/wreq)'s BoringSSL)
+- **Build from source**: The Cargo and From Source methods below need CMake, which the BoringSSL build inside [`wreq`](https://crates.io/crates/wreq) calls. Install it with `brew install cmake` (`make setup` installs it when it is missing)
 - **Optional**: Antigravity app, `agy` CLI, or `~/.gemini` OAuth token for Antigravity usage
 - **Optional**: `grok` CLI signed in (`~/.grok/auth.json`) for Grok usage
 
 ## Installation
 
+<!-- standard:install:start -->
 ### Homebrew (macOS)
 
 ```bash
 brew install owayo/ai-usage/ai-usage
 ```
 
-### From Source
+### Cargo
+
+Requires Rust 1.98 or later.
 
 ```bash
-git clone https://github.com/owayo/ai-usage.git
-cd ai-usage
-make deps       # install cmake if missing
-make install    # build + install to ~/.local/bin
+cargo install --git https://github.com/owayo/ai-usage --locked
 ```
 
 ### From GitHub Releases
 
-Download the latest binary from [Releases](https://github.com/owayo/ai-usage/releases).
+Download the archive for your platform from [Releases](https://github.com/owayo/ai-usage/releases/latest), extract it, and put `ai-usage` on your `PATH`. Each release also includes `SHA256SUMS` for checking the downloads.
 
-#### macOS (Apple Silicon)
+| Platform | Archive |
+|---|---|
+| macOS (Intel) | `ai-usage-x86_64-apple-darwin.tar.gz` |
+| macOS (Apple Silicon) | `ai-usage-aarch64-apple-darwin.tar.gz` |
 
-```bash
-curl -L https://github.com/owayo/ai-usage/releases/latest/download/ai-usage-aarch64-apple-darwin.tar.gz | tar xz
-sudo mv ai-usage /usr/local/bin/
-```
+On macOS, if you downloaded the archive with a browser, remove the quarantine attribute before running it: `xattr -d com.apple.quarantine ai-usage`.
 
-#### macOS (Intel)
+### From Source
 
-```bash
-curl -L https://github.com/owayo/ai-usage/releases/latest/download/ai-usage-x86_64-apple-darwin.tar.gz | tar xz
-sudo mv ai-usage /usr/local/bin/
-```
-
-### With cargo
+Requires [mise](https://mise.jdx.dev/) (the Rust toolchain is pinned in `mise.toml`).
 
 ```bash
-brew install cmake
-cargo install --path .
+git clone https://github.com/owayo/ai-usage.git
+cd ai-usage
+make install
 ```
 
-The **first run with a browser-backed provider** triggers a macOS Keychain prompt
-(*"… wants to use the 'Chrome Safe Storage' key"*) — choose **Always Allow**.
+`make install` installs to `/usr/local/bin`. Set `INSTALL_PATH` to change it (for example `make install INSTALL_PATH="$HOME/.local/bin"`).
+<!-- standard:install:end -->
 
-## Quickstart
+### First run
 
-```bash
-# All signed-in profiles, all providers
-ai-usage
-
-# Only Claude across all profiles
-ai-usage --only claude
-
-# JSON output for scripts
-ai-usage --json
-
-# Compact statusline for your terminal status bar
-ai-usage --statusline
-```
+The first run with a browser-backed provider triggers a macOS Keychain prompt (*"… wants to use the 'Chrome Safe Storage' key"*). Choose **Always Allow**.
 
 ## Usage
 
-### Commands
+Run `ai-usage` with no arguments to see every signed-in account:
 
-| Command | Description |
-|---------|-------------|
-| `ai-usage` | Show usage for all signed-in profiles and providers |
-| `ai-usage --init-config` | Generate a starter config from currently signed-in sessions |
-| `ai-usage --list-profiles` | List discovered Chrome profiles |
-
-### Options
-
-#### Filtering
-
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--profile <NAMES>` | `-p` | Comma-separated profile names (Chrome display name or on-disk dir) |
-| `--only <PROVIDER>` | | Show only `claude`, `codex`, `antigravity`, `pixellab`, or `grok` |
-
-#### Output
-
-| Option | Description |
-|--------|-------------|
-| `--json` | Machine-readable JSON output |
-| `--statusline` | Compact one-line-per-account output for status bars |
-| `--statusline --logos` | With brand-logo glyphs (requires the BrandLogos font) |
-| `--statusline --compact` | Half-width gauge for narrow panes |
-| `--statusline --reset-at` | Append the long-window reset clock-time, e.g. `(06/18 01:10)` |
-| `--statusline-hide <PROVIDERS>` | Comma-separated providers to skip in statusline only (`--json` / table unaffected). E.g. `--statusline-hide antigravity,codex` |
-| `--sort weekly-usage` | Rank rows by long-window utilization (closest to the cap first) |
-| `--sort weekly-reset` | Rank rows by long-window reset time (soonest first) |
-| `--no-color` | Disable ANSI colors. Colors are also suppressed when `NO_COLOR` holds a non-empty value (per [no-color.org](https://no-color.org/)) or `TERM=dumb` |
-| `--input <PATH>` | Render the statusline from a cached `--json` file instead of fetching. Touches neither Chrome, Keychain, nor the network — used for fast status-bar redraws |
-
-#### Active row selection
-
-| Option | Description |
-|--------|-------------|
-| `--active-email <EMAIL>` | Match the signed-in email of a Claude row (default: `$CLAUDE_CONFIG_DIR/.claude.json`, falling back to `~/.claude.json` when that variable is unset or empty) |
-| `--active-profile <NAME>` | Match a profile by name |
-| `--active-provider <NAME>` | Pin to a single provider: `claude`, `codex`, `antigravity`, `pixellab`, or `grok` |
-
-#### Config, Debug & Info
-
-| Option | Description |
-|--------|-------------|
-| `--config <PATH>` | Use this config file instead of `~/.config/ai-usage/config.toml` |
-| `--debug` | Print per-row match decisions to stderr as JSONL (stdout stays clean for pipes) |
-| `--help` | Print help |
-| `--version` | Print version |
-
-### Examples
+```text
+┌─────────┬──────────┬──────────────────────────┬─────────────────────────────┬─────────────────────────────┐
+│ Account ┆ Service  ┆ Plan                     ┆ Short window                ┆ Long window                 │
+╞═════════╪══════════╪══════════════════════════╪═════════════════════════════╪═════════════════════════════╡
+│ work    ┆ Claude   ┆ max                      ┆ 5h █░░░░░░░░░    4%  · in 2h ┆ 1w █░░░░░░░░░    3%  · in 4d │
+│ work    ┆ Codex    ┆ team                     ┆ 5h █░░░░░░░░░    1%  · in 5h ┆ 1w ░░░░░░░░░░    0%  · in 7d │
+│ home    ┆ Claude   ┆ max                      ┆ 5h █░░░░░░░░░   12%  · in 1h ┆ 1w █░░░░░░░░░    3%  · in 5d │
+│ home    ┆ Codex    ┆ prolite                  ┆ 5h █░░░░░░░░░   10%  · in 4h ┆ 1w ███░░░░░░░   31%  · in 4d │
+│ home    ┆ PixelLab ┆ Tier 1: Pixel Apprentice ┆ —                           ┆ 1m █████░░░░░   46%  · in 5d │
+└─────────┴──────────┴──────────────────────────┴─────────────────────────────┴─────────────────────────────┘
+  updated 21:46 · bars = usage, time = until reset
+```
 
 ```bash
 # Basic usage
 ai-usage                          # all profiles, all providers
 ai-usage -p Work,Home             # specific profiles only
+ai-usage --list-profiles          # list the Chrome profiles it found
 
 # Filter provider
 ai-usage --only claude
@@ -197,6 +126,9 @@ ai-usage --only codex
 ai-usage --only antigravity
 ai-usage --only pixellab
 ai-usage --only grok
+
+# JSON output for scripts
+ai-usage --json
 
 # Statusline for terminal status bar
 ai-usage --statusline
@@ -207,81 +139,32 @@ ai-usage --sort weekly-usage      # closest to the cap first
 ai-usage --sort weekly-reset      # soonest reset first
 ```
 
+Every command and option, including active-row selection, `--input` for fast status-bar redraws from a cached `--json` file, and `--debug`: [docs/cli-reference.md](docs/cli-reference.md)
+
 ## Configuration
 
-`ai-usage` needs **no configuration** — it auto-discovers every Chrome profile that has a
-Claude, Codex, or PixelLab session, plus available Antigravity and Grok OAuth credentials.
-To pin *which* profiles appear, rename them, or limit providers, drop a file at
-**`~/.config/ai-usage/config.toml`**
-(or `$XDG_CONFIG_HOME/ai-usage/config.toml`).
+`ai-usage` needs **no configuration**: it auto-discovers every Chrome profile that has a Claude, Codex, or PixelLab session, plus available Antigravity and Grok OAuth credentials. To pin *which* profiles appear, rename them, or limit providers, put a file at **`~/.config/ai-usage/config.toml`** (or `$XDG_CONFIG_HOME/ai-usage/config.toml`). `--config <PATH>` reads another file instead.
 
-### Initial Setup
-
-Generate a starter config from your current sessions:
+Generate a starter config from your current sessions (a template also lives at [`config.example.toml`](config.example.toml)):
 
 ```bash
 ai-usage --init-config
 ```
 
-A template also lives at [`config.example.toml`](config.example.toml).
-
-### Example Configuration
+A minimal config that shows two profiles under short labels:
 
 ```toml
-# Optional: highlight this account as active (default: auto-detected from
-# CLAUDE_CONFIG_DIR/.claude.json — the Claude Code session's account).
-# active_email = "home@example.com"
-
 # Listing any [[profiles]] shows ONLY those, in this order.
 [[profiles]]
 match = "Work"                    # Chrome display name, or on-disk dir e.g. "Default"
 label = "work"                    # optional: shown instead of the account email username
-# providers = ["claude", "codex"] # optional Chrome-provider subset; default = all
 
 [[profiles]]
 match = "Home"
 label = "home"
-
-# Antigravity (Google's `agy`). Auto-discovered from ~/.gemini, Antigravity.app,
-# or a running `agy` — config is optional. Use it only to relabel, pin a
-# non-default token, or disable the row.
-[antigravity]
-# enabled = true                    # false to hide even when detected
-label = "antigravity"               # optional row label
-# token_path = "~/.gemini/antigravity-cli/antigravity-oauth-token"
-
-# Grok (xAI's `grok` CLI). Auto-discovered when ~/.grok/auth.json exists
-# (written by `grok login`). Config is optional and mirrors [antigravity].
-[grok]
-# enabled = true                    # false to hide even when detected
-label = "grok"                      # optional row label
-# auth_path = "~/.grok/auth.json"
-
-# Statusline-only display filter. Hides rows from `--statusline` output while
-# keeping them in `--json` / table (so scripts and manual checks still see them).
-# Overridden by `--statusline-hide` on the CLI.
-[statusline]
-hide = ["antigravity"]              # subset of: claude / codex / antigravity / pixellab / grok
 ```
 
-### Configuration Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `active_email` | Highlight this account's Claude row as active | Auto-detected from `CLAUDE_CONFIG_DIR/.claude.json` (or `~/.claude.json`) |
-| `[[profiles]]` | Explicit list of profiles to show (empty = auto-discover all) | `[]` (auto) |
-| `profiles[].match` | Chrome display name or on-disk directory (e.g. `Default`) | Required |
-| `profiles[].label` | Display label instead of the account email username | Email username |
-| `profiles[].providers` | Chrome-provider subset to show for this profile | Claude / Codex / PixelLab |
-| `[antigravity].enabled` | Show the Antigravity row when detected | `true` |
-| `[antigravity].label` | Row label for Antigravity | `antigravity` |
-| `[antigravity].token_path` | Non-default OAuth token path | `~/.gemini/…` |
-| `[grok].enabled` | Show the Grok row when detected | `true` |
-| `[grok].label` | Row label for Grok | `grok` |
-| `[grok].auth_path` | Non-default `auth.json` path | `~/.grok/auth.json` |
-| `[statusline].hide` | Providers to omit from `--statusline` (still in `--json` / table) | `[]` |
-
-Precedence: **CLI flags > config file > auto-detection**.
+Precedence: **CLI flags > config file > auto-detection**. The Antigravity, Grok, and statusline tables and every key with its default: [docs/configuration.md](docs/configuration.md)
 
 ## How It Works
 
@@ -293,114 +176,58 @@ flowchart LR
     D --> E[Render Table / JSON]
 ```
 
-For browser-backed profiles and CLI OAuth providers, `ai-usage`:
+For browser-backed profiles, `ai-usage` decrypts Chrome's cookies with the **Chrome Safe Storage** key from your macOS Keychain and calls each provider's usage endpoint. Antigravity and Grok use their CLI OAuth credentials instead. `claude.ai` and `chatgpt.com` sit behind Cloudflare, so the HTTP client ([`wreq`](https://crates.io/crates/wreq)) emulates Chrome's TLS/HTTP2 fingerprint and replays the profile's `cf_clearance` cookie.
 
-1. **Decrypts** cookies from `~/Library/Application Support/Google/Chrome/<profile>/Cookies`
-   using the **Chrome Safe Storage** key from your macOS Keychain (standard `v10`
-   AES‑128‑CBC scheme). The live SQLite database is opened read-only so current,
-   uncheckpointed WAL entries remain visible. Only cookies Chrome would send to `claude.ai` / `chatgpt.com`
-   themselves are replayed — suffix lookalikes like `evilclaude.ai` are filtered out.
-   Chunked session cookies are accepted only when their suffix is numeric (`.0`, `.1`, ...).
-2. **Claude** — uses the `sessionKey` cookie to call
-   `claude.ai/api/organizations/{org}/usage` → `five_hour` / `seven_day` `{utilization, resets_at}`.
-3. **Codex** — uses the `__Secure-next-auth.session-token` cookie to exchange for a Bearer
-   token via `chatgpt.com/api/auth/session`, then calls `chatgpt.com/backend-api/wham/usage`
-   → `rate_limit.primary_window` / `secondary_window`.
-4. **Antigravity** — reads the OAuth token from `~/.gemini` (refreshing as needed). When
-   Antigravity.app or `agy` is running, it prefers the localhost quota server for the richer
-   per-group payload. App/IDE processes are authenticated with the `--csrf_token` value from
-   their process arguments; `agy` exposes a tokenless local endpoint. If neither local path is
-   usable, it falls back to Google's `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`.
-   Both nested and flat `remainingFraction` quota shapes are handled when choosing the most
-   constrained bucket for display; buckets without a numeric value are skipped. Local grouped
-   quotas are labeled `1w` / `5h` from their
-   actual window, while the OAuth fallback's daily quota is labeled `1d`.
-5. **PixelLab** — reads the `supabase-auth-token` cookie from `www.pixellab.ai` in either
-   the legacy URL-encoded JSON-array form or Supabase's `base64-` + unpadded Base64URL
-   object form, refreshing
-   the access token via `supabase.pixellab.ai/auth/v1/token` if it has expired, then calls
-   `api.pixellab.ai/get-account-data` (monthly `imageGenerated / imageAmount` + prepaid
-   `credits`) and `api.pixellab.ai/get-subscription` (plan name + `generation_reset_date`).
-   The monthly quota renders in the long-window column with a `1m` badge (rather than the
-   usual `1w`) so it isn't mistaken for a weekly reset. Since PixelLab has no rolling
-   5-hour window, the 5-hour slot is collapsed and the long-window slot expands into a
-   wider bar spanning the same total width as the two-slot layout.
-6. **Grok** — reads OAuth credentials from `~/.grok/auth.json` (written by `grok login`),
-   choosing the newest complete credential when the file contains multiple entries and
-   ignoring incomplete entries, then refreshing the access token
-   via `auth.x.ai/oauth2/token` (`refresh_token` grant, public
-   OAuth client — no secret) when it is about to expire. Calls
-   `cli-chat-proxy.grok.com/v1/user?include=subscription` for the plan (`subscriptionTier`
-   → falls back to `Free`) and `cli-chat-proxy.grok.com/v1/billing` for the monthly cycle
-   (`used / monthlyLimit`, plus `billingPeriodEnd` as the reset time). Like PixelLab this
-   renders as a single wide `1m` bar; when `monthlyLimit == 0` (Free) the bar stays at 0%
-   but keeps the reset countdown so you still see when the billing period turns over.
+Nothing leaves your machine except authenticated usage requests to Anthropic, OpenAI, Google, PixelLab, and xAI. No tokens or cookies are printed or stored.
 
-`claude.ai` and `chatgpt.com` sit behind Cloudflare, so the HTTP client
-([`wreq`](https://crates.io/crates/wreq)) emulates Chrome's TLS/HTTP2 fingerprint and
-replays the profile's `cf_clearance` cookie — a plain HTTP client just gets a `403`.
-Transport failures and HTTP `408` / `429` / `5xx` responses use the same bounded retry
-policy for GET and POST requests, with a 20-second deadline per provider job. Once a
-token refresh has been sent for a provider, its remaining failures are *not* retried:
-ai-usage never writes a rotated refresh token back, so replaying that fetch would resend
-a token the server may already have rotated away.
-
-Nothing leaves your machine except authenticated usage requests to Anthropic, OpenAI,
-Google, PixelLab, and xAI. No tokens or cookies are printed or stored.
-
-## Build Commands
-
-| Command | Description |
-|---------|-------------|
-| `make build` | Debug build |
-| `make release` | Optimized release build (strip + LTO) |
-| `make install` | Build and install to `~/.local/bin` |
-| `make uninstall` | Remove the installed binary |
-| `make test` | Run tests |
-| `make fmt` | Format code |
-| `make check` | clippy (`-D warnings`) + rustfmt check + cargo check |
-| `make clean` | Clean build artifacts |
-| `make deps` | Install build prerequisites (cmake) |
+Per-provider endpoints, cookie handling, and the retry policy: [docs/architecture.md](docs/architecture.md)
 
 ## Notes & Limitations
 
-- **macOS + Google Chrome only**. Chrome uses `v10` cookie encryption on macOS; Windows'
-  `v20` app-bound scheme is not handled.
-- Chrome is optional for the OAuth-only providers. When Chrome isn't installed, its
-  `Local State` can't be read, or you decline the Keychain prompt, a normal run prints
-  `skipping Chrome profiles: …` on stderr and still renders Antigravity and Grok. Only
-  `--list-profiles` / `--init-config` fail outright, since Chrome is the whole point of
-  those modes — and when Chrome is the *only* target, the Keychain error is reported
-  verbatim so you know to approve the prompt and re-run.
-- An unreadable config falls back to auto-discovery. A missing *default* config is silent,
-  but a `--config` path you passed explicitly is reported on stderr, so a typo doesn't
-  masquerade as "my config is being ignored".
-- If a `cf_clearance` cookie has gone stale you'll see a *Cloudflare challenge* error for
-  that one account — open the relevant site once in that Chrome profile to refresh it, then
-  re-run. Other accounts are unaffected.
-- Antigravity's grouped weekly quota is served only by the local `language_server`, so
-  Antigravity.app or `agy` has to be running to see both model groups. With just the
-  `~/.gemini` OAuth token, Google may reject `retrieveUserQuota` with a `403`, and the row
-  reads *OAuth token lacks quota permission — open `agy` for full data*.
+- **macOS + Google Chrome only**. Chrome uses `v10` cookie encryption on macOS; Windows' `v20` app-bound scheme is not handled.
+- Chrome is optional for the OAuth-only providers. When Chrome isn't installed, its `Local State` can't be read, or you decline the Keychain prompt, a normal run prints `skipping Chrome profiles: …` on stderr and still renders Antigravity and Grok. Only `--list-profiles` / `--init-config` fail outright, since Chrome is the whole point of those modes — and when Chrome is the *only* target, the Keychain error is reported verbatim so you know to approve the prompt and re-run.
+- An unreadable config falls back to auto-discovery. A missing *default* config is silent, but a `--config` path you passed explicitly is reported on stderr, so a typo doesn't masquerade as "my config is being ignored".
+- If a `cf_clearance` cookie has gone stale you'll see a *Cloudflare challenge* error for that one account — open the relevant site once in that Chrome profile to refresh it, then re-run. Other accounts are unaffected.
+- Antigravity's grouped weekly quota is served only by the local `language_server`, so Antigravity.app or `agy` has to be running to see both model groups. With just the `~/.gemini` OAuth token, Google may reject `retrieveUserQuota` with a `403`, and the row reads *OAuth token lacks quota permission — open `agy` for full data*.
 - The usage endpoints are **undocumented / reverse-engineered** and may change.
-- This tool depends on `wreq-util`, which is **GPL‑3.0**; this project is therefore licensed
-  GPL‑3.0.
 
 ## Acknowledgements
 
-**Antigravity** (Google's `agy` CLI / IDE) usage support follows the
-reverse-engineering in [CodexBar](https://github.com/steipete/CodexBar)'s
-Antigravity provider — see its
-[implementation notes](https://github.com/steipete/CodexBar/blob/main/docs/antigravity.md).
+**Antigravity** (Google's `agy` CLI / IDE) usage support follows the reverse-engineering in [CodexBar](https://github.com/steipete/CodexBar)'s Antigravity provider — see its [implementation notes](https://github.com/steipete/CodexBar/blob/main/docs/antigravity.md).
 
-## Contributing
+## Development
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+<!-- standard:dev:start -->
+Requires [mise](https://mise.jdx.dev/). Tool versions are pinned in `mise.toml`.
 
-## Changelog
+```bash
+make setup   # Install the toolchain (mise) and dependencies
+make ci      # Run the same checks as CI (no changes)
+```
 
-See [Releases](https://github.com/owayo/ai-usage/releases) for version history.
+| Command | Description |
+|---|---|
+| `make setup` | Install the toolchain (mise) and dependencies |
+| `make build` | Build a debug binary |
+| `make release` | Build a release binary |
+| `make run` | Run the debug binary (arguments via ARGS="...") |
+| `make test` | Run the tests |
+| `make lint` | Run clippy with warnings as errors |
+| `make fmt` | Format the code (rewrites files) |
+| `make fmt-check` | Check the formatting (no changes) |
+| `make check` | Run fmt-check and lint (no changes) |
+| `make ci` | Run the same checks as CI (no changes) |
+| `make install` | Install the release binary to INSTALL_PATH (default /usr/local/bin) |
+| `make uninstall` | Remove the binary from INSTALL_PATH |
+| `make clean` | Remove build artifacts |
+
+Run `make` to list every target. Releases are published from GitHub Actions (**Actions → Release → Run workflow**).
+<!-- standard:dev:end -->
+
+Building also needs CMake (see [Requirements](#requirements)). `make setup` runs `make deps`, which installs it with Homebrew when it is missing.
 
 ## License
 
-[GPL-3.0](LICENSE)
+<!-- standard:license:start -->
+[MIT](LICENSE)
+<!-- standard:license:end -->

@@ -83,8 +83,13 @@ does not masquerade as "my config is being ignored".
 
 ## Build / check
 
-`make build` · `make release` · `make install` · `make check` (clippy
-`-D warnings` + rustfmt) · `make test`.
+Development commands are the Makefile targets (`make` lists them); tool
+versions are pinned in `mise.toml`, and every target runs cargo through
+`mise exec` with `--locked`. `make setup` installs the toolchain (and CMake via
+`make deps` when it is missing — the BoringSSL build inside `wreq` needs it).
+`make ci` is exactly what CI runs: `make check` (rustfmt check + clippy
+`-D warnings`) then `make test`. Other targets: `make build` · `make release` ·
+`make install` (default `INSTALL_PATH` is `/usr/local/bin`).
 
 Each module ships unit tests next to its source (`#[cfg(test)] mod tests`),
 covering pure logic: cookie decryption round-trips and malformed schema-v24
@@ -394,14 +399,17 @@ path is working (the OAuth fallback collapses to a single Gemini row).
 
 ## Repo hygiene
 
-The GitHub repo is public. CI runs `cargo test` + clippy + rustfmt on macOS
-(`.github/workflows/ci.yml`); the release workflow (`release.yml`) is
-`workflow_dispatch` — it bumps `Cargo.toml` to a `YY.M.NNN` version, tags it,
-builds `x86_64` / `aarch64` Apple Darwin binaries, attaches the tarballs to a
-GitHub Release, then rebuilds `arm64_sonoma` / `sonoma` Homebrew bottles from
-those binaries, uploads them alongside the release, and rewrites the
-`Formula/ai-usage.rb` file in the `owayo/homebrew-ai-usage` tap. The tap push
-uses a GitHub App token from the `APP_ID` / `PRIVATE_KEY` repo secrets — the
-App must be installed on `homebrew-ai-usage` for the `update-homebrew` job to
-succeed. Never commit personal paths, emails, org names, or live tokens /
-secrets — use `~` / `$HOME` placeholders in docs and examples.
+The GitHub repo is public and MIT-licensed. CI (`.github/workflows/ci.yml`)
+runs `make setup` + `make ci` on macOS, then builds both Apple Darwin targets.
+The release workflow (`release.yml`) is `workflow_dispatch` — it bumps
+`Cargo.toml` to a `YY.M.NNN` version (numbered in JST), tags it, builds
+`x86_64` / `aarch64` Apple Darwin tarballs, attaches them with `SHA256SUMS` to
+a GitHub Release, and rewrites `Formula/ai-usage.rb` in the
+`owayo/homebrew-ai-usage` tap to point at those tarballs (macOS only, no
+bottles). The tap push uses a GitHub App token (see the comments in
+`release.yml`); without the App settings `update-homebrew` warns and skips
+instead of failing the release. The README's badge, install, development, and
+license blocks between `<!-- standard:*:start/end -->` markers are generated —
+change the facts (workflows, Makefile, Cargo.toml) rather than the text. Never
+commit personal paths, emails, org names, or live tokens / secrets — use `~` /
+`$HOME` placeholders in docs and examples.
