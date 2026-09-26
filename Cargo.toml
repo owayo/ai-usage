@@ -1,6 +1,6 @@
 [package]
 name = "ai-usage"
-version = "26.7.100"
+version = "26.9.100"
 edition = "2024"
 rust-version = "1.98"
 description = "macOS CLI that shows Claude, Codex, Antigravity, PixelLab, and Grok usage limits across all Chrome profiles and CLI OAuth accounts"
