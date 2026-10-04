@@ -29,6 +29,12 @@ flowchart LR
    表示用の最も制約が厳しい bucket は、nested / flat 両方の `remainingFraction` 形を読んで選び、
    数値がない bucket は除外します。
    ローカル quota は実周期に応じて `1w` / `5h`、OAuth fallback の日次 quota は `1d` と表示します。
+   プロセスと待受ポートの探索は非同期に実行し、各 `ps` / `lsof` に1秒の期限を設けます。
+   期限切れやキャンセル時は探索用プロセスも終了します。探索を含むローカル経路全体を
+   5秒で打ち切り、OAuth フォールバックの時間を確保します。
+   トークン更新には Antigravity.app から取得する OAuth クライアント情報、または
+   `ANTIGRAVITY_OAUTH_CLIENT_ID` / `ANTIGRAVITY_OAUTH_CLIENT_SECRET` の指定が必要です。
+   両方とも利用できない場合、期限切れのトークンファイルだけでは取得できません。
 5. **PixelLab** — `www.pixellab.ai` の `supabase-auth-token` Cookie を、従来の URL
    エンコード済み JSON 配列形式と Supabase の `base64-` + padding なし Base64URL
    オブジェクト形式の両方から読み、access/refresh token を取り出します。期限切れなら
@@ -40,7 +46,7 @@ flowchart LR
    ない provider は 5h スロットを畳んで長期スロットを横長バー(通常の 2 スロット分の
    横幅)に拡張する。
 6. **Grok** — `~/.grok/auth.json` (`grok login` が書き出す) の OAuth 情報を読み、
-   複数の認証 entry がある場合は必要項目の揃った最新 entry を選び、不完全な entry は
+   複数の認証 entry がある場合は小数秒を含む RFC 3339 作成時刻で最新の完全な entry を選び、不完全な entry は
    無視する。期限が近ければ `auth.x.ai/oauth2/token`
    (`refresh_token` grant、public OAuth
    client なので secret 不要) で更新した上で

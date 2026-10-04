@@ -13,7 +13,7 @@
 //! <https://github.com/steipete/CodexBar/blob/main/docs/antigravity.md>.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -39,6 +39,8 @@ const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 /// endpoint ごとの timeout だけでは最悪ケースが endpoint 数に比例して伸び、
 /// OAuth フォールバックに残る時間が無くなる。local は諦めが早い方が総合的に速い。
 const LOCAL_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// プロセスと待受ポートの探索にも期限を設け、応答しない外部コマンドを終了させる。
+const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// 情報量の多い local 経路を優先し、失敗時は OAuth remote にフォールバックする。
 /// 戻り値は model group ごとに 1 行。
@@ -56,17 +58,22 @@ pub async fn fetch(api: &Client, cfg: Option<&AntigravityCfg>) -> Result<Vec<Usa
 
 /// Antigravity を表示可能かどうか。token ファイルがあるか、`agy` が起動中なら true。
 /// `enabled = false` が明示されている場合は常に false。
-pub fn available(cfg: Option<&AntigravityCfg>) -> bool {
+pub async fn available(cfg: Option<&AntigravityCfg>) -> bool {
     if matches!(cfg, Some(c) if c.enabled == Some(false)) {
         return false;
     }
-    token_path(cfg).map(|p| p.exists()).unwrap_or(false) || !local_endpoints().is_empty()
+    if token_path(cfg).is_some_and(|p| p.exists()) {
+        return true;
+    }
+    tokio::time::timeout(LOCAL_FETCH_TIMEOUT, local_endpoints())
+        .await
+        .is_ok_and(|endpoints| !endpoints.is_empty())
 }
 
 // ============================ ローカル language_server ============================
 
 async fn local_fetch() -> Result<Vec<UsageRow>> {
-    let endpoints = local_endpoints();
+    let endpoints = local_endpoints().await;
     if endpoints.is_empty() {
         bail!("agy/Antigravity not running");
     }
@@ -313,11 +320,12 @@ struct LocalProcess {
     csrf_token: Option<String>,
 }
 
-fn local_endpoints() -> Vec<LocalEndpoint> {
+async fn local_endpoints() -> Vec<LocalEndpoint> {
     let mut endpoints = Vec::new();
-    for process in local_processes() {
+    for process in local_processes().await {
         endpoints.extend(
             listen_ports(process.pid)
+                .await
                 .into_iter()
                 .map(|port| LocalEndpoint {
                     port,
@@ -330,16 +338,31 @@ fn local_endpoints() -> Vec<LocalEndpoint> {
     endpoints
 }
 
-fn local_processes() -> Vec<LocalProcess> {
-    let Ok(out) = Command::new("ps")
-        // app/IDE の CSRF token はコマンドライン引数にしかないため `comm` ではなく
-        // `command` を読む。token はリクエストヘッダー以外へ出力しない。
-        .args(["-ax", "-o", "pid=,command="])
-        .output()
+async fn local_processes() -> Vec<LocalProcess> {
+    // app/IDE の CSRF token はコマンドライン引数にしかないため `comm` ではなく
+    // `command` を読む。token はリクエストヘッダー以外へ出力しない。
+    let Some(text) =
+        command_stdout("/bin/ps", &["-ax", "-o", "pid=,command="], PROBE_TIMEOUT).await
     else {
         return Vec::new();
     };
-    parse_local_processes(&String::from_utf8_lossy(&out.stdout))
+    parse_local_processes(&text)
+}
+
+/// 同期の `.output()` は async の期限内でも実行スレッドを塞ぐので、非同期に待つ。
+/// 期限切れや呼び出し元のキャンセル時は、探索用の子プロセスも終了させる。
+async fn command_stdout(program: &str, args: &[&str], limit: Duration) -> Option<String> {
+    let output = tokio::process::Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(limit, output).await.ok()?.ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn parse_local_processes(text: &str) -> Vec<LocalProcess> {
@@ -405,14 +428,17 @@ fn process_arg<'a>(command: &'a str, flag: &str) -> Option<&'a str> {
     None
 }
 
-fn listen_ports(pid: u32) -> Vec<u16> {
-    let Ok(out) = Command::new("lsof")
-        .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p", &pid.to_string()])
-        .output()
+async fn listen_ports(pid: u32) -> Vec<u16> {
+    let Some(text) = command_stdout(
+        "/usr/sbin/lsof",
+        &["-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p", &pid.to_string()],
+        PROBE_TIMEOUT,
+    )
+    .await
     else {
         return Vec::new();
     };
-    parse_listen_ports(&String::from_utf8_lossy(&out.stdout))
+    parse_listen_ports(&text)
 }
 
 /// `lsof -nP -iTCP -sTCP:LISTEN` の出力から loopback の待受ポートだけを拾う。
@@ -691,6 +717,46 @@ fn find_secret(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn process_probe_captures_output_and_rejects_failure() {
+        assert_eq!(
+            command_stdout("/bin/echo", &["probe"], Duration::from_secs(3))
+                .await
+                .as_deref(),
+            Some("probe\n")
+        );
+        assert!(
+            command_stdout("/usr/bin/false", &[], Duration::from_secs(3))
+                .await
+                .is_none()
+        );
+        assert!(
+            command_stdout("/nonexistent-ai-usage-command", &[], Duration::from_secs(3))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn process_probe_timeout_does_not_block_the_runtime() {
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            command_stdout("/bin/sleep", &["30"], Duration::from_millis(50)),
+        )
+        .await
+        .expect("探索コマンドが実行スレッドを塞いだ");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn available_respects_explicit_disable_without_probing() {
+        let cfg = AntigravityCfg {
+            enabled: Some(false),
+            ..Default::default()
+        };
+        assert!(!available(Some(&cfg)).await);
+    }
 
     #[test]
     fn local_timeouts_leave_budget_for_the_oauth_fallback() {

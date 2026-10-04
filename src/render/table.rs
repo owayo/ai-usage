@@ -23,8 +23,31 @@ fn service_label(p: Provider, group: Option<&str>) -> String {
     }
 }
 
-pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: SortKey, debug: bool) {
+pub fn table(
+    reports: &[AccountReport],
+    active: Option<&ActiveTarget>,
+    sort: SortKey,
+    color: bool,
+    debug: bool,
+) {
     let now = Utc::now();
+    let table = build_table(reports, active, sort, color, debug, now);
+    println!("{table}");
+    println!(
+        "  updated {} · bars = usage, time = until reset",
+        now.with_timezone(&Local).format("%H:%M")
+    );
+}
+
+/// 端末幅による自動調整を保ったまま、色の要否に応じてセルを組み立てる。
+fn build_table(
+    reports: &[AccountReport],
+    active: Option<&ActiveTarget>,
+    sort: SortKey,
+    color: bool,
+    debug: bool,
+    now: DateTime<Utc>,
+) -> Table {
     let mut table = Table::new();
     table
         .load_style(UTF8_FULL)
@@ -55,7 +78,7 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
         );
         let is_active = resolve_active(active, r.provider, &r.profile_name, row_email, debug);
         let mut name_cell = Cell::new(&name);
-        if is_active {
+        if is_active && color {
             name_cell = name_cell.fg(Color::Red).add_attribute(Attribute::Bold);
         }
 
@@ -67,32 +90,38 @@ pub fn table(reports: &[AccountReport], active: Option<&ActiveTarget>, sort: Sor
                     bar_widths(u.short.is_some(), u.long.is_some());
                 table.add_row(vec![
                     name_cell,
-                    Cell::new(service_label(r.provider, r.group_label.as_deref()))
-                        .fg(provider_color(r.provider)),
+                    tint(
+                        Cell::new(service_label(r.provider, r.group_label.as_deref())),
+                        color,
+                        provider_color(r.provider),
+                    ),
                     Cell::new(u.plan.as_deref().unwrap_or("—")),
-                    window_cell(&u.short, now, short_bar_width),
-                    window_cell(&u.long, now, long_bar_width),
+                    window_cell(&u.short, now, short_bar_width, color),
+                    window_cell(&u.long, now, long_bar_width, color),
                 ]);
             }
             Err(e) => {
                 let msg: String = format!("{e:#}").chars().take(150).collect();
                 table.add_row(vec![
                     name_cell,
-                    Cell::new(service_label(r.provider, r.group_label.as_deref()))
-                        .fg(provider_color(r.provider)),
+                    tint(
+                        Cell::new(service_label(r.provider, r.group_label.as_deref())),
+                        color,
+                        provider_color(r.provider),
+                    ),
                     Cell::new("—"),
-                    Cell::new(format!("⚠ {msg}")).fg(Color::DarkGrey),
+                    tint(Cell::new(format!("⚠ {msg}")), color, Color::DarkGrey),
                     Cell::new(""),
                 ]);
             }
         }
     }
 
-    println!("{table}");
-    println!(
-        "  updated {} · bars = usage, time = until reset",
-        now.with_timezone(&Local).format("%H:%M")
-    );
+    table
+}
+
+fn tint(cell: Cell, color: bool, fg: Color) -> Cell {
+    if color { cell.fg(fg) } else { cell }
 }
 
 /// 通常セルの gauge 幅(旧 tbar と同じ)。
@@ -108,7 +137,7 @@ fn bar_widths(has_short: bool, has_long: bool) -> (usize, usize) {
     }
 }
 
-fn window_cell(w: &Option<Window>, now: DateTime<Utc>, bar_width: usize) -> Cell {
+fn window_cell(w: &Option<Window>, now: DateTime<Utc>, bar_width: usize, color: bool) -> Cell {
     match w {
         // データ無し: 色なしのプレースホルダ("—")。
         None => Cell::new("—"),
@@ -124,7 +153,7 @@ fn window_cell(w: &Option<Window>, now: DateTime<Utc>, bar_width: usize) -> Cell
                 w.used_percent.round() as i64,
                 reset
             );
-            Cell::new(text.trim_start()).fg(tlevel(w.used_percent))
+            tint(Cell::new(text.trim_start()), color, tlevel(w.used_percent))
         }
     }
 }
@@ -170,6 +199,41 @@ fn humanize(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_respects_color_for_success_error_and_active_cells() {
+        let now = Utc::now();
+        let report = |usage| AccountReport {
+            profile_name: "Work".into(),
+            profile_email: None,
+            label: None,
+            provider: Provider::Claude,
+            group_label: None,
+            usage,
+        };
+        let rows = vec![
+            report(Ok(crate::model::Usage {
+                short: Some(Window {
+                    kind: crate::model::WindowKind::FiveHour,
+                    used_percent: 90.0,
+                    resets_at: None,
+                }),
+                ..Default::default()
+            })),
+            report(Err(anyhow::anyhow!("test failure"))),
+        ];
+        let active = ActiveTarget {
+            profile: Some("Work".into()),
+            email: None,
+            provider: None,
+        };
+        for color in [false, true] {
+            let mut table = build_table(&rows, Some(&active), SortKey::Provider, color, false, now);
+            // 強制描画で、テスト実行時の TTY の有無に左右されず ANSI の有無を検証する。
+            table.enforce_styling();
+            assert_eq!(table.to_string().contains('\x1b'), color);
+        }
+    }
 
     #[test]
     fn humanize_rounds_appropriately() {
@@ -231,13 +295,16 @@ mod tests {
             used_percent: 46.0,
             resets_at: Some(fixed_utc("2026-06-20T15:00:00Z")),
         });
-        let cell = window_cell(&w, now, NORMAL_BAR_WIDTH).content();
+        let cell = window_cell(&w, now, NORMAL_BAR_WIDTH, true).content();
         assert!(cell.starts_with("1m"), "expected 1m badge in {cell:?}");
         assert!(cell.contains("46%"));
 
         // データ無しは幅指定に関わらず "—" のまま(桁ズレさせない)。
-        assert_eq!(window_cell(&None, now, NORMAL_BAR_WIDTH).content(), "—");
-        assert_eq!(window_cell(&None, now, WIDE_BAR_WIDTH).content(), "—");
+        assert_eq!(
+            window_cell(&None, now, NORMAL_BAR_WIDTH, true).content(),
+            "—"
+        );
+        assert_eq!(window_cell(&None, now, WIDE_BAR_WIDTH, true).content(), "—");
     }
 
     #[test]
@@ -249,7 +316,9 @@ mod tests {
             used_percent: 50.0,
             resets_at: Some(fixed_utc("2026-06-20T00:00:00Z")),
         });
-        let cell = window_cell(&w, now, WIDE_BAR_WIDTH).content().to_string();
+        let cell = window_cell(&w, now, WIDE_BAR_WIDTH, true)
+            .content()
+            .to_string();
         let gauge_glyphs = cell.chars().filter(|c| *c == '█' || *c == '░').count();
         assert_eq!(gauge_glyphs, WIDE_BAR_WIDTH);
     }

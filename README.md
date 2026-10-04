@@ -39,7 +39,7 @@ It reads each Chrome profile's session straight from the browser, so it can repo
 - **Multi-Provider**: Claude (`claude.ai`), Codex (`chatgpt.com`), Antigravity (Google's `agy` CLI/IDE), PixelLab (`pixellab.ai`), and Grok (xAI's `grok` CLI) in one view
 - **Typed Windows**: Each quota carries its real cycle (5-hour, daily, weekly, or monthly) with a usage bar, percentage, and reset countdown — each row's badge (`5h` / `1d` / `1w` / `1m`) comes from the quota itself. Any row with only one window collapses both slots into a single wider bar. Older caches without cycle metadata retain provider-appropriate labels and reset-warning thresholds
 - **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
-- **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars
+- **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars. Labels are padded by display width and truncated at grapheme boundaries, preserving emoji and combining characters
 - **JSON Output**: Machine-readable output for scripting and dashboards
 - **Zero Config**: Auto-discovers all signed-in profiles by default; optional `~/.config/ai-usage/config.toml` for pinning
 - **Sort Options**: Rank rows by long-window utilization or reset time (`weekly-*` option names are retained for compatibility)
@@ -48,8 +48,8 @@ It reads each Chrome profile's session straight from the browser, so it can repo
 ## Requirements
 
 - **Browser**: Google Chrome (signed into Claude, Codex, and/or PixelLab) for browser-backed providers. Chrome is optional if you only use the OAuth-backed providers below — when it is missing, `ai-usage` notes it on stderr and reports the remaining providers
-- **Build from source**: The Cargo and From Source methods below need CMake, which the BoringSSL build inside [`wreq`](https://crates.io/crates/wreq) calls. Install it with `brew install cmake` (`make setup` installs it when it is missing)
-- **Optional**: Antigravity app, `agy` CLI, or `~/.gemini` OAuth token for Antigravity usage
+- **Build from source**: Rust and CMake are required for the BoringSSL build inside [`wreq`](https://crates.io/crates/wreq). `make setup` installs the versions pinned in `mise.toml`. A direct `cargo install` needs CMake on `PATH` (for example, `brew install cmake`)
+- **Optional**: Antigravity app, `agy` CLI, or `~/.gemini` OAuth token for Antigravity usage. Refreshing a token also needs the app's OAuth client or the environment overrides described in [Architecture](docs/architecture.md)
 - **Optional**: `grok` CLI signed in (`~/.grok/auth.json`) for Grok usage
 
 ## Installation
@@ -133,6 +133,7 @@ ai-usage --json
 # Statusline for terminal status bar
 ai-usage --statusline
 ai-usage --statusline --logos --compact --reset-at
+ai-usage --statusline --input usage.json --only codex
 
 # Sort by urgency
 ai-usage --sort weekly-usage      # closest to the cap first
@@ -149,7 +150,10 @@ Generate a starter config from your current sessions (a template also lives at [
 
 ```bash
 ai-usage --init-config
+ai-usage --init-config --config ./config.toml
 ```
+
+An existing file is kept intact and the generated template is printed to stdout. If Chrome profiles share a display name, the template uses their unique directory names.
 
 A minimal config that shows two profiles under short labels:
 
@@ -224,7 +228,9 @@ make ci      # Run the same checks as CI (no changes)
 Run `make` to list every target. Releases are published from GitHub Actions (**Actions → Release → Run workflow**).
 <!-- standard:dev:end -->
 
-Building also needs CMake (see [Requirements](#requirements)). `make setup` runs `make deps`, which installs it with Homebrew when it is missing.
+`make setup` installs both Rust and CMake through mise. `make deps` ensures the pinned CMake is available; with `SYSTEM_TOOLS=1`, it uses the CMake on `PATH` or installs it through Homebrew when missing.
+
+The [maintenance review record](docs/maintenance.md) documents confirmed bugs, reproduction conditions, and regression coverage.
 
 ## License
 

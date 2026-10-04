@@ -30,6 +30,12 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
    constrained bucket for display; buckets without a numeric value are skipped. Local grouped
    quotas are labeled `1w` / `5h` from their
    actual window, while the OAuth fallback's daily quota is labeled `1d`.
+   Process and listening-port discovery runs asynchronously: each `ps` / `lsof` command
+   has a one-second timeout and is terminated on timeout or cancellation. The entire local
+   path, including discovery, is capped at five seconds to leave time for the OAuth fallback.
+   Token refresh requires Antigravity's OAuth client, discovered from Antigravity.app or
+   supplied through `ANTIGRAVITY_OAUTH_CLIENT_ID` and `ANTIGRAVITY_OAUTH_CLIENT_SECRET`.
+   An expired token file alone is insufficient when neither source is available.
 5. **PixelLab** — reads the `supabase-auth-token` cookie from `www.pixellab.ai` in either
    the legacy URL-encoded JSON-array form or Supabase's `base64-` + unpadded Base64URL
    object form, refreshing
@@ -41,7 +47,8 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
    5-hour window, the 5-hour slot is collapsed and the long-window slot expands into a
    wider bar spanning the same total width as the two-slot layout.
 6. **Grok** — reads OAuth credentials from `~/.grok/auth.json` (written by `grok login`),
-   choosing the newest complete credential when the file contains multiple entries and
+   choosing the newest complete credential by its full RFC 3339 creation time, including
+   fractional seconds, when the file contains multiple entries and
    ignoring incomplete entries, then refreshing the access token
    via `auth.x.ai/oauth2/token` (`refresh_token` grant, public
    OAuth client — no secret) when it is about to expire. Calls

@@ -155,10 +155,6 @@ jobs:
       - name: Add the Rust target
         run: rustup target add ${{ matrix.target }}
 
-      # wreq の BoringSSL のビルドに CMake が要る (ランナーに無ければ Homebrew で入れる。make deps と同じ)
-      - name: Install CMake
-        run: command -v cmake >/dev/null 2>&1 || brew install cmake
-
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 

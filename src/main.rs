@@ -1,5 +1,5 @@
-//! ai-usage — ログイン済み Chrome profile ごとの Claude / Codex 使用量上限
-//! (5時間枠 / 週次枠とリセット時刻)を表示する。
+//! Chrome プロファイルと CLI の OAuth 情報から、Claude / Codex / Antigravity /
+//! PixelLab / Grok の利用枠とリセット時刻を表示する。
 
 mod antigravity;
 mod claude;
@@ -590,7 +590,7 @@ fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
             .filter(|s| !s.is_empty())
             .unwrap_or(&p.name);
         out += "[[profiles]]\n";
-        out += &format!("match = {}", toml_str(&p.name));
+        out += &format!("match = {}", toml_str(profile_matcher(p, all)));
         if !email.is_empty() {
             out += &format!("   # {email}");
         }
@@ -615,6 +615,19 @@ fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
         out += "\n";
     }
     out
+}
+
+/// 表示名が別のプロファイル名やディレクトリ名と衝突するときは、一意なディレクトリ名を使う。
+fn profile_matcher<'a>(profile: &'a Profile, all: &[Profile]) -> &'a str {
+    if all.iter().any(|other| {
+        other.dir != profile.dir
+            && (other.name.eq_ignore_ascii_case(&profile.name)
+                || other.dir.eq_ignore_ascii_case(&profile.name))
+    }) {
+        &profile.dir
+    } else {
+        &profile.name
+    }
 }
 
 /// profile ごとに表示する provider を決める。global `--only` flag が最優先で、
@@ -678,13 +691,32 @@ fn build_targets(all: Vec<Profile>, cli: &Cli, cfg: &config::Config) -> Vec<Targ
             .collect()
     } else if !cfg.profiles.is_empty() {
         // config 順: 各 [[profiles]] row を検出済み profile に照合する。
+        // 同じプロバイダの二重取得を避けつつ、プロバイダ別の設定とラベルは保持する。
+        let mut used = std::collections::HashMap::<String, BrowserWants>::new();
         cfg.profiles
             .iter()
             .filter_map(|c| {
-                all.iter()
-                    .find(|p| c.matches(&p.name, &p.dir))
-                    .cloned()
-                    .map(|p| make(p, Some(c)))
+                let p = all
+                    .iter()
+                    .find(|p| p.dir.eq_ignore_ascii_case(&c.matcher))
+                    .or_else(|| {
+                        all.iter()
+                            .find(|p| !used.contains_key(&p.dir) && c.matches(&p.name, &p.dir))
+                    })
+                    .or_else(|| all.iter().find(|p| c.matches(&p.name, &p.dir)))?;
+                let mut target = make(p.clone(), Some(c));
+                let seen = used.entry(p.dir.clone()).or_insert(BrowserWants {
+                    claude: false,
+                    codex: false,
+                    pixellab: false,
+                });
+                target.wants.claude &= !seen.claude;
+                target.wants.codex &= !seen.codex;
+                target.wants.pixellab &= !seen.pixellab;
+                seen.claude |= target.wants.claude;
+                seen.codex |= target.wants.codex;
+                seen.pixellab |= target.wants.pixellab;
+                target.wants.any().then_some(target)
             })
             .collect()
     } else {
@@ -712,14 +744,17 @@ fn list_profiles(root: &std::path::Path, all: &[Profile]) {
 }
 
 /// `--init-config`: starter config を書き込む。既に存在する場合は stdout に出す。
-fn write_init_config(root: &std::path::Path, all: &[Profile]) -> Result<()> {
+fn write_init_config(
+    root: &std::path::Path,
+    all: &[Profile],
+    explicit: Option<&std::path::Path>,
+) -> Result<()> {
     let text = generate_config(root, all);
-    match config::default_path() {
-        Some(p) if !p.exists() => {
-            if let Some(parent) = p.parent() {
-                std::fs::create_dir_all(parent).ok();
-            }
-            std::fs::write(&p, &text)?;
+    let path = explicit
+        .map(std::path::Path::to_path_buf)
+        .or_else(config::default_path);
+    match path {
+        Some(p) if create_config(&p, &text)? => {
             eprintln!("Wrote starter config to {}", p.display());
         }
         Some(p) => {
@@ -732,6 +767,25 @@ fn write_init_config(root: &std::path::Path, all: &[Profile]) -> Result<()> {
         None => print!("{text}"),
     }
     Ok(())
+}
+
+/// 既存ファイルを上書きせず、設定ファイルを排他的に新規作成する。
+fn create_config(path: &std::path::Path, text: &str) -> Result<bool> {
+    use std::io::Write;
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    file.write_all(text.as_bytes())?;
+    Ok(true)
 }
 
 /// CLI flag 群から statusline の表示オプションを組み立てる。cached / fresh 双方の
@@ -787,9 +841,12 @@ fn render_cached_statusline(
     let Ok(data) = std::fs::read_to_string(path) else {
         return;
     };
-    let Ok(report) = serde_json::from_str::<report::Report>(&data) else {
+    let Ok(mut report) = serde_json::from_str::<report::Report>(&data) else {
         return;
     };
+    if let Some(only) = cli.only {
+        report.accounts.retain(|a| a.provider == only.to_provider());
+    }
     render::statusline(&report, active, cli.sort, &statusline_opts(cli, cfg));
 }
 
@@ -810,7 +867,13 @@ fn render_reports(
     } else if cli.json {
         render::json(&report::Report::build(reports), cli.sort);
     } else {
-        render::table(reports, active, cli.sort, cli.debug);
+        render::table(
+            reports,
+            active,
+            cli.sort,
+            color_enabled(cli.no_color),
+            cli.debug,
+        );
     }
 }
 
@@ -833,7 +896,11 @@ fn needs_profile_discovery(cli: &Cli) -> bool {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    let cfg = config::load(cli.config.as_deref());
+    let cfg = if cli.list_profiles || cli.init_config {
+        config::Config::default()
+    } else {
+        config::load(cli.config.as_deref())
+    };
 
     // キャッシュ描画は Chrome の Local State、network、Keychain のいずれにも依存させない。
     if uses_cached_statusline(&cli) {
@@ -871,7 +938,7 @@ async fn run(cli: Cli) -> Result<()> {
         return Ok(());
     }
     if cli.init_config {
-        return write_init_config(&root, &all);
+        return write_init_config(&root, &all, cli.config.as_deref());
     }
 
     let active = active_target(&cli, &cfg);
@@ -879,7 +946,7 @@ async fn run(cli: Cli) -> Result<()> {
     let want_antigravity = match cli.only {
         Some(ProviderArg::Antigravity) => true,
         Some(_) => false,
-        None => antigravity::available(cfg.antigravity.as_ref()),
+        None => antigravity::available(cfg.antigravity.as_ref()).await,
     };
     let want_grok = match cli.only {
         Some(ProviderArg::Grok) => true,
@@ -1135,6 +1202,70 @@ mod tests {
         // 一致しない指定は空になる(存在しない profile を勝手に補完しない)。
         let missing = Cli::parse_from(["ai-usage", "--profile", "nope"]);
         assert!(build_targets(all(), &missing, &cfg).is_empty());
+    }
+
+    #[test]
+    fn build_targets_does_not_fetch_a_profile_twice() {
+        let all = vec![profile("Default", "Work"), profile("Profile 2", "work")];
+        let cfg = config::Config {
+            profiles: vec![
+                profile_cfg("Work", None, None),
+                profile_cfg("Work", None, None),
+                profile_cfg("Default", None, None),
+            ],
+            ..Default::default()
+        };
+        let targets = build_targets(all, &Cli::parse_from(["ai-usage"]), &cfg);
+        let dirs: Vec<_> = targets.iter().map(|t| t.profile.dir.as_str()).collect();
+        assert_eq!(dirs, ["Default", "Profile 2"]);
+    }
+
+    #[test]
+    fn build_targets_preserves_disjoint_provider_settings_for_one_directory() {
+        let cfg = config::Config {
+            profiles: vec![
+                profile_cfg("Default", Some("claude-label"), Some(&["claude"])),
+                profile_cfg("Default", Some("codex-label"), Some(&["codex"])),
+                profile_cfg("Default", Some("duplicate"), Some(&["claude", "pixellab"])),
+            ],
+            ..Default::default()
+        };
+        let targets = build_targets(
+            vec![profile("Default", "Work")],
+            &Cli::parse_from(["ai-usage"]),
+            &cfg,
+        );
+        assert_eq!(targets.len(), 3);
+        assert_eq!(targets[0].label.as_deref(), Some("claude-label"));
+        assert_eq!(targets[1].label.as_deref(), Some("codex-label"));
+        assert!(targets[0].wants.claude);
+        assert!(targets[1].wants.codex);
+        assert!(!targets[2].wants.claude);
+        assert!(targets[2].wants.pixellab);
+    }
+
+    #[test]
+    fn profile_matcher_uses_unique_directories_for_ambiguous_names() {
+        let all = vec![
+            profile("Default", "Work"),
+            profile("Profile 2", "work"),
+            profile("Profile 3", "Home"),
+        ];
+        assert_eq!(profile_matcher(&all[0], &all), "Default");
+        assert_eq!(profile_matcher(&all[1], &all), "Profile 2");
+        assert_eq!(profile_matcher(&all[2], &all), "Home");
+        let collision = vec![profile("Default", "Home"), profile("Profile 2", "Default")];
+        assert_eq!(profile_matcher(&collision[1], &collision), "Profile 2");
+        let cfg = config::Config {
+            profiles: vec![profile_cfg("Default", None, None)],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_targets(collision, &Cli::parse_from(["ai-usage"]), &cfg)[0]
+                .profile
+                .dir,
+            "Default"
+        );
     }
 
     #[test]

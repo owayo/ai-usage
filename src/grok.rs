@@ -309,7 +309,7 @@ fn select_entry(v: &Value) -> Option<&Value> {
         return Some(v);
     }
     // 動的キーの中身から entry を選ぶ。create_time が新しい方を優先。
-    let mut best: Option<(&Value, i64)> = None;
+    let mut best: Option<(&Value, Option<DateTime<Utc>>)> = None;
     for (_, val) in obj {
         // 途中まで書かれた entry や将来追加されるメタデータを、有効な認証情報より
         // 優先しない。parse_auth_document が必要とする 3 項目を選択時にも確認する。
@@ -320,8 +320,8 @@ fn select_entry(v: &Value) -> Option<&Value> {
             .get("create_time")
             .and_then(Value::as_str)
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|d| d.timestamp())
-            .unwrap_or(0);
+            // Unix 秒へ丸めると、同じ秒に作られた新しい認証情報を選べなくなる。
+            .map(|d| d.with_timezone(&Utc));
         best = match best {
             None => Some((val, ts)),
             Some((_, cur)) if ts > cur => Some((val, ts)),

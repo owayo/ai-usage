@@ -7,7 +7,7 @@
 | コマンド | 説明 |
 |---------|------|
 | `ai-usage` | サインイン済みの全プロファイル・プロバイダの使用量を表示 |
-| `ai-usage --init-config` | 現在サインイン済みのプロファイルから設定ファイルの雛形を生成 |
+| `ai-usage --init-config` | 現在サインイン済みのプロファイルから設定ファイルの雛形を生成。`--config <PATH>` で出力先を指定 |
 | `ai-usage --list-profiles` | 検出した Chrome プロファイル一覧を表示 |
 
 ## オプション
@@ -17,7 +17,7 @@
 | オプション | 短縮 | 説明 |
 |-----------|------|------|
 | `--profile <NAMES>` | `-p` | プロファイル名をカンマ区切りで指定 (Chrome 表示名または on-disk ディレクトリ名) |
-| `--only <PROVIDER>` | | `claude` / `codex` / `antigravity` / `pixellab` / `grok` のみを表示 |
+| `--only <PROVIDER>` | | `claude` / `codex` / `antigravity` / `pixellab` / `grok` のみを表示。キャッシュからの statusline 描画にも適用 |
 
 ### 出力
 
@@ -46,7 +46,9 @@
 
 | オプション | 説明 |
 |-----------|------|
-| `--config <PATH>` | `~/.config/ai-usage/config.toml` の代わりにこの設定ファイルを使う |
+| `--config <PATH>` | `~/.config/ai-usage/config.toml` の代わりにこの設定ファイルを使う。`--init-config` と併用すると、既存ファイルを上書きせず指定先に新規作成 |
 | `--debug` | 行ごとの判定結果を stderr に JSONL で出力 (stdout はクリーンなまま) |
 | `--help` | ヘルプを表示 |
 | `--version` | バージョンを表示 |
+
+`--init-config` の出力先が既に存在する場合、雛形は stdout に表示します。キャッシュ描画は JSON に記録されたアカウントとラベルを使います。プロファイル選択とラベルはキャッシュ生成時に設定してください。描画時にも `--only` と statusline の非表示設定は適用します。

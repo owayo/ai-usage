@@ -128,7 +128,7 @@ fn is_exact_or_numeric_chunk(name: &str, base: &str) -> bool {
 }
 
 /// live で更新される Cookies DB を read-only で開き、
-/// claude.ai / chatgpt.com の Cookie だけを復号する。
+/// claude.ai / chatgpt.com / www.pixellab.ai の Cookie だけを復号する。
 pub fn load(db_path: &Path, key: &[u8; 16]) -> Result<ProfileCookies> {
     use rusqlite::{Connection, OpenFlags};
 

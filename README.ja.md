@@ -39,7 +39,7 @@
 - **マルチプロバイダ**: Claude (`claude.ai`) / Codex (`chatgpt.com`) / Antigravity (Google `agy` CLI・IDE) / PixelLab (`pixellab.ai`) / Grok (xAI `grok` CLI) を同一ビューに集約
 - **型付き利用枠**: 各 quota が 5 時間・日次・週次・月次の実周期を保持し、利用率とリセット残時間を表示。行内バッジ (`5h` / `1d` / `1w` / `1m`) は quota 自身の周期から決定。利用枠が1つだけの行は 2 つのスロットを 1 本の横長バーに統合。周期情報がない旧キャッシュでも、プロバイダーに応じたラベルとリセット警告色を維持
 - **Cloudflare 対応**: [`wreq`](https://crates.io/crates/wreq) が Chrome の TLS/HTTP2 フィンガープリントをエミュレートし、`cf_clearance` を再送
-- **statusline モード**: 端末のステータスバー向けにアカウント 1 行のコンパクト表示。ブランドロゴ字形にも対応
+- **statusline モード**: 端末のステータスバー向けにアカウント 1 行のコンパクト表示。ブランドロゴ字形にも対応。ラベルは表示幅で揃え、絵文字や結合文字を途中で切らずに短縮
 - **JSON 出力**: スクリプト・ダッシュボード向けの機械可読出力
 - **設定不要**: サインイン済みプロファイルを自動検出。固定したい場合のみ `~/.config/ai-usage/config.toml`
 - **ソート**: 長期枠の利用率、またはリセット時刻でランキング (`weekly-*` のオプション名は互換性のため維持)
@@ -48,8 +48,8 @@
 ## 動作環境
 
 - **ブラウザ**: ブラウザ認証プロバイダ用の Google Chrome (Claude / Codex / PixelLab にサインイン済み)。下記の OAuth 認証プロバイダのみを使う場合は Chrome は不要 — 見つからない場合はその旨を stderr に出し、残りのプロバイダを表示する
-- **ソースからのビルド**: 下記の Cargo とソースからの導入には CMake が必要 ([`wreq`](https://crates.io/crates/wreq) の BoringSSL のビルドが呼び出す)。`brew install cmake` で導入できる (未導入なら `make setup` が導入する)
-- **任意**: Antigravity 使用量には Antigravity.app、`agy` CLI、または `~/.gemini` の OAuth トークンが必要
+- **ソースからのビルド**: [`wreq`](https://crates.io/crates/wreq) の BoringSSL のビルドには Rust と CMake が必要。`make setup` が `mise.toml` の固定版を導入します。直接 `cargo install` する場合は CMake を `PATH` に用意してください (例: `brew install cmake`)
+- **任意**: Antigravity 使用量には Antigravity.app、`agy` CLI、または `~/.gemini` の OAuth トークンが必要。トークン更新にはアプリの OAuth クライアント情報、または [動作の仕組み](docs/architecture.ja.md) に記載した環境変数も必要
 - **任意**: Grok 使用量には `grok` CLI にサインイン済み (`~/.grok/auth.json`) が必要
 
 ## インストール
@@ -133,6 +133,7 @@ ai-usage --json
 # 端末ステータスバー向け
 ai-usage --statusline
 ai-usage --statusline --logos --compact --reset-at
+ai-usage --statusline --input usage.json --only codex
 
 # 優先度でソート
 ai-usage --sort weekly-usage      # リミットに近い順
@@ -149,7 +150,10 @@ ai-usage --sort weekly-reset      # リセットが近い順
 
 ```bash
 ai-usage --init-config
+ai-usage --init-config --config ./config.toml
 ```
+
+既存ファイルは保持し、生成した雛形を stdout に出します。Chrome の表示名が重複している場合、雛形には一意なディレクトリ名を使います。
 
 2 つのプロファイルを短いラベルで表示する最小の設定です。
 
@@ -224,7 +228,9 @@ make ci      # CI と同じ検査 (書き換えない)
 `make` でターゲットの一覧を表示します。リリースは GitHub Actions で行います (**Actions → Release → Run workflow**)。
 <!-- standard:dev:end -->
 
-ビルドには CMake も必要です ([動作環境](#動作環境) を参照)。`make setup` が `make deps` を呼び、未導入なら Homebrew で導入します。
+`make setup` は Rust と CMake を mise で導入します。`make deps` も固定版 CMake を確認します。`SYSTEM_TOOLS=1` を指定した場合は `PATH` 上の CMake を使い、未導入なら Homebrew で導入します。
+
+確認した不具合、再現条件、回帰テストは [保守レビュー記録](docs/maintenance.ja.md) にまとめています。
 
 ## ライセンス
 

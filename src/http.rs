@@ -3,7 +3,7 @@
 //! `browser` は Chrome TLS/HTTP2 emulation 付きの `wreq` を使い、replay した
 //! `cf_clearance` Cookie を Cloudflare に受け入れさせる。plain client は fingerprint で
 //! 403 "Just a moment" challenge になるため、claude.ai と chatgpt.com では使えない。
-//! `api` は Cloudflare 配下ではない Google `cloudcode-pa` endpoint 用の plain client。
+//! `api` は Google `cloudcode-pa` と、通常の Bearer 認証を受け付ける Grok 用のクライアント。
 
 use std::fmt;
 use std::time::Duration;

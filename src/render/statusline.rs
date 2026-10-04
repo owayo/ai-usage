@@ -1,7 +1,8 @@
 //! compact / colored statusline 出力(1 account 1 行)。
 
 use chrono::{DateTime, Local, Utc};
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use super::sort::{sorted_refs, statusline_default_cmp};
 use super::{
@@ -17,11 +18,11 @@ use crate::report::{AccountOut, Report, WindowOut};
 // 白黒基調ブランドのため、logo glyph・text label とも白で表示する。
 const WHITE_MARKER_COLOR: &str = "38;2;255;255;255";
 // BrandLogos font の PUA-B glyph。`--logos` で使う。
-const CLAUDE_LOGO: &str = "\u{100002}"; // Claude sunburst。
-const CODEX_LOGO: &str = "\u{100000}"; // OpenAI mark。
-const ANTIGRAVITY_LOGO: &str = "\u{100003}"; // Antigravity mark。
-const GROK_LOGO: &str = "\u{100004}"; // Grok (xAI) mark。
-const PIXELLAB_LOGO: &str = "\u{100400}"; // PixelLab dragon。
+const CLAUDE_LOGO: &str = "\u{100002}"; // Claude の太陽マーク。
+const CODEX_LOGO: &str = "\u{100000}"; // OpenAI のマーク。
+const ANTIGRAVITY_LOGO: &str = "\u{100003}"; // Antigravity のマーク。
+const GROK_LOGO: &str = "\u{100004}"; // Grok (xAI) のマーク。
+const PIXELLAB_LOGO: &str = "\u{100400}"; // PixelLab のドラゴン。
 const GRAY: &str = "38;5;245";
 const DIM: &str = "38;5;242";
 const GREEN: &str = "38;5;35";
@@ -164,15 +165,22 @@ fn render_identity(
 fn pad_display(s: &str, field_width: usize) -> String {
     // 1 桁は区切り用に確保するので、本文が使えるのは field_width - 1 桁まで。
     let budget = field_width.saturating_sub(1);
+    let width = s.width();
+    if width <= budget {
+        return format!("{s}{}", " ".repeat(field_width - width));
+    }
     let mut out = String::new();
     let mut used = 0usize;
-    for c in s.chars() {
-        let width = c.width().unwrap_or(0);
-        if used + width > budget {
+    // ZWJ 絵文字・国旗・結合文字を途中で切らず、連なった文字列全体の幅で判断する。
+    // 文字ごとの幅の合計では、絵文字や一部の合字の表示幅を過大に数えてしまう。
+    for (start, grapheme) in s.grapheme_indices(true) {
+        let prefix = &s[..start + grapheme.len()];
+        let width = prefix.width();
+        if width > budget {
             break;
         }
-        out.push(c);
-        used += width;
+        out.push_str(grapheme);
+        used = width;
     }
     out.push_str(&" ".repeat(field_width - used));
     out
@@ -631,7 +639,7 @@ mod tests {
 
     /// 表示幅を東アジア文字幅で数える(テスト側の期待値を組み立てるための補助)。
     fn display_width(s: &str) -> usize {
-        s.chars().map(|c| c.width().unwrap_or(0)).sum()
+        s.width()
     }
 
     #[test]

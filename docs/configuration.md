@@ -8,7 +8,10 @@ Generate a starter config from your current sessions:
 
 ```bash
 ai-usage --init-config
+ai-usage --init-config --config ./config.toml
 ```
+
+The second command chooses an explicit destination. Parent directories are created as needed. Existing files, including symbolic links, are never overwritten; the template is printed to stdout instead. Ambiguous Chrome display names are replaced with unique profile directory names in the generated config.
 
 A template also lives at [`config.example.toml`](../config.example.toml).
 
@@ -69,3 +72,5 @@ hide = ["antigravity"]              # subset of: claude / codex / antigravity / 
 | `[statusline].hide` | Providers to omit from `--statusline` (still in `--json` / table) | `[]` |
 
 Precedence: **CLI flags > config file > auto-detection**.
+
+Profile matching is case-insensitive, with directory names taking precedence over display names. Each provider is fetched at most once per Chrome directory. Separate entries for distinct providers can retain different labels; the first matching entry wins for a repeated provider. Repeated display-name entries prefer unused matching profiles in discovery order; use directory names to choose a specific profile when names overlap.

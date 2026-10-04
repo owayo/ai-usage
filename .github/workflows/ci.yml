@@ -46,7 +46,7 @@ jobs:
       # target/ と ~/.cargo のキャッシュ (鍵に rustc の版が入るので、mise.toml の rust を上げると作り直す)
       - uses: Swatinem/rust-cache@v2
 
-      # make setup は make deps も呼び、wreq の BoringSSL のビルドに要る CMake が無ければ Homebrew で入れる
+      # make setup は make deps も呼び、wreq の BoringSSL に必要な固定版 CMake を mise で揃える
       - run: make setup
       - run: make ci
 
@@ -82,9 +82,6 @@ jobs:
       - name: Add the Rust target
         run: rustup target add ${{ matrix.target }}
 
-      # wreq の BoringSSL のビルドに CMake が要る (ランナーに無ければ Homebrew で入れる。make deps と同じ)
-      - name: Install CMake
-        run: command -v cmake >/dev/null 2>&1 || brew install cmake
-
+      # wreq の BoringSSL が使う固定版 CMake は mise-action で導入済み。
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}

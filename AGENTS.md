@@ -85,8 +85,10 @@ does not masquerade as "my config is being ignored".
 
 Development commands are the Makefile targets (`make` lists them); tool
 versions are pinned in `mise.toml`, and every target runs cargo through
-`mise exec` with `--locked`. `make setup` installs the toolchain (and CMake via
-`make deps` when it is missing — the BoringSSL build inside `wreq` needs it).
+`mise exec` with `--locked`. `make setup` installs both the Rust toolchain and
+CMake pinned in `mise.toml`; `make deps` also ensures that CMake is available for
+the BoringSSL build inside `wreq`. Only `SYSTEM_TOOLS=1` uses the tools on `PATH`
+and falls back to Homebrew for a missing CMake.
 `make ci` is exactly what CI runs: `make check` (rustfmt check + clippy
 `-D warnings`) then `make test`. Other targets: `make build` · `make release` ·
 `make install` (default `INSTALL_PATH` is `/usr/local/bin`).
@@ -139,6 +141,22 @@ empty-string `CLAUDE_CONFIG_DIR` / `NO_COLOR` handling (both mean "unset", so a
 colours), and the Chrome-failure degradation that spares OAuth providers
 (`main.rs`).
 Drive the network paths via `make build` + a real run.
+
+Additional regression coverage checks emoji/grapheme padding, table color suppression,
+subsecond Grok credential ordering, duplicate profile selection, and asynchronous probe
+timeouts. `tests/statusline_cache.rs` exercises the real CLI with isolated fixtures:
+cached provider filtering and hide precedence, plus explicit config creation and preservation.
+
+## 保守時に維持する動作
+
+- テーブルにも `--no-color` / `NO_COLOR` / `TERM=dumb` を適用する。端末幅の自動調整は保つ。
+- キャッシュ描画でも `--only` を適用してから statusline の非表示設定を処理する。
+- `--init-config --config <PATH>` は指定先へ排他的に新規作成し、既存ファイルやリンクを上書きしない。情報表示モードでは設定を読み込まない。
+- 同じ Chrome ディレクトリの同じプロバイダを二重取得しない。別プロバイダの設定とラベルは保持する。表示名が衝突する雛形は一意なディレクトリ名を使い、照合ではディレクトリ名を優先する。
+- Antigravity の `ps` / `lsof` は非同期で待ち、各1秒の期限とキャンセル時の終了を設定する。探索を含むローカル経路全体の5秒制限も維持する。
+- Grok の認証情報は小数秒を捨てず作成時刻を比較する。
+
+再現条件と修正根拠は [保守レビュー記録](docs/maintenance.ja.md) を参照。
 
 ## Dependency safety
 
@@ -371,8 +389,10 @@ columns by hand, so every field must be padded by **display width**, not
 `char` count. `format!("{s:<11}")` counts `char`s and never truncates: a
 full-width label takes two columns per `char`, a label of exactly the field
 width leaves no separator (`development5h ███…`), and a longer one shifts the
-whole row. `pad_display()` measures with `unicode-width`, truncates what does
-not fit, and always keeps at least one separator column. Labels come from
+whole row. `pad_display()` measures the whole string with `unicode-width`,
+truncates only at grapheme boundaries using `unicode-segmentation`, and always
+keeps at least one separator column. Per-character width sums split emoji and
+overcount ZWJ sequences, flags, and ligatures. Labels come from
 user-supplied config, email local-parts, and Chrome profile names, so all three
 cases occur in practice.
 

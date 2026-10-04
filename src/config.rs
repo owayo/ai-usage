@@ -1,9 +1,9 @@
 //! 任意 config file: `~/.config/ai-usage/config.toml`
 //! (または `$XDG_CONFIG_HOME/ai-usage/config.toml`)。
 //!
-//! config がない場合、ai-usage は Claude または Codex session を持つ Chrome profile を
-//! 自動検出する。config がある場合は、表示 profile、順序、label、profile ごとの provider、
-//! "active" account を選べる。優先順は CLI flags > config file > auto-detection。
+//! 設定がない場合は Claude / Codex / PixelLab の Chrome セッションと、Antigravity /
+//! Grok の OAuth 情報を自動検出する。設定で表示対象、順序、ラベル、プロバイダ、
+//! アクティブなアカウントを指定できる。優先順は CLI フラグ > 設定 > 自動検出。
 
 use std::fs;
 use std::io;
@@ -77,8 +77,8 @@ pub struct ProfileCfg {
     /// account email の username の代わりに表示する label(例: "work")。
     pub label: Option<String>,
 
-    /// この profile で表示する provider(`["claude", "codex"]` の subset)。
-    /// 省略時は両方。
+    /// このプロファイルで表示する Chrome 系プロバイダ (`claude` / `codex` / `pixellab`)。
+    /// 省略時は全て。
     pub providers: Option<Vec<String>>,
 }
 

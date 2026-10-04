@@ -1,27 +1,24 @@
-# Development tasks for ai-usage. Run `make` with no arguments to list the targets.
+# ai-usage の開発用タスク。引数なしの `make` でターゲットを一覧表示する。
 #
-# Tool versions are pinned in mise.toml. When mise is available, every tool runs through
-# `mise exec --`, so the pinned versions are used even when mise is not activated in the shell
-# (for example when make is started from an IDE or a GUI). SYSTEM_TOOLS=1 uses the tools on PATH
-# instead (the versions are then not guaranteed).
+# ツールの版は mise.toml で固定する。mise があれば `mise exec --` 経由で実行し、
+# IDE や GUI から起動した場合など、シェルで mise を有効化していなくても固定版を使う。
+# SYSTEM_TOOLS=1 を指定すると PATH 上のツールを使うため、版は保証しない。
 #
-# Building also needs CMake on PATH (the BoringSSL build inside wreq calls it). CMake is not
-# managed by mise: make deps installs it with Homebrew when it is missing, and make setup runs it.
+# wreq の BoringSSL が呼ぶ CMake も mise で固定する。SYSTEM_TOOLS=1 の場合のみ、
+# make deps が未導入の CMake を Homebrew で入れる。
 #
-# Only GNU Make 3.81 features are used (the make that ships with macOS):
-# no .ONESHELL, .SHELLFLAGS, $(file ...) or !=.
+# macOS 標準の GNU Make 3.81 に対応するため、.ONESHELL、.SHELLFLAGS、$(file ...)、!= は使わない。
 
 .DEFAULT_GOAL := help
 
 BINARY_NAME := ai-usage
 INSTALL_PATH ?= /usr/local/bin
-# Cargo.lock is committed, so resolve dependencies exactly as CI does
+# コミット済みの Cargo.lock を使い、CI と同じ依存に解決する。
 CARGO_FLAGS ?= --locked
 
-# ---- Toolchain ------------------------------------------------------------------
-# Look for mise on PATH, then in the usual install locations (make started from a GUI may not
-# inherit the shell's PATH). Override with make MISE=/path/to/mise.
-# To try the behavior without mise, empty the candidates with MISE_CANDIDATES=.
+# ---- ツールチェーン ------------------------------------------------------------------
+# GUI からはシェルの PATH を継承しないことがあるため、PATH と一般的な導入先から mise を探す。
+# make MISE=/path/to/mise で上書きできる。mise が無い場合の確認には MISE_CANDIDATES= を使う。
 MISE_CANDIDATES ?= $(HOME)/.local/bin/mise /opt/homebrew/bin/mise /usr/local/bin/mise
 ifeq ($(SYSTEM_TOOLS),1)
 RUN :=
@@ -41,13 +38,18 @@ endif
 
 ## Setup
 
-setup: deps ## Install the toolchain (mise) and dependencies
+setup: ## Install the toolchain (mise) and dependencies
 	@if [ -n "$(MISE)" ]; then "$(MISE)" install; fi
+	$(MAKE) deps
 	$(RUN) cargo fetch $(CARGO_FLAGS)
 
-deps: ## Install CMake with Homebrew when it is missing (the BoringSSL build in wreq needs it)
+deps: ## Ensure CMake is available for the BoringSSL build in wreq
+ifeq ($(RUN),)
 	@command -v cmake >/dev/null 2>&1 || brew install cmake
-	@echo "cmake: $$(cmake --version | head -1)"
+else
+	@"$(MISE)" install cmake
+endif
+	@$(RUN) cmake --version | head -1
 
 ## Build
 
@@ -82,10 +84,9 @@ ci: check test ## Run the same checks as CI (no changes)
 
 ## Install
 
-# Replace the binary through a temporary file and a rename instead of copying over it. macOS
-# caches the code signature check per inode, so a binary copied over one that is running (or ran
-# a moment ago) is killed with SIGKILL right after it starts (exit 137). The temporary file sits
-# in the same directory so that the rename swaps the inode.
+# macOS は inode ごとにコード署名の検証結果を保持するため、直接上書きすると起動直後に
+# SIGKILL (exit 137) となることがある。同じディレクトリの一時ファイルへコピーし、
+# rename で inode を置き換えてから使う。
 install: release ## Install the release binary to INSTALL_PATH (default /usr/local/bin)
 	@mkdir -p "$(INSTALL_PATH)"
 	cp "target/release/$(BINARY_NAME)" "$(INSTALL_PATH)/$(BINARY_NAME).new"

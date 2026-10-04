@@ -15,6 +15,7 @@ impl CacheDir {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("config.toml"), "").unwrap();
         let accounts: Vec<_> = ["claude", "codex", "grok"]
             .into_iter()
             .map(|provider| {
@@ -53,6 +54,7 @@ impl CacheDir {
             .output()
             .unwrap();
         assert!(output.status.success(), "{:?}", output.stderr);
+        assert!(output.stderr.is_empty(), "{:?}", output.stderr);
         String::from_utf8(output.stdout).unwrap()
     }
 }
@@ -85,4 +87,78 @@ fn cached_statusline_hide_still_applies_after_only() {
 fn cached_statusline_without_filter_keeps_all_providers() {
     let cache = CacheDir::new();
     assert_eq!(cache.render(&[]).lines().count(), 3);
+}
+
+#[test]
+fn init_config_uses_explicit_path_and_never_overwrites_it() {
+    let fixture = CacheDir::new();
+    let chrome = fixture.0.join("Library/Application Support/Google/Chrome");
+    std::fs::create_dir_all(&chrome).unwrap();
+    std::fs::write(
+        chrome.join("Local State"),
+        r#"{"profile":{"info_cache":{}}}"#,
+    )
+    .unwrap();
+    let path = fixture.0.join("nested/alternate.toml");
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_ai-usage"))
+            .arg("--init-config")
+            .arg("--config")
+            .arg(&path)
+            .env("HOME", &fixture.0)
+            .env("CLAUDE_CONFIG_DIR", &fixture.0)
+            .output()
+            .unwrap()
+    };
+    let first = run();
+    assert!(first.status.success(), "{:?}", first.stderr);
+    assert!(first.stdout.is_empty());
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("ai-usage --init-config")
+    );
+    assert!(!fixture.0.join(".config/ai-usage/config.toml").exists());
+    std::fs::write(&path, "# existing config\n").unwrap();
+    let second = run();
+    assert!(second.status.success(), "{:?}", second.stderr);
+    assert!(
+        String::from_utf8(second.stdout)
+            .unwrap()
+            .contains("ai-usage --init-config")
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# existing config\n"
+    );
+}
+
+#[test]
+fn init_config_preserves_a_dangling_symlink() {
+    let fixture = CacheDir::new();
+    let chrome = fixture.0.join("Library/Application Support/Google/Chrome");
+    std::fs::create_dir_all(&chrome).unwrap();
+    std::fs::write(
+        chrome.join("Local State"),
+        r#"{"profile":{"info_cache":{}}}"#,
+    )
+    .unwrap();
+    let destination = fixture.0.join("linked-config.toml");
+    let missing_target = fixture.0.join("missing-config.toml");
+    std::os::unix::fs::symlink(&missing_target, &destination).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_ai-usage"))
+        .arg("--init-config")
+        .arg("--config")
+        .arg(&destination)
+        .env("HOME", &fixture.0)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("ai-usage --init-config")
+    );
+    assert_eq!(std::fs::read_link(destination).unwrap(), missing_target);
+    assert!(!missing_target.exists());
 }

@@ -1,7 +1,8 @@
 # このリポジトリのツールチェーン。手元 (Makefile 経由) と CI の両方がここを正とする。
-# CMake (wreq の BoringSSL のビルドに要る) は mise では入れず、make deps が Homebrew で入れる。
+# CMake は wreq の BoringSSL のビルドに必要。Rust と同じく手元と CI で版を揃える。
 
 [tools]
 # profile と components を明示する。未指定だと rustup の既定の profile 次第で入るものが変わり、
 # GitHub Actions のランナー (minimal) では cargo fmt / cargo clippy が無いと言われて落ちる
 rust = { version = "1.98.1", profile = "minimal", components = ["rustfmt", "clippy"] }
+cmake = "4.4.3"

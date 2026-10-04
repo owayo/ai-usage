@@ -7,7 +7,7 @@ Every command and option of `ai-usage`. The everyday examples are in the [README
 | Command | Description |
 |---------|-------------|
 | `ai-usage` | Show usage for all signed-in profiles and providers |
-| `ai-usage --init-config` | Generate a starter config from currently signed-in sessions |
+| `ai-usage --init-config` | Generate a starter config from currently signed-in sessions; `--config <PATH>` chooses its destination |
 | `ai-usage --list-profiles` | List discovered Chrome profiles |
 
 ## Options
@@ -17,7 +17,7 @@ Every command and option of `ai-usage`. The everyday examples are in the [README
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--profile <NAMES>` | `-p` | Comma-separated profile names (Chrome display name or on-disk dir) |
-| `--only <PROVIDER>` | | Show only `claude`, `codex`, `antigravity`, `pixellab`, or `grok` |
+| `--only <PROVIDER>` | | Show only `claude`, `codex`, `antigravity`, `pixellab`, or `grok`; also applies to cached statusline output |
 
 ### Output
 
@@ -46,7 +46,9 @@ Every command and option of `ai-usage`. The everyday examples are in the [README
 
 | Option | Description |
 |--------|-------------|
-| `--config <PATH>` | Use this config file instead of `~/.config/ai-usage/config.toml` |
+| `--config <PATH>` | Use this config file instead of `~/.config/ai-usage/config.toml`; with `--init-config`, create it without overwriting an existing file |
 | `--debug` | Print per-row match decisions to stderr as JSONL (stdout stays clean for pipes) |
 | `--help` | Print help |
 | `--version` | Print version |
+
+If the `--init-config` destination already exists, the template is printed to stdout instead. Cached output uses the accounts and labels recorded in the JSON file; set profile selection and labels when generating the cache. `--only` and statusline hiding still apply when rendering it.
