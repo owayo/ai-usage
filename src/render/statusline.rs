@@ -680,6 +680,23 @@ mod tests {
     }
 
     #[test]
+    fn pad_display_measures_emoji_sequences_as_strings() {
+        for name in ["👩‍🔬work", "🇯🇵home", "❤️work", "👨‍👩‍👧‍👦home"]
+        {
+            let padded = pad_display(name, NAME_FIELD_WIDTH);
+            assert!(padded.starts_with(name), "名前が途中で切れた: {name:?}");
+            assert_eq!(display_width(&padded), NAME_FIELD_WIDTH, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn pad_display_keeps_graphemes_intact_at_the_boundary() {
+        assert_eq!(pad_display("123456789👩‍🔬", NAME_FIELD_WIDTH), "123456789  ");
+        assert_eq!(pad_display("12345678👩‍🔬", NAME_FIELD_WIDTH), "12345678👩‍🔬 ");
+        assert_eq!(pad_display("e\u{301}x", 2), "e\u{301} ");
+    }
+
+    #[test]
     fn pad_display_does_not_split_a_character_across_the_boundary() {
         // 全角は 2 桁なので、残り 1 桁の位置では入れずに打ち切る(半端な桁を作らない)。
         // "a" (1 桁) + 全角 4 文字 (8 桁) = 9 桁。次の全角は 11 桁目に食い込むため入らない。

@@ -574,6 +574,23 @@ mod tests {
     }
 
     #[test]
+    fn select_entry_preserves_subsecond_create_time() {
+        let entry = |key: &str, created: &str| {
+            json!({
+                "key": key,
+                "refresh_token": "test-refresh",
+                "oidc_client_id": "test-client",
+                "create_time": created,
+            })
+        };
+        let doc = json!({
+            "a-older": entry("old-token", "2026-07-01T00:00:00.100Z"),
+            "z-newer": entry("new-token", "2026-07-01T00:00:00.900Z"),
+        });
+        assert_eq!(select_entry(&doc).unwrap()["key"], "new-token");
+    }
+
+    #[test]
     fn select_entry_reads_flat_document_as_entry() {
         // 動的キー wrapper が無く、直下に key / refresh_token がある形も許容する。
         let doc = json!({
