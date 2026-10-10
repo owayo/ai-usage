@@ -21,7 +21,23 @@ use serde::Serialize;
 
 use crate::SortKey;
 use crate::model::{Provider, WindowKind};
-use crate::report::{AccountOut, Report};
+use crate::report::{AccountOut, LimitObservationOut, Report};
+
+/// 会話時に観測した制限の経過時間。24時間枠を過ぎた記録は表示しない。
+fn limit_observation_age(observation: &LimitObservationOut, now: DateTime<Utc>) -> Option<String> {
+    let observed = parse_utc(&observation.observed_at)?;
+    let age = (now - observed).num_seconds();
+    if !(0..=86_400).contains(&age) {
+        return None;
+    }
+    Some(if age < 60 {
+        "<1m".to_string()
+    } else if age < 3_600 {
+        format!("{}m", age / 60)
+    } else {
+        format!("{}h", age / 3_600)
+    })
+}
 
 /// provider 側の email を優先し、表示・照合に使えない値なら Chrome profile 側へ
 /// フォールバックする。空文字と local-part のない値で有効な profile email を遮らない。
@@ -209,6 +225,25 @@ pub fn json(report: &Report, sort: SortKey) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_limit_observation_disappears_from_cached_views() {
+        let now = parse_utc("2026-10-10T12:00:00Z").unwrap();
+        let mut observation = LimitObservationOut {
+            model: "grok-test".into(),
+            observed_at: "2026-10-10T11:55:00Z".into(),
+            used_tokens: 120,
+            limit_tokens: 100,
+        };
+        assert_eq!(
+            limit_observation_age(&observation, now).as_deref(),
+            Some("5m")
+        );
+        observation.observed_at = "2026-10-09T11:55:00Z".into();
+        assert!(limit_observation_age(&observation, now).is_none());
+        observation.observed_at = "2026-10-10T12:01:00Z".into();
+        assert!(limit_observation_age(&observation, now).is_none());
+    }
 
     #[test]
     fn display_name_uses_label_first() {

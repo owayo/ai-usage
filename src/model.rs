@@ -67,6 +67,15 @@ pub struct Window {
     pub resets_at: Option<DateTime<Utc>>,
 }
 
+/// Grok CLI が会話時に受け取った24時間枠の拒否応答。取得 API の週次枠とは別。
+#[derive(Clone, Debug)]
+pub struct LimitObservation {
+    pub model: String,
+    pub observed_at: DateTime<Utc>,
+    pub used_tokens: u64,
+    pub limit_tokens: u64,
+}
+
 /// 手動で回復できる利用枠。通常の自動リセット時刻とは独立した情報。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -121,6 +130,8 @@ pub struct Usage {
     pub long: Option<Window>,
     /// None は取得対象外。取得失敗は種類ごとの remaining = None で表す。
     pub manual_resets: Option<Vec<ManualReset>>,
+    /// 直近の会話時に確認された制限。現在の使用率とは混同しない。
+    pub limit_observation: Option<LimitObservation>,
 }
 
 /// 表示可能な usage 1 行。provider fetch は 1 行以上を返す。多くの provider は

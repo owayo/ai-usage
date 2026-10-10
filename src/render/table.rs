@@ -6,10 +6,10 @@ use comfy_table::{Cell, Color, ContentArrangement, Table};
 
 use super::manual_resets::format_resets;
 use super::sort::sorted_refs;
-use super::{brand_rgb, display_name};
+use super::{brand_rgb, display_name, limit_observation_age};
 use crate::SortKey;
 use crate::model::{AccountReport, Provider, Window};
-use crate::report::ManualResetOut;
+use crate::report::{LimitObservationOut, ManualResetOut};
 
 /// provider の brand color を comfy-table truecolor として返す(table 用)。
 fn provider_color(p: Provider) -> Color {
@@ -78,7 +78,18 @@ fn build_table(reports: &[AccountReport], sort: SortKey, color: bool, now: DateT
                         provider_color(r.provider),
                     ),
                     Cell::new(u.plan.as_deref().unwrap_or("—")),
-                    window_cell(&u.short, now, short_bar_width, color),
+                    if let Some(observation) =
+                        u.limit_observation.as_ref().map(LimitObservationOut::from)
+                        && let Some(age) = limit_observation_age(&observation, now)
+                    {
+                        tint(
+                            Cell::new(format!("24h LIMIT {} · seen {age} ago", observation.model)),
+                            color,
+                            Color::Red,
+                        )
+                    } else {
+                        window_cell(&u.short, now, short_bar_width, color)
+                    },
                     window_cell(&u.long, now, long_bar_width, color),
                 ];
                 if show_resets {

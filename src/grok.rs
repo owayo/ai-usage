@@ -13,6 +13,7 @@
 //! (grant_type=refresh_token, client_id=<auth.json.oidc_client_id>) で更新する。
 //! grok CLI は public OAuth client のため client_secret は不要。
 
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -24,7 +25,7 @@ use crate::config::GrokCfg;
 use crate::http::{
     get_json, is_retryable_status, no_retry_after_refresh, post_form, retryable_error,
 };
-use crate::model::{Usage, UsageRow, Window, WindowKind};
+use crate::model::{LimitObservation, Usage, UsageRow, Window, WindowKind};
 
 /// CLI が読み書きする通信先。debug ログでも公開されているので固定で埋めてよい。
 const CHAT_PROXY: &str = "https://cli-chat-proxy.grok.com/v1";
@@ -77,7 +78,9 @@ pub async fn fetch(client: &Client, cfg: Option<&GrokCfg>) -> Result<Vec<UsageRo
         Err(_) => None,
     };
 
-    Ok(UsageRow::single(build_usage(&user, billing.as_ref())))
+    let mut usage = build_usage(&user, billing.as_ref());
+    usage.limit_observation = read_limit_observation(&path, Utc::now());
+    Ok(UsageRow::single(usage))
 }
 
 /// 認証情報がある = Grok を表示可能。Antigravity と同じく、`enabled = false` の
@@ -178,6 +181,7 @@ fn build_usage(user: &Value, billing: Option<&Value>) -> Usage {
         short: None,
         long,
         manual_resets: None,
+        limit_observation: None,
     }
 }
 
@@ -220,6 +224,94 @@ fn number_val(v: Option<&Value>) -> Option<f64> {
     let v = v?;
     // `{val: N}` の nested と、そのままの N の両方に対応する。
     v.get("val").and_then(Value::as_f64).or_else(|| v.as_f64())
+}
+
+/// Grok Build の直近の拒否応答を読む。週次 credits API に含まれない Free の
+/// モデル別24時間枠であり、会話を送信せず確認できる唯一の手元の観測値。
+/// 成功ログにはモデル名が無いため、別モデルの成功で拒否記録を消さない。
+fn read_limit_observation(auth_path: &Path, now: DateTime<Utc>) -> Option<LimitObservation> {
+    const TAIL_BYTES: u64 = 1_048_576;
+    let log_path = auth_path.parent()?.join("logs/unified.jsonl");
+    let mut file = std::fs::File::open(log_path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = if start > 0 {
+        text.split_once('\n')?.1
+    } else {
+        &text
+    };
+    parse_recent_limit_observation(text, now)
+}
+
+fn parse_recent_limit_observation(log: &str, now: DateTime<Utc>) -> Option<LimitObservation> {
+    for line in log.lines().rev() {
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(observed_at) = event
+            .get("ts")
+            .and_then(Value::as_str)
+            .and_then(|time| DateTime::parse_from_rfc3339(time).ok())
+            .map(|time| time.with_timezone(&Utc))
+        else {
+            continue;
+        };
+        let age = now - observed_at;
+        if age < chrono::Duration::zero() {
+            continue;
+        }
+        if age > chrono::Duration::hours(24) {
+            break;
+        }
+        if event.get("msg").and_then(Value::as_str) == Some("shell.turn.inference_failed")
+            && let Some(observation) = parse_limit_event(&event, observed_at)
+        {
+            return Some(observation);
+        }
+    }
+    None
+}
+
+fn parse_limit_event(event: &Value, observed_at: DateTime<Utc>) -> Option<LimitObservation> {
+    let ctx = event.get("ctx")?;
+    if !matches!(ctx.get("kind")?.as_str()?, "rate_limit" | "rate_limited") {
+        return None;
+    }
+    let message = ctx.get("message")?.as_str()?;
+    if !message.contains("subscription:free-usage-exhausted") {
+        return None;
+    }
+    let model = message
+        .split_once("for model ")?
+        .1
+        .split_whitespace()
+        .next()?
+        .trim_end_matches(['.', ','])
+        .to_string();
+    let numbers = message
+        .split_once("tokens (actual/limit): ")?
+        .1
+        .split_once('/')?;
+    let used_tokens = numbers.0.parse::<u64>().ok()?;
+    let limit_tokens = numbers
+        .1
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse::<u64>()
+        .ok()?;
+    if limit_tokens == 0 || model.is_empty() {
+        return None;
+    }
+    Some(LimitObservation {
+        model,
+        observed_at,
+        used_tokens,
+        limit_tokens,
+    })
 }
 
 // ================================ 認証情報の読み込みと更新 ================================
@@ -477,6 +569,50 @@ mod tests {
         assert_eq!(w.kind, WindowKind::Weekly);
         assert_eq!(w.used_percent, None);
         assert!(w.resets_at.is_some());
+    }
+
+    #[test]
+    fn recent_cli_rejection_is_separate_from_weekly_credits() {
+        let now = DateTime::parse_from_rfc3339("2026-10-10T09:14:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let rejection = serde_json::json!({
+            "ts": "2026-10-10T09:12:00Z",
+            "msg": "shell.turn.inference_failed",
+            "ctx": {
+                "kind": "rate_limited",
+                "message": "subscription:free-usage-exhausted: You've used all the included free usage for model grok-4.7 for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 621436/600000."
+            }
+        });
+        let observation = parse_recent_limit_observation(&rejection.to_string(), now).unwrap();
+        assert_eq!(observation.model, "grok-4.7");
+        assert_eq!(observation.used_tokens, 621436);
+        assert_eq!(observation.limit_tokens, 600000);
+
+        let success =
+            serde_json::json!({"ts":"2026-10-10T09:13:00Z","msg":"shell.turn.inference_done"});
+        let log = format!("{rejection}\n{success}");
+        assert!(parse_recent_limit_observation(&log, now).is_some());
+        assert!(
+            parse_recent_limit_observation(
+                &rejection.to_string(),
+                now + chrono::Duration::hours(25)
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn unrelated_errors_do_not_claim_a_free_usage_limit() {
+        let now = DateTime::parse_from_rfc3339("2026-10-10T09:14:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let event = serde_json::json!({
+            "ts":"2026-10-10T09:12:00Z",
+            "msg":"shell.turn.inference_failed",
+            "ctx":{"kind":"rate_limit","message":"HTTP 429 temporary"}
+        });
+        assert!(parse_recent_limit_observation(&event.to_string(), now).is_none());
     }
 
     #[test]

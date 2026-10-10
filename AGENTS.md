@@ -429,8 +429,13 @@ will revert to the dual-slot layout automatically (see the same fallback in
 A free account can hit a model-specific rolling 24-hour token limit while the
 credits billing response supplies only a weekly period and no percentage.
 Neither that period nor the zero on-demand billing amounts prove 0% usage.
-Do not infer a live quota from historical CLI logs; they cannot account for
-other clients or tokens aging out of a rolling window.
+The latest `shell.turn.inference_failed` event in `~/.grok/logs/unified.jsonl`
+can carry `subscription:free-usage-exhausted` and the refused request's
+`tokens (actual/limit)`. Render it as a separate, timestamped observation for
+at most 24 hours. Successful inference logs have no model name, so they cannot
+safely clear a model-specific rejection. Never treat the historical ratio as
+the live balance or the weekly percentage. Read only
+the last 1 MiB of the log, and derive its path from the chosen `auth.json`.
 
 ## Statusline cache
 

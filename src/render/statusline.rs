@@ -7,8 +7,8 @@ use unicode_width::UnicodeWidthStr;
 use super::manual_resets::format_resets_compact;
 use super::sort::{sorted_refs, statusline_default_cmp};
 use super::{
-    ActiveTarget, brand_rgb, display_name, legacy_long_window_label, parse_utc, preferred_email,
-    resolve_active, window_label,
+    ActiveTarget, brand_rgb, display_name, legacy_long_window_label, limit_observation_age,
+    parse_utc, preferred_email, resolve_active, window_label,
 };
 use crate::SortKey;
 use crate::model::{Provider, WindowKind};
@@ -106,6 +106,15 @@ fn render_row(
 ) -> String {
     let mut rendered = render_identity(a, row_email, active, opts);
     rendered += &render_windows(a, opts, now);
+    if let Some(observation) = a.limit_observation.as_ref()
+        && let Some(age) = limit_observation_age(observation, now)
+    {
+        rendered += &paint(
+            opts.color,
+            RED,
+            &format!("  24h LIMIT {} ({age} ago)", observation.model),
+        );
+    }
     if a.ok
         && let Some(resets) = &a.manual_resets
     {
@@ -495,6 +504,7 @@ mod tests {
                 expires_at: expires_at.map(|expiry| expiry.to_rfc3339()),
                 paused: false,
             }]),
+            limit_observation: None,
             error: None,
         }
     }
@@ -779,6 +789,7 @@ mod tests {
             }),
             long: None,
             manual_resets: None,
+            limit_observation: None,
             error: None,
         };
         let mut opts = plain_opts();
@@ -818,6 +829,7 @@ mod tests {
             }),
             error: None,
             manual_resets: None,
+            limit_observation: None,
         };
         let mut opts = plain_opts();
         opts.color = true;

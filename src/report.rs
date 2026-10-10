@@ -5,7 +5,28 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{AccountReport, ManualReset, Provider, ResetKind, Window, WindowKind};
+use crate::model::{
+    AccountReport, LimitObservation, ManualReset, Provider, ResetKind, Window, WindowKind,
+};
+
+#[derive(Serialize, Deserialize)]
+pub struct LimitObservationOut {
+    pub model: String,
+    pub observed_at: String,
+    pub used_tokens: u64,
+    pub limit_tokens: u64,
+}
+
+impl From<&LimitObservation> for LimitObservationOut {
+    fn from(value: &LimitObservation) -> Self {
+        Self {
+            model: value.model.clone(),
+            observed_at: value.observed_at.to_rfc3339(),
+            used_tokens: value.used_tokens,
+            limit_tokens: value.limit_tokens,
+        }
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ManualResetOut {
@@ -74,6 +95,8 @@ pub struct AccountOut {
     /// 旧キャッシュには存在しないため欠落を許可する。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_resets: Option<Vec<ManualResetOut>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_observation: Option<LimitObservationOut>,
     pub error: Option<String>,
 }
 
@@ -104,6 +127,7 @@ impl Report {
                         .manual_resets
                         .as_ref()
                         .map(|resets| resets.iter().map(ManualResetOut::from).collect()),
+                    limit_observation: u.limit_observation.as_ref().map(LimitObservationOut::from),
                     error: None,
                 },
                 Err(e) => AccountOut {
@@ -118,6 +142,7 @@ impl Report {
                     short: None,
                     long: None,
                     manual_resets: None,
+                    limit_observation: None,
                     error: Some(format!("{e:#}")),
                 },
             })
@@ -158,6 +183,7 @@ mod tests {
             }),
             long: None,
             manual_resets: None,
+            limit_observation: None,
         };
         let report = Report::build(&[report_with(Ok(usage))]);
         assert_eq!(report.accounts.len(), 1);
@@ -203,6 +229,36 @@ mod tests {
     }
 
     #[test]
+    fn limit_observation_survives_json_cache_without_changing_weekly_window() {
+        let observed_at = Utc::now();
+        let usage = Usage {
+            long: Some(Window {
+                kind: WindowKind::Weekly,
+                used_percent: None,
+                resets_at: None,
+            }),
+            limit_observation: Some(LimitObservation {
+                model: "grok-test".into(),
+                observed_at,
+                used_tokens: 120,
+                limit_tokens: 100,
+            }),
+            ..Default::default()
+        };
+        let mut account = report_with(Ok(usage));
+        account.provider = Provider::Grok;
+        let report = Report::build(&[account]);
+        let cached: Report =
+            serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
+        let row = &cached.accounts[0];
+        assert_eq!(row.long.as_ref().unwrap().used_percent, None);
+        let observation = row.limit_observation.as_ref().unwrap();
+        assert_eq!(observation.model, "grok-test");
+        assert_eq!(observation.used_tokens, 120);
+        assert_eq!(observation.limit_tokens, 100);
+    }
+
+    #[test]
     fn build_clamps_past_reset_to_zero_and_keeps_future_positive() {
         // resets_in_seconds は `.max(0)` で負値にならない(過去リセット→0)。
         let past = Utc::now() - chrono::Duration::hours(3);
@@ -221,6 +277,7 @@ mod tests {
                 resets_at: Some(future),
             }),
             manual_resets: None,
+            limit_observation: None,
         };
         let report = Report::build(&[report_with(Ok(usage))]);
         let a = &report.accounts[0];

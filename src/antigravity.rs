@@ -168,6 +168,7 @@ fn parse_summary(v: &Value, email: Option<String>, plan: Option<String>) -> Resu
             short: None,
             long: None,
             manual_resets: None,
+            limit_observation: None,
         };
         for b in g
             .get("buckets")
@@ -542,6 +543,7 @@ fn parse_buckets(v: &Value) -> Result<Vec<UsageRow>> {
         ),
         long: None,
         manual_resets: None,
+        limit_observation: None,
     };
     Ok(vec![UsageRow {
         group_label: Some("Gemini".to_string()),

@@ -61,7 +61,11 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
    current credit period. The period type sets the `1w` or `1m` badge and its end sets the
    reset countdown. Only `creditUsagePercent` supplies a usage percentage; when the API omits
    it, the single wide bar shows `--%` rather than an invented 0%. The CLI's model-specific
-   free-tier rate limit is separate from this credit period.
+   free-tier rate limit is separate from this credit period. A model-specific
+   free-limit rejection in the CLI log from the last 24 hours adds a separate
+   observation with token counts and age. Successful inference logs lack a model
+   name, so they cannot safely clear a model-specific rejection. Historical token
+   counts are not treated as the current remaining quota.
 
 ## Cloudflare and retries
 

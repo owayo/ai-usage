@@ -363,6 +363,7 @@ fn build_usage(access: &str, account: &Value, subscription: Option<&Value>) -> R
         short: None,
         long,
         manual_resets: None,
+        limit_observation: None,
     })
 }
 

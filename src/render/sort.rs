@@ -162,6 +162,7 @@ mod tests {
             }),
             error: None,
             manual_resets: None,
+            limit_observation: None,
         }
     }
 
