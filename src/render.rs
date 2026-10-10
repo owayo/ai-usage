@@ -4,6 +4,7 @@
 //! レンダラー間で共有する行の解決(表示名・active 判定・brand color)と、
 //! 15 行で足りる JSON 出力を持つ。
 
+mod manual_resets;
 mod sort;
 mod statusline;
 mod table;

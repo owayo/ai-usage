@@ -7,11 +7,11 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use base64::Engine;
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use wreq::Client;
 
 use crate::http::get_json;
-use crate::model::{Usage, UsageRow, Window, WindowKind};
+use crate::model::{ManualReset, ResetKind, Usage, UsageRow, Window, WindowKind};
 
 /// chatgpt.com の session-token Cookie。大きい token は `…token.0` と `…token.1` に
 /// 分割され、小さい token は suffix なしの `…session-token` に入る。
@@ -74,15 +74,31 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
         .map(str::to_string);
     let account_id = jwt_account_id(access);
 
-    let usage = get_json(
+    let usage_request = get_json(
         client,
         "https://chatgpt.com/backend-api/wham/usage",
         &cookie,
         Some(access),
         account_id.as_deref(),
-    )
-    .await
-    .context("fetching wham/usage")?;
+    );
+    // 補助情報は並行取得し、失敗しても通常の使用量を失わない。
+    let reset_request = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        get_json(
+            client,
+            "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+            &cookie,
+            Some(access),
+            account_id.as_deref(),
+        ),
+    );
+    let (usage, resets) = tokio::join!(usage_request, reset_request);
+    let usage = usage.context("fetching wham/usage")?;
+    let manual_resets = resets
+        .ok()
+        .and_then(Result::ok)
+        .and_then(|v| parse_manual_resets(&v, Utc::now()))
+        .unwrap_or_else(|| vec![ManualReset::unknown(ResetKind::Full)]);
 
     let plan = usage
         .get("plan_type")
@@ -95,7 +111,65 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
         plan,
         short,
         long,
+        manual_resets: Some(manual_resets),
     }))
+}
+
+fn parse_manual_resets(v: &serde_json::Value, now: DateTime<Utc>) -> Option<Vec<ManualReset>> {
+    let available = v.get("available_count")?.as_u64()?;
+    let mut resets = Vec::new();
+    let mut listed = 0_u64;
+    let mut seen = std::collections::HashSet::new();
+    for credit in v.get("credits")?.as_array()? {
+        if credit.get("status")?.as_str()? != "available" {
+            continue;
+        }
+        if let Some(id) = credit.get("id").and_then(serde_json::Value::as_str)
+            && !seen.insert(id)
+        {
+            continue;
+        }
+        listed = listed.checked_add(1)?;
+        if credit
+            .get("is_supported_by_plan")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        {
+            continue;
+        }
+        let expires_at = credit
+            .get("expires_at")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc));
+        if expires_at.is_some_and(|end| end <= now) {
+            continue;
+        }
+        let kind = match credit.get("reset_type")?.as_str()? {
+            "codex_rate_limits" => ResetKind::Full,
+            _ => ResetKind::Other,
+        };
+        resets.push(ManualReset {
+            kind,
+            remaining: Some(1),
+            expires_at,
+            paused: false,
+        });
+    }
+    // 一覧不足や集計より多い利用可能件数は不明とする。提供元の集計が
+    // 対象外プラン / 失効済み項目を含むかどうかには依存しない。
+    if listed < available || u64::try_from(resets.len()).ok()? > available {
+        return None;
+    }
+    if resets.is_empty() {
+        resets.push(ManualReset {
+            kind: ResetKind::Full,
+            remaining: Some(0),
+            expires_at: None,
+            paused: false,
+        });
+    }
+    Some(resets)
 }
 
 /// 短期スロットとみなす window duration の上限。5 時間枠に多少の余裕を見た値で、
@@ -178,6 +252,74 @@ mod tests {
     use super::*;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use serde_json::json;
+
+    #[test]
+    fn reset_credits_keep_separate_expiries_and_ignore_used_or_unsupported_entries() {
+        let now = DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let v = json!({"available_count":2,"credits":[
+            {"id":"a","status":"available","reset_type":"codex_rate_limits","expires_at":"2026-06-20T00:00:00Z","is_supported_by_plan":true},
+            {"id":"b","status":"available","reset_type":"codex_rate_limits","expires_at":"2026-06-25T00:00:00Z","is_supported_by_plan":true},
+            {"id":"used","status":"redeemed"},
+            {"id":"unsupported","status":"available","is_supported_by_plan":false}
+        ]});
+        let resets = parse_manual_resets(&v, now).unwrap();
+        assert_eq!(resets.len(), 2);
+        assert!(
+            resets
+                .iter()
+                .all(|r| r.kind == ResetKind::Full && r.remaining == Some(1))
+        );
+        assert_ne!(resets[0].expires_at, resets[1].expires_at);
+        let mut includes_unsupported = v;
+        includes_unsupported["available_count"] = json!(3);
+        assert_eq!(
+            parse_manual_resets(&includes_unsupported, now)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn reset_credits_distinguish_empty_expired_unknown_and_incomplete_responses() {
+        let now = DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let expired = json!({"available_count":1,"credits":[
+            {"status":"available","reset_type":"codex_rate_limits","expires_at":"2026-06-15T00:00:00Z"}
+        ]});
+        assert_eq!(
+            parse_manual_resets(&expired, now).unwrap()[0].remaining,
+            Some(0)
+        );
+        let mut excludes_expired = expired;
+        excludes_expired["available_count"] = json!(0);
+        assert_eq!(
+            parse_manual_resets(&excludes_expired, now).unwrap()[0].remaining,
+            Some(0)
+        );
+        let empty = json!({"available_count":0,"credits":[]});
+        assert_eq!(
+            parse_manual_resets(&empty, now).unwrap()[0].remaining,
+            Some(0)
+        );
+        for v in [
+            json!({}),
+            json!({"available_count":0}),
+            json!({"available_count":2,"credits":[]}),
+        ] {
+            assert!(parse_manual_resets(&v, now).is_none());
+        }
+        let future_kind = json!({"available_count":1,"credits":[
+            {"status":"available","reset_type":"future_type","expires_at":"invalid"}
+        ]});
+        let resets = parse_manual_resets(&future_kind, now).unwrap();
+        assert_eq!(resets[0].kind, ResetKind::Other);
+        assert_eq!(resets[0].remaining, Some(1));
+        assert!(resets[0].expires_at.is_none());
+    }
 
     fn put(c: &mut HashMap<String, String>, k: &str, v: &str) {
         c.insert(k.to_string(), v.to_string());

@@ -154,6 +154,7 @@ fn build_usage(user: &Value, billing: Option<&Value>) -> Usage {
         plan,
         short: None,
         long,
+        manual_resets: None,
     }
 }
 

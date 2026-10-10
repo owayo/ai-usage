@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use wreq::Client;
 
 use crate::http::get_json;
-use crate::model::{Usage, UsageRow, Window, WindowKind};
+use crate::model::{ManualReset, ResetKind, Usage, UsageRow, Window, WindowKind};
 
 fn cookie_header(cookies: &HashMap<String, String>) -> Result<String> {
     let session = cookies
@@ -48,7 +48,8 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
 
     let usage = get_json(
         client,
-        &format!("https://claude.ai/api/organizations/{org_id}/usage"),
+        // 設定の使用量ページと同じ opt-in で、手動リセットの付与情報も取得する。
+        &format!("https://claude.ai/api/organizations/{org_id}/usage?cedar_ember=1"),
         &cookie,
         None,
         None,
@@ -67,7 +68,73 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
         plan: None,
         short: parse_window(usage.get("five_hour"), WindowKind::FiveHour),
         long: parse_window(usage.get("seven_day"), WindowKind::Weekly),
+        manual_resets: Some(
+            parse_manual_resets(usage.get("cedar_ember"), Utc::now()).unwrap_or_else(|| {
+                vec![
+                    ManualReset::unknown(ResetKind::Full),
+                    ManualReset::unknown(ResetKind::FiveHour),
+                ]
+            }),
+        ),
     }))
+}
+
+fn parse_manual_resets(
+    v: Option<&serde_json::Value>,
+    now: DateTime<Utc>,
+) -> Option<Vec<ManualReset>> {
+    let v = v?;
+    let eligible = v.get("eligible")?.as_bool()?;
+    let mut resets = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    if eligible {
+        for grant in v.get("grants")?.as_array()? {
+            let paused = grant.get("paused").and_then(serde_json::Value::as_bool) == Some(true);
+            let expires_at = grant
+                .get("ends_at")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|d| d.with_timezone(&Utc));
+            if expires_at.is_some_and(|end| end <= now) {
+                continue;
+            }
+            let id = grant.get("id")?.as_str()?;
+            if !seen.insert(id) {
+                continue;
+            }
+            let remaining = grant.get("resets_left")?.as_u64()?;
+            if remaining == 0 {
+                continue;
+            }
+            let clears = grant.get("clears")?.as_array()?;
+            let short = clears.iter().any(|v| v.as_str() == Some("five_hour"));
+            let long = clears.iter().any(|v| v.as_str() == Some("seven_day"));
+            let kind = match (short, long) {
+                (true, true) => ResetKind::Full,
+                (true, false) => ResetKind::FiveHour,
+                (false, true) => ResetKind::Weekly,
+                _ => ResetKind::Other,
+            };
+            resets.push(ManualReset {
+                kind,
+                remaining: Some(remaining),
+                expires_at,
+                paused,
+            });
+        }
+    }
+    // 設定ページは未付与の完全 / 5 時間リセットも 0 回として区別する。
+    for kind in [ResetKind::Full, ResetKind::FiveHour] {
+        if !resets.iter().any(|r| r.kind == kind) {
+            resets.push(ManualReset {
+                kind,
+                remaining: Some(0),
+                expires_at: None,
+                paused: false,
+            });
+        }
+    }
+    Some(resets)
 }
 
 /// claude.ai の /api/account response から signed-in account email を取り出す。
@@ -124,6 +191,65 @@ fn parse_window(v: Option<&serde_json::Value>, kind: WindowKind) -> Option<Windo
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn manual_resets_preserve_scope_count_and_each_expiry() {
+        let now = DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let v = json!({"eligible":true,"grants":[
+            {"id":"full-a","resets_left":1,"clears":["five_hour","seven_day"],"ends_at":"2026-06-20T00:00:00Z"},
+            {"id":"full-b","resets_left":2,"clears":["five_hour","seven_day"],"ends_at":"2026-06-25T00:00:00Z"},
+            {"id":"session","resets_left":3,"clears":["five_hour"],"ends_at":"2026-06-22T00:00:00Z"},
+            {"id":"weekly","resets_left":1,"clears":["seven_day"],"ends_at":null}
+        ]});
+        let resets = parse_manual_resets(Some(&v), now).unwrap();
+        assert_eq!(resets.len(), 4);
+        assert_eq!(resets[0].kind, ResetKind::Full);
+        assert_eq!(resets[1].remaining, Some(2));
+        assert_ne!(resets[0].expires_at, resets[1].expires_at);
+        assert_eq!(resets[2].kind, ResetKind::FiveHour);
+        assert_eq!(resets[2].remaining, Some(3));
+        assert_eq!(resets[3].kind, ResetKind::Weekly);
+        assert!(resets[3].expires_at.is_none());
+    }
+
+    #[test]
+    fn manual_resets_keep_paused_but_exclude_expired_spent_and_duplicate_grants() {
+        let now = DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let active = json!({"id":"active","resets_left":1,"clears":["five_hour","seven_day"],"ends_at":"2026-06-20T00:00:00Z"});
+        let v = json!({"eligible":true,"grants":[active, active,
+            {"id":"paused","resets_left":5,"paused":true,"clears":["five_hour","seven_day"],"ends_at":"2026-06-21T00:00:00Z"},
+            {"id":"expired","resets_left":5,"ends_at":"2026-06-15T00:00:00Z"},
+            {"id":"spent","resets_left":0}
+        ]});
+        let resets = parse_manual_resets(Some(&v), now).unwrap();
+        assert_eq!(resets.len(), 3);
+        assert_eq!(resets[0].remaining, Some(1));
+        assert_eq!(resets[1].remaining, Some(5));
+        assert!(resets[1].paused);
+        assert!(resets[1].expires_at.is_some());
+        assert_eq!(resets[2].kind, ResetKind::FiveHour);
+        assert_eq!(resets[2].remaining, Some(0));
+    }
+
+    #[test]
+    fn missing_or_malformed_reset_data_is_unknown_instead_of_zero() {
+        let now = Utc::now();
+        for v in [
+            json!(null),
+            json!({}),
+            json!({"eligible":true}),
+            json!({"eligible":true,"grants":[{"id":"bad","resets_left":-1}]}),
+        ] {
+            assert!(parse_manual_resets(Some(&v), now).is_none());
+        }
+        assert!(parse_manual_resets(None, now).is_none());
+        let none = parse_manual_resets(Some(&json!({"eligible":false})), now).unwrap();
+        assert!(none.iter().all(|r| r.remaining == Some(0)));
+    }
 
     #[test]
     fn cookie_header_includes_required_session_key() {

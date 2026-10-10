@@ -4,10 +4,12 @@ use chrono::{DateTime, Duration, Local, Utc};
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
 
+use super::manual_resets::format_resets;
 use super::sort::sorted_refs;
 use super::{ActiveTarget, brand_rgb, display_name, preferred_email, resolve_active};
 use crate::SortKey;
 use crate::model::{AccountReport, Provider, Window};
+use crate::report::ManualResetOut;
 
 /// provider の brand color を comfy-table truecolor として返す(table 用)。
 fn provider_color(p: Provider) -> Color {
@@ -49,18 +51,17 @@ fn build_table(
     now: DateTime<Utc>,
 ) -> Table {
     let mut table = Table::new();
+    let show_resets = reports
+        .iter()
+        .any(|r| r.usage.as_ref().is_ok_and(|u| u.manual_resets.is_some()));
+    let mut header = vec!["Account", "Service", "Plan", "Short window", "Long window"];
+    if show_resets {
+        header.push("Manual resets");
+    }
     table
         .load_style(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec![
-            "Account",
-            "Service",
-            "Plan",
-            "Short window",
-            // 週次 / 月次を同居させる長期スロット。各行のバッジ(1w / 1m)で
-            // 実サイクルを明示する。
-            "Long window",
-        ]);
+        .set_header(header);
 
     // SortKey::Provider のときは入力(=ジョブ順)をそのまま保持。
     let ordered = sorted_refs(reports, sort, now, None);
@@ -88,7 +89,7 @@ fn build_table(
                 // comfy-table は colspan を持たないため、空側セルは "—" のまま。
                 let (short_bar_width, long_bar_width) =
                     bar_widths(u.short.is_some(), u.long.is_some());
-                table.add_row(vec![
+                let mut cells = vec![
                     name_cell,
                     tint(
                         Cell::new(service_label(r.provider, r.group_label.as_deref())),
@@ -98,11 +99,23 @@ fn build_table(
                     Cell::new(u.plan.as_deref().unwrap_or("—")),
                     window_cell(&u.short, now, short_bar_width, color),
                     window_cell(&u.long, now, long_bar_width, color),
-                ]);
+                ];
+                if show_resets {
+                    let text = u
+                        .manual_resets
+                        .as_ref()
+                        .map(|resets| {
+                            let resets: Vec<_> = resets.iter().map(ManualResetOut::from).collect();
+                            format_resets(&resets, now, true)
+                        })
+                        .unwrap_or_else(|| "—".into());
+                    cells.push(Cell::new(text));
+                }
+                table.add_row(cells);
             }
             Err(e) => {
                 let msg: String = format!("{e:#}").chars().take(150).collect();
-                table.add_row(vec![
+                let mut cells = vec![
                     name_cell,
                     tint(
                         Cell::new(service_label(r.provider, r.group_label.as_deref())),
@@ -112,7 +125,11 @@ fn build_table(
                     Cell::new("—"),
                     tint(Cell::new(format!("⚠ {msg}")), color, Color::DarkGrey),
                     Cell::new(""),
-                ]);
+                ];
+                if show_resets {
+                    cells.push(Cell::new("—"));
+                }
+                table.add_row(cells);
             }
         }
     }

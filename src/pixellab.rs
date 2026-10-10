@@ -382,6 +382,7 @@ fn build_usage(access: &str, account: &Value, subscription: Option<&Value>) -> R
         plan,
         short: None,
         long,
+        manual_resets: None,
     })
 }
 

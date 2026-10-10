@@ -161,6 +161,7 @@ mod tests {
                 resets_in_seconds: resets_in,
             }),
             error: None,
+            manual_resets: None,
         }
     }
 

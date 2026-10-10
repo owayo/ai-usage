@@ -4,6 +4,7 @@ use chrono::{DateTime, Local, Utc};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use super::manual_resets::format_resets_compact;
 use super::sort::{sorted_refs, statusline_default_cmp};
 use super::{
     ActiveTarget, brand_rgb, display_name, legacy_long_window_label, parse_utc, preferred_email,
@@ -24,6 +25,7 @@ const ANTIGRAVITY_LOGO: &str = "\u{100003}"; // Antigravity のマーク。
 const GROK_LOGO: &str = "\u{100004}"; // Grok (xAI) のマーク。
 const PIXELLAB_LOGO: &str = "\u{100400}"; // PixelLab のドラゴン。
 const GRAY: &str = "38;5;245";
+const RED: &str = "38;5;196";
 const DIM: &str = "38;5;242";
 const GREEN: &str = "38;5;35";
 const BOLD_RED: &str = "1;38;5;196"; // アクティブなアカウント。
@@ -102,6 +104,20 @@ fn render_row(
 ) -> String {
     let mut rendered = render_identity(a, row_email, active, opts);
     rendered += &render_windows(a, opts, now);
+    if a.ok
+        && let Some(resets) = &a.manual_resets
+    {
+        let resets = format_resets_compact(resets, now);
+        rendered += &paint(opts.color, GRAY, &format!("  R:{}", resets.counts));
+        if let Some(deadline) = resets.deadline {
+            let urgent = deadline
+                .expires_at
+                .is_some_and(|expiry| expiry > now && expiry - now < chrono::Duration::weeks(1));
+            rendered += &paint(opts.color, GRAY, " (");
+            rendered += &paint(opts.color, if urgent { RED } else { GRAY }, &deadline.text);
+            rendered += &paint(opts.color, GRAY, ")");
+        }
+    }
     rendered
 }
 
@@ -417,6 +433,8 @@ fn compact_dur(sec: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ResetKind;
+    use crate::report::ManualResetOut;
 
     fn fixed_utc(rfc3339: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(rfc3339)
@@ -435,6 +453,78 @@ mod tests {
             reset_at: false,
             hide: Vec::new(),
         }
+    }
+
+    fn manual_reset_account(expires_at: Option<DateTime<Utc>>) -> AccountOut {
+        AccountOut {
+            profile: "Work".into(),
+            provider: Provider::Codex,
+            ok: true,
+            plan: None,
+            email: None,
+            profile_email: None,
+            label: None,
+            group_label: None,
+            short: None,
+            long: None,
+            manual_resets: Some(vec![ManualResetOut {
+                kind: ResetKind::Full,
+                remaining: Some(1),
+                expires_at: expires_at.map(|expiry| expiry.to_rfc3339()),
+                paused: false,
+            }]),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn manual_reset_deadline_is_red_only_below_one_week() {
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let week = chrono::Duration::weeks(1);
+        let tick = chrono::Duration::nanoseconds(1);
+        let mut opts = plain_opts();
+        opts.color = true;
+        for (remaining, red) in [
+            (Some(week - tick), true),
+            (Some(week), false),
+            (Some(week + tick), false),
+            (Some(tick), true),
+            (Some(chrono::Duration::zero()), false),
+            (Some(-tick), false),
+            (None, false),
+        ] {
+            let expiry = remaining.map(|remaining| now + remaining);
+            let account = manual_reset_account(expiry);
+            let line = render_row(&account, None, false, &opts, now);
+            let suffix = line.rsplit_once("R:").unwrap().1;
+            assert_eq!(
+                suffix.matches("\x1b[38;5;196m").count(),
+                usize::from(red),
+                "remaining={remaining:?}: {suffix:?}"
+            );
+            if red {
+                let date = expiry
+                    .unwrap()
+                    .with_timezone(&Local)
+                    .format("%m/%d %H:%M")
+                    .to_string();
+                assert!(
+                    suffix.contains(&format!("\x1b[38;5;196m{date}\x1b[0m")),
+                    "{suffix:?}"
+                );
+                assert!(suffix.ends_with("\x1b[38;5;245m)\x1b[0m"), "{suffix:?}");
+                assert!(suffix.starts_with("full 1\x1b[0m"), "{suffix:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn manual_reset_deadline_respects_color_suppression() {
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let account = manual_reset_account(Some(now + chrono::Duration::days(1)));
+        let line = render_row(&account, None, false, &plain_opts(), now);
+        assert!(!line.contains('\x1b'), "{line:?}");
+        assert!(line.contains("R:full 1 ("), "{line}");
     }
 
     #[test]
@@ -587,6 +677,7 @@ mod tests {
                 resets_in_seconds: Some(86400),
             }),
             long: None,
+            manual_resets: None,
             error: None,
         };
         let mut opts = plain_opts();
@@ -625,6 +716,7 @@ mod tests {
                 resets_in_seconds: Some(2 * 86400),
             }),
             error: None,
+            manual_resets: None,
         };
         let mut opts = plain_opts();
         opts.color = true;

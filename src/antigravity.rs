@@ -166,6 +166,7 @@ fn parse_summary(v: &Value, email: Option<String>, plan: Option<String>) -> Resu
             plan: plan.clone(),
             short: None,
             long: None,
+            manual_resets: None,
         };
         for b in g
             .get("buckets")
@@ -539,6 +540,7 @@ fn parse_buckets(v: &Value) -> Result<Vec<UsageRow>> {
                 .context("representative quota bucket has no remainingFraction")?,
         ),
         long: None,
+        manual_resets: None,
     };
     Ok(vec![UsageRow {
         group_label: Some("Gemini".to_string()),

@@ -67,6 +67,50 @@ pub struct Window {
     pub resets_at: Option<DateTime<Utc>>,
 }
 
+/// 手動で回復できる利用枠。通常の自動リセット時刻とは独立した情報。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetKind {
+    Full,
+    FiveHour,
+    Weekly,
+    #[serde(other)]
+    Other,
+}
+
+impl ResetKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::FiveHour => "5h",
+            Self::Weekly => "1w",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// 同じ種類でも期限が異なる付与分は別々に保持する。
+#[derive(Clone, Debug)]
+pub struct ManualReset {
+    pub kind: ResetKind,
+    /// None は不明。取得できた 0 回と区別する。
+    pub remaining: Option<u64>,
+    pub expires_at: Option<DateTime<Utc>>,
+    /// 付与分は残っているが、提供元が利用を一時停止している。
+    pub paused: bool,
+}
+
+impl ManualReset {
+    pub fn unknown(kind: ResetKind) -> Self {
+        Self {
+            kind,
+            remaining: None,
+            expires_at: None,
+            paused: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Usage {
     pub email: Option<String>,
@@ -75,6 +119,8 @@ pub struct Usage {
     pub short: Option<Window>,
     /// 右側の長期スロット。週次または月次。
     pub long: Option<Window>,
+    /// None は取得対象外。取得失敗は種類ごとの remaining = None で表す。
+    pub manual_resets: Option<Vec<ManualReset>>,
 }
 
 /// 表示可能な usage 1 行。provider fetch は 1 行以上を返す。多くの provider は

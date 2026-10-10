@@ -5,7 +5,28 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{AccountReport, Provider, Window, WindowKind};
+use crate::model::{AccountReport, ManualReset, Provider, ResetKind, Window, WindowKind};
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ManualResetOut {
+    pub kind: ResetKind,
+    pub remaining: Option<u64>,
+    /// RFC 3339 の絶対期限。キャッシュ描画時にも失効を判定する。
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub paused: bool,
+}
+
+impl From<&ManualReset> for ManualResetOut {
+    fn from(reset: &ManualReset) -> Self {
+        Self {
+            kind: reset.kind,
+            remaining: reset.remaining,
+            expires_at: reset.expires_at.map(|time| time.to_rfc3339()),
+            paused: reset.paused,
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct WindowOut {
@@ -49,6 +70,9 @@ pub struct AccountOut {
     pub short: Option<WindowOut>,
     #[serde(rename = "weekly")]
     pub long: Option<WindowOut>,
+    /// 旧キャッシュには存在しないため欠落を許可する。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_resets: Option<Vec<ManualResetOut>>,
     pub error: Option<String>,
 }
 
@@ -75,6 +99,10 @@ impl Report {
                     group_label: r.group_label.clone(),
                     short: u.short.as_ref().map(|w| WindowOut::new(w, now)),
                     long: u.long.as_ref().map(|w| WindowOut::new(w, now)),
+                    manual_resets: u
+                        .manual_resets
+                        .as_ref()
+                        .map(|resets| resets.iter().map(ManualResetOut::from).collect()),
                     error: None,
                 },
                 Err(e) => AccountOut {
@@ -88,6 +116,7 @@ impl Report {
                     group_label: r.group_label.clone(),
                     short: None,
                     long: None,
+                    manual_resets: None,
                     error: Some(format!("{e:#}")),
                 },
             })
@@ -127,6 +156,7 @@ mod tests {
                 resets_at: None,
             }),
             long: None,
+            manual_resets: None,
         };
         let report = Report::build(&[report_with(Ok(usage))]);
         assert_eq!(report.accounts.len(), 1);
@@ -164,6 +194,7 @@ mod tests {
         assert!(a.email.is_none());
         assert!(a.short.is_none());
         assert!(a.long.is_none());
+        assert!(a.manual_resets.is_none());
         assert!(a.error.as_deref().unwrap().contains("boom"));
         // profile_email / label はエラー行でも保持される(表示名の解決に使うため)。
         assert_eq!(a.profile_email.as_deref(), Some("p@x.test"));
@@ -188,6 +219,7 @@ mod tests {
                 used_percent: 20.0,
                 resets_at: Some(future),
             }),
+            manual_resets: None,
         };
         let report = Report::build(&[report_with(Ok(usage))]);
         let a = &report.accounts[0];
@@ -215,5 +247,44 @@ mod tests {
         }"#;
         let report: Report = serde_json::from_str(json).unwrap();
         assert_eq!(report.accounts[0].short.as_ref().unwrap().kind, None);
+        assert!(report.accounts[0].manual_resets.is_none());
+    }
+
+    #[test]
+    fn manual_reset_json_round_trip_keeps_unknown_zero_and_absolute_expiry() {
+        let expiry = DateTime::parse_from_rfc3339("2026-06-20T05:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let usage = Usage {
+            manual_resets: Some(vec![
+                ManualReset {
+                    kind: ResetKind::Full,
+                    remaining: Some(2),
+                    expires_at: Some(expiry),
+                    paused: true,
+                },
+                ManualReset {
+                    kind: ResetKind::FiveHour,
+                    remaining: Some(0),
+                    expires_at: None,
+                    paused: false,
+                },
+                ManualReset::unknown(ResetKind::Weekly),
+            ]),
+            ..Default::default()
+        };
+        let report = Report::build(&[report_with(Ok(usage))]);
+        let mut json = serde_json::to_value(&report).unwrap();
+        let resets = &json["accounts"][0]["manual_resets"];
+        assert_eq!(resets[0]["remaining"], 2);
+        assert_eq!(resets[0]["expires_at"], expiry.to_rfc3339());
+        assert_eq!(resets[0]["paused"], true);
+        assert_eq!(resets[1]["remaining"], 0);
+        assert!(resets[2]["remaining"].is_null());
+        json["accounts"][0]["manual_resets"][2]["kind"] = serde_json::json!("future_kind");
+        let loaded: Report = serde_json::from_value(json).unwrap();
+        let resets = loaded.accounts[0].manual_resets.as_ref().unwrap();
+        assert_eq!(resets[2].kind, ResetKind::Other);
+        assert!(resets[2].remaining.is_none());
     }
 }

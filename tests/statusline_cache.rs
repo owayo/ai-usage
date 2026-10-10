@@ -90,6 +90,27 @@ fn cached_statusline_without_filter_keeps_all_providers() {
 }
 
 #[test]
+fn cached_resets_show_count_and_expiry_without_credentials_or_network() {
+    let cache = CacheDir::new();
+    let path = cache.0.join("report.json");
+    let mut report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    report["accounts"][1]["manual_resets"] = serde_json::json!([
+        {"kind":"full","remaining":3,"expires_at":"2000-01-01T00:00:00Z"},
+        {"kind":"full","remaining":3,"expires_at":"2099-07-30T00:00:00Z"},
+        {"kind":"full","remaining":2,"expires_at":"2099-06-20T00:00:00Z"},
+        {"kind":"five_hour","remaining":null,"expires_at":null}
+    ]);
+    std::fs::write(&path, report.to_string()).unwrap();
+    let output = cache.render(&["--only", "codex"]);
+    assert!(output.contains("R:full 5; 5h ? (2099/06/"), "{output}");
+    assert_eq!(output.matches("2099/").count(), 1, "{output}");
+    assert!(!output.contains('@'), "{output}");
+    assert!(!output.contains("2000/"));
+    assert!(!output.contains('\x1b'));
+}
+
+#[test]
 fn init_config_uses_explicit_path_and_never_overwrites_it() {
     let fixture = CacheDir::new();
     let chrome = fixture.0.join("Library/Application Support/Google/Chrome");
