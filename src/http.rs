@@ -217,6 +217,173 @@ pub async fn post_form(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::sync::mpsc;
+
+    /// 受けた順に決め打ちの応答を返す、テスト用の最小 HTTP/1.1 サーバー。
+    /// 受け取った各リクエスト(ヘッダー部とボディ)をそのまま channel で返す。
+    fn serve(responses: Vec<(u16, &'static str)>) -> (String, mpsc::Receiver<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (sent, received) = mpsc::channel();
+        std::thread::spawn(move || {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                loop {
+                    let read = stream.read(&mut chunk).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    let text = String::from_utf8_lossy(&request).to_ascii_lowercase();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let length = text[..end]
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                sent.send(String::from_utf8_lossy(&request).into_owned())
+                    .unwrap();
+                let response = format!(
+                    "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        (base, received)
+    }
+
+    /// 環境のプロキシ設定に左右されないよう、loopback のテストサーバーへ直接つなぐ。
+    fn test_client() -> Client {
+        Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_json_marks_only_transient_failures_as_retryable() {
+        let (base, requests) = serve(vec![
+            (200, r#"{"ok":true}"#),
+            (503, "maintenance"),
+            (403, "<title>Just a moment...</title>"),
+            (401, r#"{"error":"invalid session"}"#),
+            (200, "not json"),
+        ]);
+        let client = test_client();
+        let url = format!("{base}/usage");
+
+        let ok = get_json(&client, &url, "a=b", Some("token"), Some("acct"))
+            .await
+            .unwrap();
+        assert_eq!(ok["ok"], true);
+        let sent = requests.recv().unwrap().to_ascii_lowercase();
+        assert!(sent.contains("cookie: a=b"), "{sent}");
+        assert!(sent.contains("authorization: bearer token"), "{sent}");
+        assert!(sent.contains("chatgpt-account-id: acct"), "{sent}");
+
+        // 503 は待てば回復し得るので再試行へ回す。
+        let unavailable = get_json(&client, &url, "", None, None).await.unwrap_err();
+        assert!(is_retryable(&unavailable));
+        assert!(
+            unavailable.to_string().contains("HTTP 503"),
+            "{unavailable}"
+        );
+        // 空の Cookie は送らない。
+        assert!(
+            !requests
+                .recv()
+                .unwrap()
+                .to_ascii_lowercase()
+                .contains("cookie:")
+        );
+
+        // Cloudflare の challenge は 403 でも再試行対象。provider 側の認証判定が依存する文言を固定する。
+        let challenge = get_json(&client, &url, "", None, None).await.unwrap_err();
+        assert!(is_retryable(&challenge));
+        assert!(
+            challenge
+                .to_string()
+                .starts_with("Cloudflare challenge (HTTP 403)."),
+            "{challenge}"
+        );
+
+        // 認証失敗と壊れた JSON は待っても回復しないため、即座に返す。
+        let unauthorized = get_json(&client, &url, "", None, None).await.unwrap_err();
+        assert!(!is_retryable(&unauthorized));
+        assert!(
+            unauthorized.to_string().contains("HTTP 401")
+                && unauthorized.to_string().contains("invalid session"),
+            "{unauthorized}"
+        );
+        let malformed = get_json(&client, &url, "", None, None).await.unwrap_err();
+        assert!(!is_retryable(&malformed));
+        assert!(malformed.to_string().starts_with("parsing JSON from"));
+    }
+
+    #[tokio::test]
+    async fn get_json_treats_connections_closed_without_a_response_as_retryable() {
+        // 応答を返さずに切れた接続は、一時的な通信失敗として再試行へ回す。待受はテストの間
+        // 保持し続けるため、並行して動く他のテストに同じポートを取られることもない。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/usage", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(3) {
+                drop(stream);
+            }
+        });
+        let error = get_json(&test_client(), &url, "", None, None)
+            .await
+            .unwrap_err();
+        assert!(is_retryable(&error), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn post_helpers_return_auth_failures_and_retry_only_transient_statuses() {
+        let (base, requests) = serve(vec![
+            (429, "slow down"),
+            (401, r#"{"error":"invalid_grant"}"#),
+            (200, "not json"),
+        ]);
+        let client = test_client();
+        let url = format!("{base}/token");
+
+        let limited = post_form(&client, &url, &[("grant_type", "refresh_token")])
+            .await
+            .unwrap_err();
+        assert!(is_retryable(&limited));
+        assert!(limited.to_string().contains("HTTP 429"), "{limited}");
+        let sent = requests.recv().unwrap().to_ascii_lowercase();
+        assert!(
+            sent.contains("content-type: application/x-www-form-urlencoded"),
+            "{sent}"
+        );
+        assert!(sent.ends_with("grant_type=refresh_token"), "{sent}");
+
+        // 401 は refresh 判定のため呼び出し元へ status と JSON を返す(エラーにしない)。
+        let (status, body) = post_json(&client, &url, "secret", &serde_json::json!({"a": 1}))
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "invalid_grant");
+        let sent = requests.recv().unwrap().to_ascii_lowercase();
+        assert!(sent.contains("authorization: bearer secret"), "{sent}");
+        assert!(sent.contains("content-type: application/json"), "{sent}");
+
+        // JSON でない成功応答は Null として返す。
+        let (status, body) = post_form(&client, &url, &[]).await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.is_null());
+    }
 
     #[test]
     fn retryable_marker_survives_anyhow_context() {

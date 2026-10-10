@@ -13,14 +13,18 @@ flowchart LR
 1. **Cookie 復号**: `~/Library/Application Support/Google/Chrome/<profile>/Cookies` の
    Cookie を、macOS Keychain の **Chrome Safe Storage** キーで復号 (標準の `v10`
    AES‑128‑CBC 方式)。稼働中の SQLite DB は読み取り専用で開くため、未チェックポイントの
-   WAL にある最新 Cookie も取得できます。`claude.ai` / `chatgpt.com` 本体に Chrome が送信する Cookie だけを
+   WAL にある最新 Cookie も取得できます。`claude.ai` / `chatgpt.com` / `www.pixellab.ai` 本体に Chrome が送信する Cookie だけを
    再送し、`evilclaude.ai` のような suffix 類似ドメインは無視します。分割された session
    Cookie は suffix が数値 (`.0`, `.1`, ...) の場合だけ受け入れます。
 2. **Claude** — `sessionKey` Cookie で `claude.ai/api/organizations/{org}/usage` を呼び
-   `five_hour` / `seven_day` の `{utilization, resets_at}` を取得。
+   `five_hour` / `seven_day` の `{utilization, resets_at}` を取得。同じ呼び出しに
+   `?cedar_ember=1` を付け、手動リセットの付与分 (`cedar_ember.grants[]` の `resets_left`、
+   回復する枠 `clears`、期限 `ends_at`、一時停止 `paused`) も読みます。
 3. **Codex** — `__Secure-next-auth.session-token` Cookie を `chatgpt.com/api/auth/session` で
    Bearer トークンに交換し、`chatgpt.com/backend-api/wham/usage` を呼んで
-   `rate_limit.primary_window` / `secondary_window` を取得。
+   `rate_limit.primary_window` / `secondary_window` を取得。手動リセットの残数は
+   `wham/rate-limit-reset-credits` (`available_count` と `credits[]`) から並行して取得し、
+   5 秒で打ち切ります。この補助取得が失敗しても使用量の行は残り、残数は `?` になります。
 4. **Antigravity** — `~/.gemini` の OAuth トークンを読み (必要に応じて refresh)、
    Antigravity.app または `agy` の起動中は localhost の quota サーバー (グループ別の詳細
    ペイロード)を優先します。app/IDE はプロセス引数の `--csrf_token` で認証し、`agy` は

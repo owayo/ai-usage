@@ -101,9 +101,45 @@ impl BrowserWants {
         }
     }
 
+    /// どの provider も表示しない。
+    pub fn none() -> Self {
+        Self {
+            claude: false,
+            codex: false,
+            pixellab: false,
+        }
+    }
+
     /// いずれかでも表示対象があるか(Chrome Cookie 復号が必要か)。
     pub fn any(self) -> bool {
         self.claude || self.codex || self.pixellab
+    }
+
+    /// 両方に含まれる provider。
+    pub fn intersect(self, other: Self) -> Self {
+        Self {
+            claude: self.claude && other.claude,
+            codex: self.codex && other.codex,
+            pixellab: self.pixellab && other.pixellab,
+        }
+    }
+
+    /// どちらかに含まれる provider。
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            claude: self.claude || other.claude,
+            codex: self.codex || other.codex,
+            pixellab: self.pixellab || other.pixellab,
+        }
+    }
+
+    /// `other` に含まれない provider。
+    pub fn without(self, other: Self) -> Self {
+        Self {
+            claude: self.claude && !other.claude,
+            codex: self.codex && !other.codex,
+            pixellab: self.pixellab && !other.pixellab,
+        }
     }
 }
 
@@ -133,6 +169,17 @@ pub fn default_path() -> Option<PathBuf> {
         return Some(PathBuf::from(xdg).join("ai-usage").join("config.toml"));
     }
     dirs::home_dir().map(|h| h.join(".config").join("ai-usage").join("config.toml"))
+}
+
+/// 設定で指定された path の先頭の `~/` を home directory に展開する。
+/// `[antigravity].token_path` と `[grok].auth_path` で共有する。
+pub fn expand_home(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
+    }
+    PathBuf::from(path)
 }
 
 /// config を読み込む。存在しない場合は default(auto mode)に fallback する。
@@ -288,6 +335,24 @@ mod tests {
         "#;
         let parsed: Config = toml::from_str(text).unwrap();
         assert_eq!(parsed.profiles.len(), 1);
+    }
+
+    #[test]
+    fn expand_home_replaces_only_a_leading_tilde_slash() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(
+            expand_home("~/.grok/auth.json"),
+            home.join(".grok/auth.json")
+        );
+        // 先頭以外の `~`、ユーザー名付きの `~user`、絶対 path はそのまま使う。
+        for path in [
+            "/abs/auth.json",
+            "relative/~/auth.json",
+            "~other/auth.json",
+            "~",
+        ] {
+            assert_eq!(expand_home(path), PathBuf::from(path), "{path}");
+        }
     }
 
     #[test]

@@ -16,7 +16,6 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use wreq::{Client, StatusCode};
@@ -224,18 +223,9 @@ impl Auth {
 
 fn auth_path(cfg: Option<&GrokCfg>) -> Option<PathBuf> {
     if let Some(p) = cfg.and_then(|c| c.auth_path.as_ref()) {
-        return Some(expand(p));
+        return Some(crate::config::expand_home(p));
     }
     dirs::home_dir().map(|h| h.join(".grok").join("auth.json"))
-}
-
-fn expand(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join(rest);
-    }
-    PathBuf::from(p)
 }
 
 fn load_auth(path: &Path) -> Result<Auth> {
@@ -350,14 +340,7 @@ fn parse_expiry(v: &Value) -> Option<i64> {
 
 /// JWT の `exp` claim を取り出す。auth.json に expires_at が無いときの二次 fallback。
 fn jwt_exp(jwt: &str) -> Option<i64> {
-    let payload = jwt.split('.').nth(1)?;
-    let mut b64 = payload.replace('-', "+").replace('_', "/");
-    while b64.len() % 4 != 0 {
-        b64.push('=');
-    }
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
-    let claims: Value = serde_json::from_slice(&bytes).ok()?;
-    claims.get("exp").and_then(Value::as_i64)
+    crate::jwt::claims(jwt)?.get("exp").and_then(Value::as_i64)
 }
 
 async fn refresh(client: &Client, auth: &Auth) -> Result<Auth> {
@@ -413,6 +396,7 @@ async fn refresh(client: &Client, auth: &Auth) -> Result<Auth> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use serde_json::json;
 

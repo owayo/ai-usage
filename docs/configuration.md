@@ -74,3 +74,5 @@ hide = ["antigravity"]              # subset of: claude / codex / antigravity / 
 Precedence: **CLI flags > config file > auto-detection**.
 
 Profile matching is case-insensitive, with directory names taking precedence over display names. Each provider is fetched at most once per Chrome directory. Separate entries for distinct providers can retain different labels; the first matching entry wins for a repeated provider. Repeated display-name entries prefer unused matching profiles in discovery order; use directory names to choose a specific profile when names overlap.
+
+`--profile` and `--only` keep these per-provider entries: `--profile` shows the selected profiles with the same entries (and labels) as a run without it, and `--only codex` shows the Codex row under the entry that lists `codex`. Because `--only` takes precedence over `providers`, a provider that no entry lists for that directory still appears, under the directory's first entry. A profile selected with `--profile` but missing from the config uses the defaults.

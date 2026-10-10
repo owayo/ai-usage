@@ -217,6 +217,24 @@ mod tests {
     }
 
     #[test]
+    fn deadline_shows_the_year_only_outside_the_current_year() {
+        let now = parse_utc("2026-06-15T00:00:00Z").unwrap();
+        let same_year = parse_utc("2026-08-01T12:00:00Z").unwrap();
+        let next_year = parse_utc("2027-08-01T12:00:00Z").unwrap();
+        let local =
+            |time: DateTime<Utc>, pattern| time.with_timezone(&Local).format(pattern).to_string();
+        assert_eq!(
+            format_deadline(Some(same_year), now),
+            local(same_year, "%m/%d %H:%M")
+        );
+        assert_eq!(
+            format_deadline(Some(next_year), now),
+            local(next_year, "%Y/%m/%d %H:%M")
+        );
+        assert_eq!(format_deadline(None, now), "?");
+    }
+
+    #[test]
     fn unknown_count_and_unknown_expiry_do_not_mean_zero() {
         let now = parse_utc("2026-06-15T00:00:00Z").unwrap();
         let resets = [

@@ -32,6 +32,8 @@ const BOLD_RED: &str = "1;38;5;196"; // アクティブなアカウント。
 /// account 名 / model-group 名の欄幅(末尾の区切り 1 桁を含む)。最長の想定値
 /// "Claude&GPT"(10 桁)がちょうど収まり、その右に区切りが 1 桁残る。
 const NAME_FIELD_WIDTH: usize = 11;
+/// `--reset-at` が長期枠の後ろに付ける ` (MM/DD HH:MM)` の表示幅。
+const RESET_AT_WIDTH: usize = 14;
 const FIVE_H_TH: [i64; 3] = [3600, 7200, 10800];
 const DAILY_TH: [i64; 3] = [4 * 3600, 8 * 3600, 12 * 3600];
 const WEEK_TH: [i64; 3] = [86400, 172800, 259200];
@@ -74,7 +76,7 @@ pub fn statusline(
     active: Option<&ActiveTarget>,
     sort: SortKey,
     opts: &StatuslineOpts,
-) {
+) -> std::io::Result<()> {
     let now = Utc::now();
     // SortKey::Provider のときは従来どおり provider.rank() → profile 名で並べる。
     // weekly-usage / weekly-reset のときは sorted_refs 側のロジックで上書き。
@@ -92,7 +94,7 @@ pub fn statusline(
             render_row(a, row_email, is_active, opts, now)
         })
         .collect();
-    print!("{}", lines.join("\n"));
+    super::write_stdout(&lines.join("\n"))
 }
 
 fn render_row(
@@ -254,6 +256,10 @@ fn render_windows(account: &AccountOut, opts: &StatuslineOpts, now: DateTime<Utc
             show_reset_at,
             wide_gauge,
         );
+        // 短期枠だけの行は `--reset-at` の日時を付けないが、同じ幅を空けて後続の列を揃える。
+        if opts.reset_at && !show_reset_at {
+            rendered += &" ".repeat(RESET_AT_WIDTH);
+        }
     } else {
         rendered += &window_seg(
             opts,
@@ -310,10 +316,11 @@ fn window_seg(
     gauge_width: usize,
 ) -> String {
     let mut s = paint(opts.color, GRAY, &format!("{label} "));
+    let mut reset_at_shown = false;
     match w {
         None => {
             // データ無し: 空 gauge + "--"(% なし) + "--"(残り時間)。
-            // Some 分岐と同じ桁幅(gauge_width + 1 + 4 + 2 + 5)に揃える。
+            // Some 分岐と同じ桁幅(gauge_width + 1 + 4 + 2 + 6)に揃える。
             s += &paint(opts.color, DIM, &"░".repeat(gauge_width));
             s += " ";
             s += &paint(opts.color, DIM, &format!("{:>4}", "--"));
@@ -346,12 +353,18 @@ fn window_seg(
                             DIM,
                             &format!(" ({})", r.with_timezone(&Local).format("%m/%d %H:%M")),
                         );
+                        reset_at_shown = true;
                     }
                 }
                 Some(_) => s += &paint(opts.color, GREEN, &format!("{:<6}", "now")),
                 None => s += &paint(opts.color, DIM, &format!("{:<6}", "--")),
             }
         }
+    }
+    // データ無し・リセット済み・時刻不明で日時を出せない行も同じ幅を空け、
+    // 後ろに続く手動リセットの列を行間で揃える。
+    if show_reset_at && !reset_at_shown {
+        s += &" ".repeat(RESET_AT_WIDTH);
     }
     s
 }
@@ -516,6 +529,68 @@ mod tests {
                 assert!(suffix.starts_with("full 1\x1b[0m"), "{suffix:?}");
             }
         }
+    }
+
+    #[test]
+    fn manual_resets_start_in_one_column_whether_or_not_a_reset_date_is_shown() {
+        // `--reset-at` の日時を出せない行(時刻不明・リセット済み・長期枠なし)も同じ幅を空け、
+        // 手動リセットの列が行ごとにずれないようにする。
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let window = |kind, resets_at: Option<&str>| {
+            Some(WindowOut {
+                kind: Some(kind),
+                used_percent: 20.0,
+                resets_at: resets_at.map(str::to_string),
+                resets_in_seconds: None,
+            })
+        };
+        let column = |short, long, reset_at| {
+            let mut account = manual_reset_account(None);
+            account.short = short;
+            account.long = long;
+            let mut opts = plain_opts();
+            opts.reset_at = reset_at;
+            let line = render_row(&account, None, false, &opts, now);
+            line.split_once("R:").unwrap().0.width()
+        };
+        let five_hour = || window(WindowKind::FiveHour, Some("2026-06-15T03:00:00Z"));
+        let dated = || window(WindowKind::Weekly, Some("2026-06-17T00:00:00Z"));
+        let undated = || window(WindowKind::Weekly, None);
+        let expected = column(five_hour(), dated(), true);
+        for (case, short, long) in [
+            ("時刻不明", five_hour(), undated()),
+            (
+                "リセット済み",
+                five_hour(),
+                window(WindowKind::Weekly, Some("2026-06-10T00:00:00Z")),
+            ),
+            ("短期枠だけ", five_hour(), None),
+            ("長期枠だけ", None, dated()),
+            ("長期枠だけで時刻不明", None, undated()),
+        ] {
+            assert_eq!(column(short, long, true), expected, "{case}");
+        }
+        // `--reset-at` が無いときは日時の幅を空けない。
+        assert_eq!(
+            column(five_hour(), dated(), false),
+            expected - RESET_AT_WIDTH
+        );
+        assert_eq!(column(five_hour(), None, false), expected - RESET_AT_WIDTH);
+    }
+
+    #[test]
+    fn manual_resets_are_omitted_for_failed_rows_and_rows_without_them() {
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let mut failed = manual_reset_account(Some(now + chrono::Duration::days(1)));
+        failed.ok = false;
+        failed.error = Some("fetch failed".into());
+        let line = render_row(&failed, None, false, &plain_opts(), now);
+        assert!(!line.contains("R:"), "{line:?}");
+
+        let mut without = manual_reset_account(None);
+        without.manual_resets = None;
+        let line = render_row(&without, None, false, &plain_opts(), now);
+        assert!(!line.contains("R:"), "{line:?}");
     }
 
     #[test]

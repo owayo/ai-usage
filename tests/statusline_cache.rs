@@ -110,6 +110,45 @@ fn cached_resets_show_count_and_expiry_without_credentials_or_network() {
     assert!(!output.contains('\x1b'));
 }
 
+/// 読み手を先に閉じた pipe を stdout にして実行する。書き込みは必ず EPIPE になる。
+fn run_with_closed_stdout(command: &mut Command) -> std::process::Output {
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    command.stdout(writer).output().unwrap()
+}
+
+#[test]
+fn closed_stdout_pipe_ends_quietly_instead_of_panicking() {
+    // `ai-usage ... | head` のように読み手が先に終わっても、panic せず正常終了する。
+    let cache = CacheDir::new();
+    let statusline = run_with_closed_stdout(
+        Command::new(env!("CARGO_BIN_EXE_ai-usage"))
+            .args(["--statusline", "--no-color", "--input"])
+            .arg(cache.0.join("report.json"))
+            .arg("--config")
+            .arg(cache.0.join("config.toml"))
+            .env("HOME", &cache.0)
+            .env("CLAUDE_CONFIG_DIR", &cache.0),
+    );
+    assert!(statusline.status.success(), "{statusline:?}");
+    assert!(statusline.stderr.is_empty(), "{statusline:?}");
+
+    let chrome = cache.0.join("Library/Application Support/Google/Chrome");
+    std::fs::create_dir_all(&chrome).unwrap();
+    std::fs::write(
+        chrome.join("Local State"),
+        r#"{"profile":{"info_cache":{"Default":{"name":"Work"}}}}"#,
+    )
+    .unwrap();
+    let profiles = run_with_closed_stdout(
+        Command::new(env!("CARGO_BIN_EXE_ai-usage"))
+            .arg("--list-profiles")
+            .env("HOME", &cache.0),
+    );
+    assert!(profiles.status.success(), "{profiles:?}");
+    assert!(profiles.stderr.is_empty(), "{profiles:?}");
+}
+
 #[test]
 fn init_config_uses_explicit_path_and_never_overwrites_it() {
     let fixture = CacheDir::new();
@@ -151,6 +190,110 @@ fn init_config_uses_explicit_path_and_never_overwrites_it() {
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         "# existing config\n"
+    );
+}
+
+#[test]
+fn init_config_lists_signed_in_profiles_with_their_providers() {
+    let fixture = CacheDir::new();
+    let chrome = fixture.0.join("Library/Application Support/Google/Chrome");
+    std::fs::create_dir_all(&chrome).unwrap();
+    std::fs::write(
+        chrome.join("Local State"),
+        r#"{"profile":{"info_cache":{
+            "Default":{"name":"Work","user_name":"work.user@example.com"},
+            "Profile 1":{"name":"Work","user_name":""},
+            "Profile 2":{"name":"Home"},
+            "Profile 3":{"name":"Empty"}
+        }}}"#,
+    )
+    .unwrap();
+    // 雛形の生成は Cookie の有無だけを見るため、値は空のままでよい(Keychain も使わない)。
+    let cookie_db = |dir: &str, rows: &[(&str, &str)]| {
+        let network = chrome.join(dir).join("Network");
+        std::fs::create_dir_all(&network).unwrap();
+        let conn = rusqlite::Connection::open(network.join("Cookies")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE cookies (
+                host_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                encrypted_value BLOB NOT NULL DEFAULT x''
+            )",
+        )
+        .unwrap();
+        for (host, name) in rows {
+            conn.execute(
+                "INSERT INTO cookies (host_key, name) VALUES (?1, ?2)",
+                rusqlite::params![host, name],
+            )
+            .unwrap();
+        }
+    };
+    cookie_db("Default", &[(".claude.ai", "sessionKey")]);
+    cookie_db(
+        "Profile 1",
+        &[
+            (".claude.ai", "sessionKey"),
+            (".chatgpt.com", "__Secure-next-auth.session-token.0"),
+            ("www.pixellab.ai", "supabase-auth-token"),
+        ],
+    );
+    cookie_db(
+        "Profile 2",
+        &[(".chatgpt.com", "__Secure-next-auth.session-token")],
+    );
+    cookie_db("Profile 3", &[]);
+    std::fs::write(
+        fixture.0.join(".claude.json"),
+        r#"{"oauthAccount":{"emailAddress":"active@example.com"}}"#,
+    )
+    .unwrap();
+
+    let path = fixture.0.join("generated.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_ai-usage"))
+        .arg("--init-config")
+        .arg("--config")
+        .arg(&path)
+        .env("HOME", &fixture.0)
+        .env("CLAUDE_CONFIG_DIR", &fixture.0)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+
+    // 生成物は TOML として読み戻せ、ログイン済みの profile だけを並べる。
+    let text = std::fs::read_to_string(&path).unwrap();
+    let config: toml::Value = toml::from_str(&text).unwrap();
+    assert_eq!(config["active_email"].as_str(), Some("active@example.com"));
+    let profiles: Vec<_> = config["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|profile| {
+            (
+                profile["match"].as_str().unwrap(),
+                profile["label"].as_str().unwrap(),
+                profile.get("providers").map(|providers| {
+                    providers
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|provider| provider.as_str().unwrap())
+                        .collect::<Vec<_>>()
+                }),
+            )
+        })
+        .collect();
+    assert_eq!(
+        profiles,
+        vec![
+            // 一部の provider だけにログインしている profile は providers を列挙する。
+            ("Home", "Home", Some(vec!["codex"])),
+            // 表示名が重複する profile は一意なディレクトリ名で照合し、label は email の local part。
+            ("Default", "work.user", Some(vec!["claude"])),
+            // 全 provider にログイン済みなら providers は省略する。
+            ("Profile 1", "Work", None),
+        ],
+        "{text}"
     );
 }
 

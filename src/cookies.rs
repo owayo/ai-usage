@@ -284,6 +284,115 @@ mod tests {
         path
     }
 
+    /// Chrome と同じ列を持つ Cookie DB を作る。`version` が None なら meta 表自体を作らない。
+    fn encrypted_cookie_db(
+        name: &str,
+        version: Option<&str>,
+        rows: &[(&str, &str, Vec<u8>)],
+    ) -> PathBuf {
+        // 空白・`?`・`#` を含むディレクトリに置き、read-only URI の escape も通しで確かめる。
+        let dir = std::env::temp_dir().join(format!(
+            "ai-usage cookies ?#{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Cookies");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE cookies (
+                host_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                encrypted_value BLOB NOT NULL DEFAULT x''
+            )",
+        )
+        .unwrap();
+        if let Some(version) = version {
+            conn.execute_batch("CREATE TABLE meta (key TEXT NOT NULL, value TEXT)")
+                .unwrap();
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('version', ?1)",
+                [version],
+            )
+            .unwrap();
+        }
+        for (host, cookie_name, value) in rows {
+            conn.execute(
+                "INSERT INTO cookies (host_key, name, encrypted_value) VALUES (?1, ?2, ?3)",
+                rusqlite::params![host, cookie_name, value],
+            )
+            .unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn load_decrypts_only_provider_cookies_and_strips_the_v24_host_hash() {
+        let hashed = |value: &str| {
+            let mut plain = vec![0_u8; 32];
+            plain.extend_from_slice(value.as_bytes());
+            encrypt_for_test(&key(), b"v10", &plain)
+        };
+        let path = encrypted_cookie_db(
+            "v24",
+            Some("24"),
+            &[
+                (".claude.ai", "sessionKey", hashed("claude-session")),
+                (
+                    "chatgpt.com",
+                    "__Secure-next-auth.session-token.0",
+                    hashed("chatgpt-head"),
+                ),
+                (PIXELLAB_DOMAIN, PIXELLAB_SESSION_COOKIE, hashed("pixellab")),
+                // 対象外のホスト、空の値、扱えない方式の値は読み飛ばす。
+                ("console.claude.ai", "sessionKey", hashed("other-host")),
+                ("claude.ai", "empty", Vec::new()),
+                (
+                    "claude.ai",
+                    "app-bound",
+                    encrypt_for_test(&key(), b"v20", b"x"),
+                ),
+            ],
+        );
+
+        let cookies = load(&path, &key()).unwrap();
+        assert_eq!(cookies.claude.len(), 1);
+        assert_eq!(cookies.claude["sessionKey"], "claude-session");
+        assert_eq!(cookies.chatgpt.len(), 1);
+        assert_eq!(
+            cookies.chatgpt["__Secure-next-auth.session-token.0"],
+            "chatgpt-head"
+        );
+        assert_eq!(cookies.pixellab.len(), 1);
+        assert_eq!(cookies.pixellab[PIXELLAB_SESSION_COOKIE], "pixellab");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn load_keeps_the_whole_plaintext_before_schema_v24() {
+        // v24 未満や meta 表の無い DB は host hash を持たないため、平文をそのまま使う。
+        for version in [Some("23"), None] {
+            let path = encrypted_cookie_db(
+                "legacy",
+                version,
+                &[(
+                    "claude.ai",
+                    "sessionKey",
+                    encrypt_for_test(&key(), b"v10", b"legacy-session"),
+                )],
+            );
+            let cookies = load(&path, &key()).unwrap();
+            assert_eq!(
+                cookies.claude["sessionKey"], "legacy-session",
+                "version={version:?}"
+            );
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
     #[test]
     fn sqlite_read_only_uri_escapes_query_delimiters() {
         let uri = sqlite_read_only_uri(Path::new("/tmp/ai usage?#.sqlite"));

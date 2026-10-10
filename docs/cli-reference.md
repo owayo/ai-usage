@@ -53,10 +53,14 @@ Every command and option of `ai-usage`. The everyday examples are in the [README
 
 If the `--init-config` destination already exists, the template is printed to stdout instead. Cached output uses the accounts and labels recorded in the JSON file; set profile selection and labels when generating the cache. `--only` and statusline hiding still apply when rendering it.
 
+When the reader of stdout stops early, as in `ai-usage --json | head -n 5`, the remaining output is discarded and the command exits with status 0.
+
 ## Manual usage resets
 
 Claude and Codex rows also show the remaining manual usage resets and their expiry times. The table adds a **Manual resets** column with separate dates, such as `full 2 (1@10/23 05:27, 1@10/30 03:57)`; `1@…` means one reset expires at that date and time. The statusline appends only the total counts and nearest expiry: `R:full 2 (10/23 05:27)`. Only the date text turns red when fewer than seven days remain. Exactly seven days keeps the normal color, and color suppression settings such as `--no-color` still apply. `full` restores both usage windows, `5h` restores the session window, and `1w` restores the weekly window. All displayed dates use local time.
 
 `0` means no available resets remain; `?` means the count or expiry could not be obtained. Temporarily paused grants retain a separate count, such as `full paused 1`. The statusline prefers available grants when selecting an expiry and falls back to paused grants only when no available grants remain. It shows the nearest known date, `(?)` when all candidate dates are unknown, and no date when counts are all zero or unknown. Expired resets are excluded even when rendering an older cache. This reports availability only and never uses a reset.
+
+With `--reset-at`, rows that cannot show a long-window reset time (unknown, already passed, or no long window) leave the same width blank, so `R:` starts in the same column on every row.
 
 JSON accounts carry an optional `manual_resets` array with `kind`, `remaining` (integer or `null` for unknown), `expires_at` (RFC 3339 or `null`), and `paused` (defaults to `false` when absent). Older caches without this field continue to render without the reset suffix.

@@ -31,14 +31,13 @@ pub fn table(
     sort: SortKey,
     color: bool,
     debug: bool,
-) {
+) -> std::io::Result<()> {
     let now = Utc::now();
     let table = build_table(reports, active, sort, color, debug, now);
-    println!("{table}");
-    println!(
-        "  updated {} · bars = usage, time = until reset",
+    super::write_stdout(&format!(
+        "{table}\n  updated {} · bars = usage, time = until reset\n",
         now.with_timezone(&Local).format("%H:%M")
-    );
+    ))
 }
 
 /// 端末幅による自動調整を保ったまま、色の要否に応じてセルを組み立てる。
@@ -249,6 +248,72 @@ mod tests {
             // 強制描画で、テスト実行時の TTY の有無に左右されず ANSI の有無を検証する。
             table.enforce_styling();
             assert_eq!(table.to_string().contains('\x1b'), color);
+        }
+    }
+
+    #[test]
+    fn manual_resets_column_appears_only_when_a_row_reports_resets() {
+        use crate::model::{ManualReset, ResetKind, Usage};
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let report = |provider, usage| AccountReport {
+            profile_name: "Work".into(),
+            profile_email: None,
+            label: None,
+            provider,
+            group_label: None,
+            usage,
+        };
+        let render = |rows: &[AccountReport]| {
+            let mut table = build_table(rows, None, SortKey::Provider, false, false, now);
+            // テストを実行する端末の幅に左右されず、セルを折り返さずに描画する。
+            table.set_width(500);
+            table.lines().collect::<Vec<_>>()
+        };
+        let line = |lines: &[String], text: &str| {
+            lines
+                .iter()
+                .find(|line| line.contains(text))
+                .cloned()
+                .unwrap_or_else(|| panic!("{text:?} が無い: {lines:#?}"))
+        };
+        // 手動リセットを持つ行が無ければ列自体を出さない。
+        let without = render(&[
+            report(Provider::PixelLab, Ok(Usage::default())),
+            report(Provider::Claude, Err(anyhow::anyhow!("test failure"))),
+        ]);
+        assert!(
+            !without.iter().any(|line| line.contains("Manual resets")),
+            "{without:#?}"
+        );
+
+        // 1 行でも持てば列を足し、持たない行と失敗行は "—" で埋める。
+        let expiry = fixed_utc("2026-06-20T00:00:00Z");
+        let with = render(&[
+            report(
+                Provider::Codex,
+                Ok(Usage {
+                    manual_resets: Some(vec![ManualReset {
+                        kind: ResetKind::Full,
+                        remaining: Some(2),
+                        expires_at: Some(expiry),
+                        paused: false,
+                    }]),
+                    ..Default::default()
+                }),
+            ),
+            report(Provider::PixelLab, Ok(Usage::default())),
+            report(Provider::Claude, Err(anyhow::anyhow!("test failure"))),
+        ]);
+        line(&with, "Manual resets");
+        let date = expiry.with_timezone(&Local).format("%m/%d %H:%M");
+        assert!(
+            line(&with, "Codex").contains(&format!("full 2 (2@{date})")),
+            "{with:#?}"
+        );
+        for text in ["PixelLab", "test failure"] {
+            let row = line(&with, text);
+            let last_cell = row.trim_end_matches('│').rsplit('┆').next().unwrap();
+            assert_eq!(last_cell.trim(), "—", "{with:#?}");
         }
     }
 

@@ -12,6 +12,8 @@ mod table;
 pub use statusline::{StatuslineOpts, statusline};
 pub use table::table;
 
+use std::io::{self, Write};
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
@@ -172,12 +174,21 @@ fn parse_utc(s: &str) -> Option<DateTime<Utc>> {
         .map(|d| d.with_timezone(&Utc))
 }
 
+/// 描画結果を stdout へ書き出す。`print!` 系は書き込みに失敗すると panic するため、
+/// `ai-usage --json | head` のように読み手が先に pipe を閉じた場合も含めて、
+/// 失敗を呼び出し元へ返す(`main` が broken pipe を正常終了として扱う)。
+pub fn write_stdout(text: &str) -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(text.as_bytes())?;
+    stdout.flush()
+}
+
 // ===== JSON 出力 =============================================================
 
 /// Report を SortKey に従って並び替えてシリアライズする。元の `Report` を
 /// clone せずに参照のみで並べ替えるため、`accounts` を `Vec<&AccountOut>` に
 /// 差し替えた `OrderedReport` ラッパーを 1 回限りのシリアライズで使う。
-pub fn json(report: &Report, sort: SortKey) {
+pub fn json(report: &Report, sort: SortKey) -> io::Result<()> {
     #[derive(Serialize)]
     struct OrderedReport<'a> {
         generated_at: &'a str,
@@ -190,7 +201,8 @@ pub fn json(report: &Report, sort: SortKey) {
         generated_at: &report.generated_at,
         accounts,
     };
-    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    let text = serde_json::to_string_pretty(&out)?;
+    write_stdout(&format!("{text}\n"))
 }
 
 #[cfg(test)]

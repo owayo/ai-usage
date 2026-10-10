@@ -7,8 +7,9 @@ Working notes for `ai-usage`. See `README.md` for the user-facing overview.
 macOS CLI that decrypts each Chrome profile's cookies (via the "Chrome Safe
 Storage" Keychain key) and reports Claude, Codex, and PixelLab usage limits —
 typed 5-hour / daily / weekly / monthly windows plus reset times — for every
-signed-in profile. Antigravity (Google's `agy`) and Grok (xAI's `grok` CLI)
-are fetched via OAuth alongside them.
+signed-in profile. Claude and Codex rows also carry the remaining manual usage
+resets and their expiry times. Antigravity (Google's `agy`) and Grok (xAI's
+`grok` CLI) are fetched via OAuth alongside them.
 
 ## Source map
 
@@ -17,14 +18,16 @@ are fetched via OAuth alongside them.
 | `src/profiles.rs` | Chrome profile discovery (`Local State`). |
 | `src/cookies.rs`  | macOS `v10` cookie decryption. |
 | `src/http.rs`     | `wreq` client with Chrome TLS/HTTP2 emulation (Cloudflare), deadlines, and shared transient-failure classification. |
-| `src/claude.rs` / `src/codex.rs` / `src/antigravity.rs` / `src/pixellab.rs` / `src/grok.rs` | Per-provider usage fetchers. |
-| `src/model.rs`    | `Provider` / `Usage` / `Window` / `WindowKind` data model. |
-| `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles + Antigravity/Grok tables) + `BrowserWants`. |
+| `src/jwt.rs`      | Unverified JWT payload decoding (`claims`), shared by the Codex account id, Grok expiry, and PixelLab expiry/email readers. |
+| `src/claude.rs` / `src/codex.rs` / `src/antigravity.rs` / `src/pixellab.rs` / `src/grok.rs` | Per-provider usage fetchers (Claude/Codex also parse manual resets). |
+| `src/model.rs`    | `Provider` / `Usage` / `Window` / `WindowKind` / `ManualReset` / `ResetKind` data model. |
+| `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles + Antigravity/Grok tables), `BrowserWants` set operations, and `expand_home` for configured paths. |
 | `src/sort.rs`     | `SortKey` (`--sort`), shared by CLI and renderers. |
 | `src/report.rs`   | JSON DTO (shared by `--json` output and `--input` cache). |
-| `src/render.rs`   | Shared row resolution (display name, active highlight, brand colors) + JSON output; re-exports the renderers. |
+| `src/render.rs`   | Shared row resolution (display name, active highlight, brand colors), JSON output, and `write_stdout`; re-exports the renderers. |
 | `src/render/sort.rs` / `src/render/table.rs` / `src/render/statusline.rs` | Row sorting (`SortableRow`), human table, compact statusline. |
-| `src/main.rs`     | CLI, profile/provider resolution, concurrent fetch. |
+| `src/render/manual_resets.rs` | Manual-reset summaries shared by the table column and the statusline `R:` suffix. |
+| `src/main.rs`     | CLI, config-row binding and provider resolution, concurrent fetch. |
 
 ## Transient failures vs auth failures
 
@@ -145,7 +148,21 @@ Drive the network paths via `make build` + a real run.
 Additional regression coverage checks emoji/grapheme padding, table color suppression,
 subsecond Grok credential ordering, duplicate profile selection, and asynchronous probe
 timeouts. `tests/statusline_cache.rs` exercises the real CLI with isolated fixtures:
-cached provider filtering and hide precedence, plus explicit config creation and preservation.
+cached provider filtering and hide precedence, explicit config creation and preservation,
+end-to-end `--init-config` generation from cookie stores (parsed back as TOML), and a
+stdout pipe whose reader is already closed (broken pipe ends quietly with status 0).
+
+Later additions cover manual-reset parsing (Claude grants: empty, unknown scopes, missing
+`clears`; Codex credits: duplicate ids, missing status) and rendering (year display, failed
+rows, the table column, and the `R:` column staying aligned with `--reset-at`), per-provider
+config rows under `--profile` / `--only` (`main.rs`), `jwt::claims` with padded/unpadded
+payloads, `config::expand_home`, `cookies::load` end to end (schema v24 hash stripping,
+older schemas, unrelated hosts, a path with space/`?`/`#`), and `http.rs` response
+classification against a local `std::net::TcpListener` HTTP/1.1 server (retryable 503 /
+429 / connection closed before responding / Cloudflare challenge vs. non-retryable 401 /
+malformed JSON, plus the headers sent). Those HTTP tests build their client with
+`no_proxy()` so a system proxy cannot intercept loopback requests, and they keep each
+listener bound for the whole test so a parallel test cannot take over its port.
 
 ## 保守時に維持する動作
 
@@ -153,8 +170,11 @@ cached provider filtering and hide precedence, plus explicit config creation and
 - キャッシュ描画でも `--only` を適用してから statusline の非表示設定を処理する。
 - `--init-config --config <PATH>` は指定先へ排他的に新規作成し、既存ファイルやリンクを上書きしない。情報表示モードでは設定を読み込まない。
 - 同じ Chrome ディレクトリの同じプロバイダを二重取得しない。別プロバイダの設定とラベルは保持する。表示名が衝突する雛形は一意なディレクトリ名を使い、照合ではディレクトリ名を優先する。
+- 同じディレクトリのプロバイダ別の設定行は、`--profile` / `--only` を付けても各プロバイダをその行のラベルで表示する。行の受け持ちは config の `providers` だけで決め、`--only` はその後で当てる (`--only` は `providers` より優先し、どの行も挙げないプロバイダはそのディレクトリの先頭行で表示する)。
 - Antigravity の `ps` / `lsof` は非同期で待ち、各1秒の期限とキャンセル時の終了を設定する。探索を含むローカル経路全体の5秒制限も維持する。
 - Grok の認証情報は小数秒を捨てず作成時刻を比較する。
+- stdout へは `render::write_stdout` で書き、`print!` / `println!` を使わない。読み手が先に閉じた pipe (`| head`) は panic させず、`main` で終了コード 0 の正常終了にする。
+- `--reset-at` のときは、長期枠の日時を出せない行 (時刻不明・リセット済み・長期枠なし・短期枠のみ) にも同じ14桁を空け、後ろに続く `R:` の列を揃える。
 
 再現条件と修正根拠は [保守レビュー記録](docs/maintenance.ja.md) を参照。
 
@@ -203,6 +223,38 @@ Add a `Provider` variant in `model.rs`, a `fetch()` module returning `Usage`,
 and a matching `FetchSpec` variant in `main.rs`, plus provider-specific render
 metadata. Every returned `Window` must carry its real `WindowKind`; renderers
 must not infer a period from the provider.
+
+## Manual resets
+
+Claude and Codex rows carry `Usage.manual_resets: Option<Vec<ManualReset>>`.
+`None` means the provider has no such data (every other provider); a
+`ManualReset` with `remaining: None` means the count could not be fetched. Never
+fold an unknown count into `0` — `0` is a confirmed "no resets left".
+
+- **Claude** — the usage request adds `?cedar_ember=1` (the opt-in the settings
+  page uses) and reads `cedar_ember = { eligible, grants: [{ id, resets_left,
+  clears, ends_at, paused }] }`. `clears` decides the kind: `five_hour` +
+  `seven_day` → `full`, one of them → `5h` / `1w`, anything else → `other`.
+  Expired grants (`ends_at <= now`), spent grants (`resets_left == 0`), and
+  duplicate ids are skipped; paused grants stay with `paused = true`. Zero
+  entries for `full` and `5h` are added when no grant of that kind exists
+  (`eligible: false` therefore reads `full 0` / `5h 0`), matching the settings
+  page. A missing payload, or a grant that is still live but lacks `id` /
+  `resets_left` / `clears`, makes the whole list unknown.
+- **Codex** — `GET chatgpt.com/backend-api/wham/rate-limit-reset-credits` runs
+  concurrently with `wham/usage` under a 5-second timeout, and its failure never
+  fails the row. From `{ available_count, credits: [{ id, status, reset_type,
+  expires_at, is_supported_by_plan }] }`, only `status == "available"` credits
+  count, one reset each (`codex_rate_limits` → `full`, other types → `other`);
+  plan-unsupported and expired credits are excluded. The result is unknown when
+  any credit lacks `status` or a usable one lacks `reset_type`, when fewer
+  credits are listed than `available_count`, or when more usable ones remain
+  than it allows.
+- **Rendering** (`render/manual_resets.rs`) re-checks expiry against `now` on
+  every draw, so an old cache never shows expired grants. The table lists every
+  expiry (`full 2 (1@10/23 05:27, 1@10/30 03:57)`); the statusline appends only
+  the counts and the nearest known expiry (available grants first, paused ones
+  only when none are available) and paints the date red under seven days.
 
 ## PixelLab
 
@@ -402,7 +454,9 @@ cache compatibility, while each non-null window now includes a `kind`
 deserialization so caches written by older binaries still render with the
 legacy slot/provider label fallback. Legacy PixelLab and Grok rows also use
 monthly reset-warning thresholds, matching their `1m` labels instead of the
-weekly defaults.
+weekly defaults. The optional `manual_resets` array (`kind`, `remaining`,
+`expires_at`, `paused`) is likewise skipped when absent, so older caches render
+without the `R:` suffix; unknown future reset kinds deserialize as `other`.
 
 `--statusline --input <cache>` is a cache-only render path: it must not discover
 Chrome profiles, access Keychain, or call the network. `--list-profiles` and

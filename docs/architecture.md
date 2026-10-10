@@ -13,14 +13,18 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
 1. **Decrypts** cookies from `~/Library/Application Support/Google/Chrome/<profile>/Cookies`
    using the **Chrome Safe Storage** key from your macOS Keychain (standard `v10`
    AES‑128‑CBC scheme). The live SQLite database is opened read-only so current,
-   uncheckpointed WAL entries remain visible. Only cookies Chrome would send to `claude.ai` / `chatgpt.com`
+   uncheckpointed WAL entries remain visible. Only cookies Chrome would send to `claude.ai` / `chatgpt.com` / `www.pixellab.ai`
    themselves are replayed — suffix lookalikes like `evilclaude.ai` are filtered out.
    Chunked session cookies are accepted only when their suffix is numeric (`.0`, `.1`, ...).
 2. **Claude** — uses the `sessionKey` cookie to call
    `claude.ai/api/organizations/{org}/usage` → `five_hour` / `seven_day` `{utilization, resets_at}`.
+   The same request adds `?cedar_ember=1` to read manual reset grants
+   (`cedar_ember.grants[]` with `resets_left`, the windows they `clears`, `ends_at`, and `paused`).
 3. **Codex** — uses the `__Secure-next-auth.session-token` cookie to exchange for a Bearer
    token via `chatgpt.com/api/auth/session`, then calls `chatgpt.com/backend-api/wham/usage`
-   → `rate_limit.primary_window` / `secondary_window`.
+   → `rate_limit.primary_window` / `secondary_window`. Manual reset counts come from
+   `wham/rate-limit-reset-credits` (`available_count` and `credits[]`), fetched concurrently
+   with a five-second limit; if that side request fails, the usage row stays and the count reads `?`.
 4. **Antigravity** — reads the OAuth token from `~/.gemini` (refreshing as needed). When
    Antigravity.app or `agy` is running, it prefers the localhost quota server for the richer
    per-group payload. App/IDE processes are authenticated with the `--csrf_token` value from

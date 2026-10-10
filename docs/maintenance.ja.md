@@ -1,8 +1,48 @@
 # 保守レビュー記録
 
+依存更新とコードレビューごとに、確認した不具合を記録する。修正するのは、再現できた不具合と、コードから誤動作を断定できる箇所だけである。根拠が揃わない指摘は「未確定の指摘」に残し、変更していない。
+
+## 2026-10-08 のレビュー
+
+### 確認できた不具合
+
+| 対象・再現条件 | 不具合と断定できる根拠 | 修正と回帰テスト |
+|---|---|---|
+| `ai-usage --json \| head -n 5` や `ai-usage --statusline --input <PATH> \| true` のように、出力の読み手が途中で終了する | stdout が `EPIPE` を返すと `print!` / `println!` が panic し、`failed printing to stdout: Broken pipe` を出して終了コード 101 で終わっていた | 描画結果を `render::write_stdout` で書き、I/O エラーを `main` へ返す。`main` は broken pipe だけを終了コード 0 の正常終了として扱う。読み手を閉じ済みの pipe を渡す CLI テストで、キャッシュ描画と `--list-profiles` を検証 |
+| `--reset-at` 付きの statusline で、Claude か Codex の行に今後の長期枠リセット時刻が無い (時刻不明・リセット済み・長期枠なし) | 手動リセットの `R:` は任意の ` (MM/DD HH:MM)` の後ろに続くため、日時の無い行では14桁左から始まっていた。statusline は `--reset-at` の日時も含めて列を揃える設計で、`R:` だけが崩れていた | `--reset-at` のとき、日時を出せない行にも同じ幅を空ける。日時あり・時刻不明・リセット済み・短期枠のみ・長期枠のみの行で `R:` の列を比べる単体テスト |
+| 1つのディレクトリに `providers` の異なる `[[profiles]]` 行を2つ書き (`claude` 用の `claude-label` と `codex` 用の `codex-label`)、`--profile <dir>` または `--only codex` を付けて実行 | `--profile` は最初に一致した行しか使わず、Codex の行が消えていた。`--only` は行ごとの受け持ちを決める前に当てていたため、Codex の行が `claude-label` で表示された。どちらも、プロバイダ別の行が個別のラベルを保つという記載に反する | 各行を1つのプロファイルに割り当て、各プロバイダはそれを挙げた最初の行が受け持ち、`--only` はその後で当てる (`providers` より優先する点は維持)。`--profile` も同じ割り当てを使う。指定なし・`--profile`・`--only`・両方・どの行も挙げないプロバイダ・設定に無いプロファイルを単体テストで検証 |
+
+修正と単体テストは `src/main.rs`、`src/render.rs`、`src/render/statusline.rs`、`src/render/table.rs` に、CLI テストは `tests/statusline_cache.rs` にある。修正前のバイナリが閉じた pipe で panic して終了コード 101 になること、`R:` が14桁ずれることを確認した。プロバイダ別の行のテストは、修正前の `build_targets` では `--profile` と `--only codex` の両方で失敗する。
+
+### リファクタリング
+
+JWT の payload 復号が `codex.rs`・`grok.rs`・`pixellab.rs` の4関数に重複していたため、`src/jwt.rs` にまとめた。`antigravity.rs` と `grok.rs` に同じ実装があった `~/` の展開は `config::expand_home` に移した。挙動は変えていない。既存テストはそのまま通り、padding の有無・壊れた token・path 展開のテストを追加した。循環的複雑度が最も高い `run` (15) は CLI のモード振り分けによるもので、変更していない。
+
+### 追加したテスト
+
+ローカルの HTTP/1.1 サーバーを立て、`get_json`・`post_json`・`post_form` の応答の分類と送信ヘッダーを検証する。503・429・応答前に切れた接続・Cloudflare challenge は再試行に回り、401 と壊れた JSON は即座に失敗する。Cookie の読み込みは、schema v24 の hash 除去、旧 schema、対象外ホスト、空白・`?`・`#` を含む path まで通しで検証する。`--init-config` の雛形生成は CLI で検証する。手動リセットの解析と表示には、付与なし・対象枠不明・credit の id 重複・status 欠落・年の表示・取得失敗行・テーブル列の境界テストを追加した。
+
+### 依存
+
+`depup --install --include-pinned` では、公開から2週間を経た版の範囲で直接依存の更新はなかった。`Cargo.lock` では、公開から2週間以上たった推移的依存だけを更新した (libredox 0.1.25、lru 0.18.5、thiserror / thiserror-impl 2.0.21)。tokio 1.53.2 や toml 1.1.7 など、それより新しい候補は同じ方針で次回以降に回す。
+
+### 未確定の指摘
+
+- Codex の reset credit 一覧が `available_count` より短いと、件数を `available_count` ではなく `?` と表示する。第三者の資料には backend が一覧を打ち切り得るとあるが、不明として扱うのは意図した保守的な挙動で、テストでも固定している。
+- Codex は使用量の取得が失敗した後も、reset credit の補助取得を最大5秒待つ。再試行対象の失敗が続くと、20秒のジョブ期限をその分多く使う。
+- 手動リセットの機能を持たないアカウントで、Claude が `cedar_ember` を返さない場合や Codex の endpoint が 403 / 404 を返す場合は、`full ?` が出続ける可能性がある。
+
+いずれも実際の応答による裏付けが必要なため、変更していない。
+
+### 検証
+
+`make ci` で rustfmt、clippy (`-D warnings`)、単体テスト213件、CLI テスト8件が成功した。`cargo audit` は241依存に対して脆弱性なし。wreq が system-configuration 0.7.0 を使うことも確認した。
+
+## 2026-10-04 のレビュー
+
 2026年10月の依存更新とコードレビューで確認した不具合。ソース全体を AST で調査し、再現できる不具合と、コードから誤動作を断定できる箇所を修正した。複雑さだけを理由とするリファクタリングは行っていない。
 
-## 確認できた不具合
+### 確認できた不具合
 
 | 対象・再現条件 | 不具合と断定できる根拠 | 修正と回帰テスト |
 |---|---|---|
@@ -16,17 +56,17 @@
 
 修正は `src/main.rs`、`src/render/statusline.rs`、`src/render/table.rs`、`src/grok.rs`、`src/antigravity.rs` と、その単体テストおよび `tests/statusline_cache.rs` にある。キャッシュ絞り込み、絵文字幅、Grok の小数秒順序は、修正前に回帰テストの失敗も確認した。
 
-## 依存とビルド環境
+### 依存とビルド環境
 
 `depup --install --include-pinned` で clap を 4.6.7、toml を 1.1.6 に更新した。依存ライブラリのメジャー更新はなかった。書記素の判定には既に間接依存していた unicode-segmentation 1.13.3 を直接依存に追加し、非同期探索用に Tokio の `process` 機能を有効にした。
 
 CMake も `mise.toml` で管理し、depup で 4.4.3 に更新した。`make setup` と CI は同じ固定版を使う。Rust は既存の 1.98.1 を維持した。
 
-## 未確定の指摘
+### 未確定の指摘
 
 トークンを保存せず refresh する運用の長期的な影響、OAuth の HTTP 400 に対する再ログイン案内、端末制御文字を含むラベルや API エラーの扱い、将来のキャッシュ周期値への互換性は、外部仕様や想定入力の追加確認が必要であり変更していない。Cloudflare 本文判定と OAuth クライアント情報の抽出も、具体的な誤判定・誤抽出の再現がないため変更していない。
 
-## 検証
+### 検証
 
 `make ci` で rustfmt、clippy (`-D warnings`)、単体テスト183件、CLI テスト5件が成功した。`cargo audit` は242依存に対して脆弱性なし。wreq が system-configuration 0.7.0 を使うことも確認した。`make build` と実アカウントで Claude / Codex の API 取得も成功した。他のプロバイダの実通信には認証情報やローカル環境の準備が必要であり、全プロバイダの成功を保証する検証ではない。個人情報を含む実行結果は公開文書へ転記していない。
 

@@ -236,6 +236,40 @@ mod tests {
     }
 
     #[test]
+    fn manual_resets_cover_empty_and_unknown_scopes() {
+        let now = DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let summary = |resets: Vec<ManualReset>| {
+            resets
+                .iter()
+                .map(|reset| (reset.kind, reset.remaining))
+                .collect::<Vec<_>>()
+        };
+        // 付与が 1 件も無いアカウントは、完全 / 5 時間とも取得済みの 0 回として表示する。
+        let empty = parse_manual_resets(Some(&json!({"eligible":true,"grants":[]})), now).unwrap();
+        assert_eq!(
+            summary(empty),
+            vec![(ResetKind::Full, Some(0)), (ResetKind::FiveHour, Some(0))]
+        );
+        // 回復対象の枠を判別できない付与は other として数え、0 回の表示は残す。
+        let other = json!({"eligible":true,"grants":[
+            {"id":"opus","resets_left":2,"clears":["opus_weekly"]}
+        ]});
+        assert_eq!(
+            summary(parse_manual_resets(Some(&other), now).unwrap()),
+            vec![
+                (ResetKind::Other, Some(2)),
+                (ResetKind::Full, Some(0)),
+                (ResetKind::FiveHour, Some(0)),
+            ]
+        );
+        // 有効な付与なのに clears が無い応答は範囲が分からないため、全体を不明にする。
+        let unscoped = json!({"eligible":true,"grants":[{"id":"x","resets_left":1}]});
+        assert!(parse_manual_resets(Some(&unscoped), now).is_none());
+    }
+
+    #[test]
     fn missing_or_malformed_reset_data_is_unknown_instead_of_zero() {
         let now = Utc::now();
         for v in [

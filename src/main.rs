@@ -8,6 +8,7 @@ mod config;
 mod cookies;
 mod grok;
 mod http;
+mod jwt;
 mod model;
 mod pixellab;
 mod profiles;
@@ -15,7 +16,7 @@ mod render;
 mod report;
 mod sort;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -630,117 +631,172 @@ fn profile_matcher<'a>(profile: &'a Profile, all: &[Profile]) -> &'a str {
     }
 }
 
-/// profile ごとに表示する provider を決める。global `--only` flag が最優先で、
-/// 次に profile config の `providers`、未指定なら Chrome provider の全て。
-fn resolve_wants(cli: &Cli, cfg: Option<&config::ProfileCfg>) -> BrowserWants {
-    // global `--only` が最優先。未指定(None)のときだけ config の providers、
-    // それも無ければ全 provider true(既定)に fallback する。
-    // Antigravity は Chrome provider をすべて false にする(別経路で取得)。
-    match cli.only {
-        Some(ProviderArg::Claude) => BrowserWants {
+/// `--only` で選んだ provider を Chrome 系 provider の選択に直す。Antigravity / Grok は
+/// Chrome Cookie を使わない(別経路で取得する)ため、どの Chrome provider も選ばない。
+fn only_wants(only: ProviderArg) -> BrowserWants {
+    let none = BrowserWants::none();
+    match only {
+        ProviderArg::Claude => BrowserWants {
             claude: true,
-            codex: false,
-            pixellab: false,
+            ..none
         },
-        Some(ProviderArg::Codex) => BrowserWants {
-            claude: false,
+        ProviderArg::Codex => BrowserWants {
             codex: true,
-            pixellab: false,
+            ..none
         },
-        Some(ProviderArg::Pixellab) => BrowserWants {
-            claude: false,
-            codex: false,
+        ProviderArg::Pixellab => BrowserWants {
             pixellab: true,
+            ..none
         },
-        Some(ProviderArg::Antigravity) => BrowserWants {
-            claude: false,
-            codex: false,
-            pixellab: false,
-        },
-        Some(ProviderArg::Grok) => BrowserWants {
-            claude: false,
-            codex: false,
-            pixellab: false,
-        },
-        None => cfg.map_or(BrowserWants::all(), |c| c.wants()),
+        ProviderArg::Antigravity | ProviderArg::Grok => none,
     }
+}
+
+/// config 行の無い profile に表示する provider。global `--only` があればその provider だけ、
+/// 無ければ Chrome provider の全て。
+fn resolve_wants(cli: &Cli) -> BrowserWants {
+    cli.only.map_or(BrowserWants::all(), only_wants)
+}
+
+/// config の各 `[[profiles]]` 行を検出済み profile に割り当て、`(行, all の添字)` を config 順に
+/// 返す。ディレクトリ名の一致を優先し、表示名の一致はまだ割り当てていない profile を優先する
+/// (表示名が重複しても、別々の行を同じ profile にまとめない)。一致する profile の無い行は落とす。
+fn bind_config_rows<'a>(
+    all: &[Profile],
+    cfg: &'a config::Config,
+) -> Vec<(&'a config::ProfileCfg, usize)> {
+    let mut bound = Vec::new();
+    let mut used = HashSet::new();
+    for row in &cfg.profiles {
+        let Some(index) = all
+            .iter()
+            .position(|p| p.dir.eq_ignore_ascii_case(&row.matcher))
+            .or_else(|| {
+                (0..all.len())
+                    .find(|&i| !used.contains(&i) && row.matches(&all[i].name, &all[i].dir))
+            })
+            .or_else(|| all.iter().position(|p| row.matches(&p.name, &p.dir)))
+        else {
+            continue;
+        };
+        used.insert(index);
+        bound.push((row, index));
+    }
+    bound
+}
+
+/// 割り当て済みの config 行ごとに、表示する provider を決める(戻り値は `rows` と同じ順)。
+///
+/// 同じ profile に複数の行があるときは、config の `providers` を先に書いた行がその provider を
+/// 受け持ち、同じ Cookie で同じ provider を二重に取得しない。`--only` は受け持ちを決めた後で
+/// 当てる。先に当てると全行が同じ provider を受け持つように見え、別の provider 用に書いた
+/// 先頭行の label で表示されてしまう。`--only` は config の `providers` より優先するため、
+/// どの行も受け持たない provider は、その profile の先頭行で表示する。
+fn config_row_wants(
+    rows: &[(&config::ProfileCfg, usize)],
+    only: Option<ProviderArg>,
+) -> Vec<BrowserWants> {
+    let mut owned = HashMap::<usize, BrowserWants>::new();
+    let mut wants: Vec<BrowserWants> = rows
+        .iter()
+        .map(|(row, profile)| {
+            let owned = owned.entry(*profile).or_insert_with(BrowserWants::none);
+            let mine = row.wants().without(*owned);
+            *owned = owned.union(mine);
+            mine
+        })
+        .collect();
+    if let Some(only) = only.map(only_wants) {
+        let mut first_rows = HashSet::new();
+        for ((_, profile), wants) in rows.iter().zip(&mut wants) {
+            let unowned = if first_rows.insert(*profile) {
+                only.without(owned[profile])
+            } else {
+                BrowserWants::none()
+            };
+            *wants = wants.union(unowned).intersect(only);
+        }
+    }
+    wants
 }
 
 /// 表示する profile を label / provider filter 付きで解決する。
 /// 優先順は `--profile` > config `[[profiles]]` > 全 auto-discover。
 fn build_targets(all: Vec<Profile>, cli: &Cli, cfg: &config::Config) -> Vec<Target> {
-    // 3 つの選択戦略で構築処理は同じ。選ばれる profile、順序、対応 config row だけが違う。
-    let make = |profile: Profile, c: Option<&config::ProfileCfg>| Target {
-        label: c.and_then(|c| c.label.clone()),
-        wants: resolve_wants(cli, c),
-        profile,
-    };
+    let rows = bind_config_rows(&all, cfg);
+    let wants = config_row_wants(&rows, cli.only);
 
     if !cli.profile.is_empty() {
-        // --profile: discovery 順を保ち、指定 profile だけに絞る。
-        all.into_iter()
-            .filter(|p| {
-                cli.profile
-                    .iter()
-                    .any(|w| w.eq_ignore_ascii_case(&p.name) || w.eq_ignore_ascii_case(&p.dir))
-            })
-            .map(|p| {
-                let c = cfg.profiles.iter().find(|c| c.matches(&p.name, &p.dir));
-                make(p, c)
-            })
-            .collect()
-    } else if !cfg.profiles.is_empty() {
-        // config 順: 各 [[profiles]] row を検出済み profile に照合する。
-        // 同じプロバイダの二重取得を避けつつ、プロバイダ別の設定とラベルは保持する。
-        let mut used = std::collections::HashMap::<String, BrowserWants>::new();
-        cfg.profiles
-            .iter()
-            .filter_map(|c| {
-                let p = all
-                    .iter()
-                    .find(|p| p.dir.eq_ignore_ascii_case(&c.matcher))
-                    .or_else(|| {
-                        all.iter()
-                            .find(|p| !used.contains_key(&p.dir) && c.matches(&p.name, &p.dir))
-                    })
-                    .or_else(|| all.iter().find(|p| c.matches(&p.name, &p.dir)))?;
-                let mut target = make(p.clone(), Some(c));
-                let seen = used.entry(p.dir.clone()).or_insert(BrowserWants {
-                    claude: false,
-                    codex: false,
-                    pixellab: false,
+        // --profile: discovery 順を保ち、指定 profile だけに絞る。label と providers は
+        // 指定なしの実行と同じ config 行から決め、config に無い profile は既定値で表示する。
+        let mut targets = Vec::new();
+        for (index, profile) in all.iter().enumerate() {
+            if !cli.profile.iter().any(|w| {
+                w.eq_ignore_ascii_case(&profile.name) || w.eq_ignore_ascii_case(&profile.dir)
+            }) {
+                continue;
+            }
+            let mut configured = false;
+            for ((row, _), wants) in rows.iter().zip(&wants).filter(|((_, i), _)| *i == index) {
+                configured = true;
+                if wants.any() {
+                    targets.push(Target {
+                        profile: profile.clone(),
+                        label: row.label.clone(),
+                        wants: *wants,
+                    });
+                }
+            }
+            if !configured {
+                targets.push(Target {
+                    profile: profile.clone(),
+                    label: None,
+                    wants: resolve_wants(cli),
                 });
-                target.wants.claude &= !seen.claude;
-                target.wants.codex &= !seen.codex;
-                target.wants.pixellab &= !seen.pixellab;
-                seen.claude |= target.wants.claude;
-                seen.codex |= target.wants.codex;
-                seen.pixellab |= target.wants.pixellab;
-                target.wants.any().then_some(target)
+            }
+        }
+        targets
+    } else if !cfg.profiles.is_empty() {
+        // config 順: 各 [[profiles]] 行を割り当てた profile で表示する。
+        rows.iter()
+            .zip(wants)
+            .filter(|(_, wants)| wants.any())
+            .map(|((row, index), wants)| Target {
+                profile: all[*index].clone(),
+                label: row.label.clone(),
+                wants,
             })
             .collect()
     } else {
         // auto: 検出済み profile を discovery 順ですべて使う。
-        all.into_iter().map(|p| make(p, None)).collect()
+        all.into_iter()
+            .map(|profile| Target {
+                profile,
+                label: None,
+                wants: resolve_wants(cli),
+            })
+            .collect()
     }
 }
 
 /// `--list-profiles`: 検出 profile と Cookie store の有無を出力する。
-fn list_profiles(root: &std::path::Path, all: &[Profile]) {
+fn list_profiles(root: &std::path::Path, all: &[Profile]) -> std::io::Result<()> {
+    let mut text = String::new();
     for p in all {
         let note = if profiles::cookies_db(root, &p.dir).is_some() {
             ""
         } else {
             "  (no cookie store)"
         };
-        println!(
-            "{:<18} dir={:<12} {}{}",
+        text += &format!(
+            "{:<18} dir={:<12} {}{}\n",
             p.name,
             p.dir,
             p.email.as_deref().unwrap_or(""),
             note
         );
     }
+    render::write_stdout(&text)
 }
 
 /// `--init-config`: starter config を書き込む。既に存在する場合は stdout に出す。
@@ -762,9 +818,9 @@ fn write_init_config(
                 "Config already exists at {} — printing a fresh one to stdout (redirect to overwrite).",
                 p.display()
             );
-            print!("{text}");
+            render::write_stdout(&text)?;
         }
-        None => print!("{text}"),
+        None => render::write_stdout(&text)?,
     }
     Ok(())
 }
@@ -837,17 +893,17 @@ fn render_cached_statusline(
     cli: &Cli,
     cfg: &config::Config,
     active: Option<&render::ActiveTarget>,
-) {
+) -> std::io::Result<()> {
     let Ok(data) = std::fs::read_to_string(path) else {
-        return;
+        return Ok(());
     };
     let Ok(mut report) = serde_json::from_str::<report::Report>(&data) else {
-        return;
+        return Ok(());
     };
     if let Some(only) = cli.only {
         report.accounts.retain(|a| a.provider == only.to_provider());
     }
-    render::statusline(&report, active, cli.sort, &statusline_opts(cli, cfg));
+    render::statusline(&report, active, cli.sort, &statusline_opts(cli, cfg))
 }
 
 /// fresh に fetch した report を CLI flag に応じた format で描画する。
@@ -856,16 +912,16 @@ fn render_reports(
     cfg: &config::Config,
     reports: &[AccountReport],
     active: Option<&render::ActiveTarget>,
-) {
+) -> std::io::Result<()> {
     if cli.statusline {
         render::statusline(
             &report::Report::build(reports),
             active,
             cli.sort,
             &statusline_opts(cli, cfg),
-        );
+        )
     } else if cli.json {
-        render::json(&report::Report::build(reports), cli.sort);
+        render::json(&report::Report::build(reports), cli.sort)
     } else {
         render::table(
             reports,
@@ -873,7 +929,7 @@ fn render_reports(
             cli.sort,
             color_enabled(cli.no_color),
             cli.debug,
-        );
+        )
     }
 }
 
@@ -909,7 +965,7 @@ async fn run(cli: Cli) -> Result<()> {
             .as_deref()
             .expect("キャッシュ描画モードでは入力パスが存在する");
         let active = active_target(&cli, &cfg);
-        render_cached_statusline(path, &cli, &cfg, active.as_ref());
+        render_cached_statusline(path, &cli, &cfg, active.as_ref())?;
         return Ok(());
     }
 
@@ -934,7 +990,7 @@ async fn run(cli: Cli) -> Result<()> {
     };
 
     if cli.list_profiles {
-        list_profiles(&root, &all);
+        list_profiles(&root, &all)?;
         return Ok(());
     }
     if cli.init_config {
@@ -963,13 +1019,27 @@ async fn run(cli: Cli) -> Result<()> {
     )
     .await?;
 
-    render_reports(&cli, &cfg, &reports, active.as_ref());
+    render_reports(&cli, &cfg, &reports, active.as_ref())?;
     Ok(())
+}
+
+/// stdout の読み手が先に pipe を閉じたことによる書き込み失敗かどうか。
+fn is_broken_pipe(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::BrokenPipe)
+    })
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    run(Cli::parse()).await
+    match run(Cli::parse()).await {
+        // `ai-usage --json | head` のように読み手が出力を最後まで読まないのは異常ではないため、
+        // 残りの出力を捨てて正常終了する。
+        Err(error) if is_broken_pipe(&error) => Ok(()),
+        result => result,
+    }
 }
 
 #[cfg(test)]
@@ -1076,19 +1146,41 @@ mod tests {
                 "pixellab".to_string(),
             ]),
         };
-        let cli = Cli::parse_from(["ai-usage", "--only", "codex"]);
+        let rows = [(&cfg, 0)];
         // config で 3 種全て true でも、--only codex なら codex だけ。
-        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(false, true, false));
+        assert_eq!(
+            config_row_wants(&rows, Some(ProviderArg::Codex)),
+            vec![bw(false, true, false)]
+        );
+        assert_eq!(
+            config_row_wants(&rows, Some(ProviderArg::Claude)),
+            vec![bw(true, false, false)]
+        );
+        assert_eq!(
+            config_row_wants(&rows, Some(ProviderArg::Pixellab)),
+            vec![bw(false, false, true)]
+        );
 
-        let cli = Cli::parse_from(["ai-usage", "--only", "claude"]);
-        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(true, false, false));
+        // --only antigravity / grok は Chrome 系 provider をすべて false にする(別経路で取得)。
+        for only in [ProviderArg::Antigravity, ProviderArg::Grok] {
+            assert_eq!(
+                config_row_wants(&rows, Some(only)),
+                vec![bw(false, false, false)]
+            );
+        }
 
-        let cli = Cli::parse_from(["ai-usage", "--only", "pixellab"]);
-        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(false, false, true));
-
-        // --only antigravity は Chrome 系 provider をすべて false にする(Antigravity は別経路)。
-        let cli = Cli::parse_from(["ai-usage", "--only", "antigravity"]);
-        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(false, false, false));
+        // config の providers に無い provider でも、--only で指定すれば表示する。
+        let claude_only = config::ProfileCfg {
+            providers: Some(vec!["claude".to_string()]),
+            ..cfg
+        };
+        assert_eq!(
+            config_row_wants(&[(&claude_only, 0)], Some(ProviderArg::Codex)),
+            vec![bw(false, true, false)]
+        );
+        // config の行が無い profile も同じ。
+        let cli = Cli::parse_from(["ai-usage", "--only", "codex"]);
+        assert_eq!(resolve_wants(&cli), bw(false, true, false));
     }
 
     #[test]
@@ -1099,11 +1191,60 @@ mod tests {
             label: None,
             providers: Some(vec!["claude".to_string(), "pixellab".to_string()]),
         };
-        let cli = Cli::parse_from(["ai-usage"]);
-        assert_eq!(resolve_wants(&cli, Some(&cfg)), bw(true, false, true));
+        assert_eq!(
+            config_row_wants(&[(&cfg, 0)], None),
+            vec![bw(true, false, true)]
+        );
 
         // config も無ければ全 provider true(既定)。
-        assert_eq!(resolve_wants(&cli, None), BrowserWants::all());
+        assert_eq!(
+            resolve_wants(&Cli::parse_from(["ai-usage"])),
+            BrowserWants::all()
+        );
+    }
+
+    #[test]
+    fn per_provider_rows_keep_their_labels_with_profile_and_only_filters() {
+        // 同じディレクトリに provider 別の行を書いた設定は、--profile / --only を付けても
+        // 各 provider をその行の label で表示する。
+        let cfg = config::Config {
+            profiles: vec![
+                profile_cfg("Default", Some("claude-label"), Some(&["claude"])),
+                profile_cfg("Default", Some("codex-label"), Some(&["codex"])),
+            ],
+            ..Default::default()
+        };
+        let rows = |args: &[&str]| {
+            let cli = Cli::parse_from(std::iter::once("ai-usage").chain(args.iter().copied()));
+            build_targets(
+                vec![profile("Default", "Work"), profile("Profile 2", "Home")],
+                &cli,
+                &cfg,
+            )
+            .into_iter()
+            .map(|target| (target.profile.dir, target.label, target.wants))
+            .collect::<Vec<_>>()
+        };
+        let labeled = |label: &str, wants| ("Default".to_string(), Some(label.to_string()), wants);
+        let both = vec![
+            labeled("claude-label", bw(true, false, false)),
+            labeled("codex-label", bw(false, true, false)),
+        ];
+        assert_eq!(rows(&[]), both);
+        assert_eq!(rows(&["--profile", "Work"]), both);
+        let codex = vec![labeled("codex-label", bw(false, true, false))];
+        assert_eq!(rows(&["--only", "codex"]), codex);
+        assert_eq!(rows(&["--profile", "Default", "--only", "codex"]), codex);
+        // どの行も受け持たない provider は、--only の優先により先頭行で表示する。
+        assert_eq!(
+            rows(&["--only", "pixellab"]),
+            vec![labeled("claude-label", bw(false, false, true))]
+        );
+        // config に無い profile を --profile で選んだときは既定値で表示する。
+        assert_eq!(
+            rows(&["--profile", "Home"]),
+            vec![("Profile 2".to_string(), None, BrowserWants::all())]
+        );
     }
 
     #[test]
@@ -1334,6 +1475,21 @@ mod tests {
 
         // [statusline] が無ければ何も隠さない。
         assert!(resolve_statusline_hide(&cli, &config::Config::default()).is_empty());
+    }
+
+    #[test]
+    fn only_broken_pipe_write_errors_end_quietly() {
+        let broken = || anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        assert!(is_broken_pipe(&broken()));
+        // context で包まれても chain の io::Error から判定する。
+        assert!(is_broken_pipe(&broken().context("writing the table")));
+        // 他の I/O 失敗や、文面に "Broken pipe" を含むだけのエラーは従来どおり失敗にする。
+        assert!(!is_broken_pipe(&anyhow::Error::from(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        ))));
+        assert!(!is_broken_pipe(&anyhow::anyhow!(
+            "GET https://example.test: Broken pipe"
+        )));
     }
 
     #[test]

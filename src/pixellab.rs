@@ -201,36 +201,16 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
     Ok(UsageRow::single(usage))
 }
 
-/// JWT payload の `exp` が近い(<= 60 秒)場合は再取得する。破損 JWT は 0 として扱う。
+/// JWT payload の `exp` が近い(<= 60 秒)場合は再取得する。破損 JWT や `exp` の無い JWT も
+/// 期限切れとして扱う。
 fn access_token_fresh(access: &str) -> bool {
-    let Some(payload) = access.split('.').nth(1) else {
-        return false;
-    };
-    let mut b64 = payload.replace('-', "+").replace('_', "/");
-    while b64.len() % 4 != 0 {
-        b64.push('=');
-    }
-    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) else {
-        return false;
-    };
-    let Ok(claims) = serde_json::from_slice::<Value>(&bytes) else {
-        return false;
-    };
-    let Some(exp) = claims.get("exp").and_then(Value::as_i64) else {
-        return false;
-    };
-    exp > Utc::now().timestamp().saturating_add(60)
+    crate::jwt::claims(access)
+        .and_then(|claims| claims.get("exp").and_then(Value::as_i64))
+        .is_some_and(|exp| exp > Utc::now().timestamp().saturating_add(60))
 }
 
 fn jwt_email(access: &str) -> Option<String> {
-    let payload = access.split('.').nth(1)?;
-    let mut b64 = payload.replace('-', "+").replace('_', "/");
-    while b64.len() % 4 != 0 {
-        b64.push('=');
-    }
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
-    let claims: Value = serde_json::from_slice(&bytes).ok()?;
-    claims
+    crate::jwt::claims(access)?
         .get("email")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
@@ -424,6 +404,10 @@ mod tests {
         assert_eq!(percent_decode("%5B%22a%22%5D"), "[\"a\"]");
         // 不正な `%X` は fail-soft で残す。
         assert_eq!(percent_decode("50%off"), "50%off");
+        // 末尾で途切れた `%` / `%X` も元の文字のまま残し、末尾ちょうどの `%XX` は復号する。
+        assert_eq!(percent_decode("a%"), "a%");
+        assert_eq!(percent_decode("a%4"), "a%4");
+        assert_eq!(percent_decode("a%41"), "aA");
     }
 
     #[test]

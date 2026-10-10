@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
-use base64::Engine;
 use chrono::{DateTime, TimeZone, Utc};
 use wreq::Client;
 
@@ -233,14 +232,7 @@ fn parse_window(w: &serde_json::Value, kind: WindowKind) -> Option<Window> {
 
 /// access token の JWT claims から `chatgpt_account_id` を取り出す。
 fn jwt_account_id(jwt: &str) -> Option<String> {
-    let payload = jwt.split('.').nth(1)?;
-    let mut b64 = payload.replace('-', "+").replace('_', "/");
-    while b64.len() % 4 != 0 {
-        b64.push('=');
-    }
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
-    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    claims
+    crate::jwt::claims(jwt)?
         .get("https://api.openai.com/auth")
         .and_then(|a| a.get("chatgpt_account_id"))
         .and_then(|s| s.as_str())
@@ -250,6 +242,7 @@ fn jwt_account_id(jwt: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use serde_json::json;
 
@@ -319,6 +312,24 @@ mod tests {
         assert_eq!(resets[0].kind, ResetKind::Other);
         assert_eq!(resets[0].remaining, Some(1));
         assert!(resets[0].expires_at.is_none());
+    }
+
+    #[test]
+    fn reset_credits_count_duplicate_ids_once_and_require_a_status() {
+        let now = DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        // 同じ id の重複は 1 回分として数える。二重に数えると集計件数を超えて不明扱いになる。
+        let duplicate = json!({"available_count":1,"credits":[
+            {"id":"a","status":"available","reset_type":"codex_rate_limits"},
+            {"id":"a","status":"available","reset_type":"codex_rate_limits"}
+        ]});
+        let resets = parse_manual_resets(&duplicate, now).unwrap();
+        assert_eq!(resets.len(), 1);
+        assert_eq!(resets[0].remaining, Some(1));
+        // status の無い項目は利用可否が分からないため、全体を不明にする。
+        let missing_status = json!({"available_count":0,"credits":[{"id":"a"}]});
+        assert!(parse_manual_resets(&missing_status, now).is_none());
     }
 
     fn put(c: &mut HashMap<String, String>, k: &str, v: &str) {

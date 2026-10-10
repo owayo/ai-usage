@@ -37,7 +37,8 @@ const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// local 経路全体の上限。`local_endpoints()` は「プロセス × 待受ポート」の直積を返すため、
 /// endpoint ごとの timeout だけでは最悪ケースが endpoint 数に比例して伸び、
-/// OAuth フォールバックに残る時間が無くなる。local は諦めが早い方が総合的に速い。
+/// OAuth フォールバックに残る時間が無くなる。local を早く諦めた方が、OAuth までを含めた
+/// 取得全体は早く終わる。
 const LOCAL_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// プロセスと待受ポートの探索にも期限を設け、応答しない外部コマンドを終了させる。
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -575,7 +576,7 @@ fn now_secs() -> i64 {
 
 fn token_path(cfg: Option<&AntigravityCfg>) -> Option<PathBuf> {
     if let Some(p) = cfg.and_then(|c| c.token_path.as_ref()) {
-        return Some(expand(p));
+        return Some(crate::config::expand_home(p));
     }
     let home = dirs::home_dir()?;
     for rel in [
@@ -588,15 +589,6 @@ fn token_path(cfg: Option<&AntigravityCfg>) -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn expand(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join(rest);
-    }
-    PathBuf::from(p)
 }
 
 fn load_token(path: &Path) -> Result<Token> {
