@@ -6,8 +6,8 @@
 //!
 //!   GET https://cli-chat-proxy.grok.com/v1/user?include=subscription
 //!     -> { email, subscriptionTier, hasGrokCodeAccess, ... }
-//!   GET https://cli-chat-proxy.grok.com/v1/billing
-//!     -> { config: { monthlyLimit, used, billingPeriodStart, billingPeriodEnd, history[] } }
+//!   GET https://cli-chat-proxy.grok.com/v1/billing?format=credits
+//!     -> { config: { creditUsagePercent?, currentPeriod: { type, end }, ... } }
 //!
 //! access token が期限切れなら `POST https://auth.x.ai/oauth2/token`
 //! (grant_type=refresh_token, client_id=<auth.json.oidc_client_id>) で更新する。
@@ -21,7 +21,9 @@ use serde_json::Value;
 use wreq::{Client, StatusCode};
 
 use crate::config::GrokCfg;
-use crate::http::{get_json, no_retry_after_refresh, post_form};
+use crate::http::{
+    get_json, is_retryable_status, no_retry_after_refresh, post_form, retryable_error,
+};
 use crate::model::{Usage, UsageRow, Window, WindowKind};
 
 /// CLI が読み書きする通信先。debug ログでも公開されているので固定で埋めてよい。
@@ -66,9 +68,9 @@ pub async fn fetch(client: &Client, cfg: Option<&GrokCfg>) -> Result<Vec<UsageRo
         Err(e) if refreshed => return Err(no_retry_after_refresh(e)),
         Err(e) => return Err(e),
     };
-    // billing endpoint は Free 相当のアカウントでも 200 を返す(monthlyLimit=0)。
-    // 401/403 なら auth 側の問題なので surface する。取得失敗は long window を
-    // None のままにする(rendering は "quota なし" として崩れず表示できる)。
+    // credits は請求上の monthlyLimit/used と異なり、利用枠の実際の周期を返す。
+    // 使用率が省略されることもあるが、その場合は 0% と推測せず不明として残す。
+    // 401/403 なら auth 側の問題なので surface する。
     let billing = match get_billing(client, &auth.access).await {
         Ok(v) => Some(v),
         Err(e) if is_auth_error(&e) => return Err(e),
@@ -104,15 +106,39 @@ async fn get_user(client: &Client, access: &str) -> Result<Value> {
 }
 
 async fn get_billing(client: &Client, access: &str) -> Result<Value> {
-    get_json(
-        client,
-        &format!("{CHAT_PROXY}/billing"),
-        "",
-        Some(access),
-        None,
-    )
-    .await
-    .context("fetching /v1/billing")
+    let url = format!("{CHAT_PROXY}/billing?format=credits");
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {access}"))
+        .header("x-xai-token-auth", "xai-grok-cli")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|error| retryable_error(format!("GET {url}: {error}")))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| retryable_error(format!("reading GET response from {url}: {error}")))?;
+    if !status.is_success() {
+        if body.contains("Just a moment") || body.to_ascii_lowercase().contains("cloudflare") {
+            return Err(retryable_error(format!(
+                "Cloudflare challenge (HTTP {}). Open the site to refresh its session, then retry.",
+                status.as_u16()
+            )));
+        }
+        let message = format!(
+            "HTTP {} from {url}: {}",
+            status.as_u16(),
+            body.chars().take(160).collect::<String>()
+        );
+        return Err(if is_retryable_status(status) {
+            retryable_error(message)
+        } else {
+            anyhow::anyhow!(message)
+        });
+    }
+    serde_json::from_str(&body).context("parsing Grok credits billing response")
 }
 
 /// token refresh で回復し得る auth 失敗(401 / 403)を detect する。
@@ -135,10 +161,8 @@ fn is_auth_error(err: &anyhow::Error) -> bool {
 /// `/v1/user` と optional `/v1/billing` を Usage に畳み込む。
 ///
 /// - plan = `subscriptionTier`(null または欠落時は "Free")。
-/// - long = billing の月次サイクル。`used / monthlyLimit * 100` を Monthly window に
-///   入れる。`monthlyLimit == 0`(Free / まだ subscription を有効化していない)場合は、
-///   billing period だけを 0% として表示し、reset 時刻の視認性は保つ。
-/// - short = None(grok CLI は 5h window を REST では露出していない)。
+/// - long = credits の現行周期と、明示された使用率。使用率が無ければ不明。
+/// - short = None(grok CLI は短期 window を REST では露出していない)。
 fn build_usage(user: &Value, billing: Option<&Value>) -> Usage {
     let email = user
         .get("email")
@@ -170,23 +194,23 @@ fn plan_label(user: &Value) -> Option<String> {
 
 fn billing_to_window(v: &Value) -> Option<Window> {
     let config = v.get("config").unwrap_or(v);
-    // API は `{"val": <number>}` の wrapper で数値を返す(通貨/枚数の混在を許容するため)。
-    let limit = number_val(config.get("monthlyLimit"))?;
-    let used = number_val(config.get("used")).unwrap_or(0.0);
-    // `monthlyLimit = 0` は Free / 未設定サブスクの signal。credit 枠が存在しない
-    // ため used_percent = 0 として、reset 時刻(billing period 末尾)だけを見せる。
-    let used_percent = if limit > 0.0 {
-        (used / limit * 100.0).clamp(0.0, 100.0)
-    } else {
-        0.0
+    let period = config.get("currentPeriod")?;
+    let kind = match period.get("type")?.as_str()? {
+        "USAGE_PERIOD_TYPE_WEEKLY" => WindowKind::Weekly,
+        "USAGE_PERIOD_TYPE_MONTHLY" => WindowKind::Monthly,
+        _ => return None,
     };
-    let resets_at = config
-        .get("billingPeriodEnd")
+    let used_percent = number_val(config.get("creditUsagePercent"))
+        .filter(|percent| percent.is_finite() && *percent >= 0.0)
+        .map(|percent| percent.min(100.0));
+    let resets_at = period
+        .get("end")
+        .or_else(|| config.get("billingPeriodEnd"))
         .and_then(Value::as_str)
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|d| d.with_timezone(&Utc));
     Some(Window {
-        kind: WindowKind::Monthly,
+        kind,
         used_percent,
         resets_at,
     })
@@ -416,47 +440,69 @@ mod tests {
     }
 
     #[test]
-    fn billing_to_window_reads_period_and_percent() {
-        // monthlyLimit > 0 の Pro 相当ユーザを再現。
+    fn billing_to_window_reads_weekly_period_and_explicit_percent() {
         let b = json!({"config": {
-            "monthlyLimit": {"val": 100.0},
-            "used": {"val": 25.0},
+            "creditUsagePercent": 25.0,
+            "currentPeriod": {
+                "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                "start": "2026-07-01T00:00:00+00:00",
+                "end": "2026-07-08T00:00:00+00:00"
+            },
             "billingPeriodStart": "2026-07-01T00:00:00+00:00",
-            "billingPeriodEnd": "2026-08-01T00:00:00+00:00",
+            "billingPeriodEnd": "2026-08-01T00:00:00+00:00"
         }});
         let w = billing_to_window(&b).unwrap();
-        assert_eq!(w.kind, WindowKind::Monthly);
-        assert!((w.used_percent - 25.0).abs() < 0.01);
+        assert_eq!(w.kind, WindowKind::Weekly);
+        assert_eq!(w.used_percent, Some(25.0));
         assert_eq!(
             w.resets_at.unwrap().to_rfc3339(),
-            "2026-08-01T00:00:00+00:00"
+            "2026-07-08T00:00:00+00:00"
         );
     }
 
     #[test]
-    fn billing_to_window_free_tier_shows_zero_percent_with_reset_time() {
-        // Free / 未設定サブスクは monthlyLimit=0 で降ってくる。0% + 有効な reset 時刻。
+    fn billing_to_window_missing_percent_is_unknown_not_zero() {
+        // 実際の Free 応答は期間だけを返すことがある。従量課金の 0 を枠使用率にしない。
         let b = json!({"config": {
-            "monthlyLimit": {"val": 0.0},
-            "used": {"val": 0.0},
-            "billingPeriodStart": "2026-07-01T00:00:00+00:00",
-            "billingPeriodEnd": "2026-08-01T00:00:00+00:00",
+            "onDemandUsed": {"val": 0},
+            "onDemandCap": {"val": 0},
+            "currentPeriod": {
+                "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                "start": "2026-10-08T00:00:00+00:00",
+                "end": "2026-10-15T00:00:00+00:00"
+            },
+            "billingPeriodEnd": "2026-10-15T00:00:00+00:00"
         }});
         let w = billing_to_window(&b).unwrap();
-        assert_eq!(w.used_percent, 0.0);
+        assert_eq!(w.kind, WindowKind::Weekly);
+        assert_eq!(w.used_percent, None);
         assert!(w.resets_at.is_some());
     }
 
     #[test]
-    fn billing_to_window_clamps_over_used() {
-        // race 境界などで used > limit が返っても 100% に丸める。
+    fn billing_to_window_clamps_explicit_percent() {
         let b = json!({"config": {
-            "monthlyLimit": {"val": 100.0},
-            "used": {"val": 150.0},
-            "billingPeriodEnd": "2026-08-01T00:00:00+00:00",
+            "creditUsagePercent": 150.0,
+            "currentPeriod": {"type":"USAGE_PERIOD_TYPE_MONTHLY","end":"2026-08-01T00:00:00+00:00"}
         }});
         let w = billing_to_window(&b).unwrap();
-        assert_eq!(w.used_percent, 100.0);
+        assert_eq!(w.kind, WindowKind::Monthly);
+        assert_eq!(w.used_percent, Some(100.0));
+    }
+
+    #[test]
+    fn explicit_zero_is_distinct_from_missing_percent() {
+        let b = json!({"config": {
+            "creditUsagePercent": 0,
+            "currentPeriod": {"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-10-15T00:00:00Z"}
+        }});
+        assert_eq!(billing_to_window(&b).unwrap().used_percent, Some(0.0));
+    }
+
+    #[test]
+    fn legacy_billing_amount_does_not_become_a_quota() {
+        let b = json!({"config": {"monthlyLimit":{"val":0},"used":{"val":0},"billingPeriodEnd":"2026-08-01T00:00:00Z"}});
+        assert!(billing_to_window(&b).is_none());
     }
 
     #[test]
@@ -480,17 +526,16 @@ mod tests {
             "hasGrokCodeAccess": true,
         });
         let billing = json!({"config": {
-            "monthlyLimit": {"val": 200.0},
-            "used": {"val": 40.0},
-            "billingPeriodEnd": "2026-08-01T00:00:00+00:00",
+            "creditUsagePercent": 20.0,
+            "currentPeriod": {"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-08-01T00:00:00+00:00"},
         }});
         let u = build_usage(&user, Some(&billing));
         assert_eq!(u.email.as_deref(), Some("yohei@example.com"));
         assert_eq!(u.plan.as_deref(), Some("SuperGrok"));
         assert!(u.short.is_none());
         let w = u.long.as_ref().unwrap();
-        assert_eq!(w.kind, WindowKind::Monthly);
-        assert!((w.used_percent - 20.0).abs() < 0.01);
+        assert_eq!(w.kind, WindowKind::Weekly);
+        assert_eq!(w.used_percent, Some(20.0));
     }
 
     #[test]

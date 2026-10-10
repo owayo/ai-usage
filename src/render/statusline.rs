@@ -328,13 +328,22 @@ fn window_seg(
             s += &paint(opts.color, DIM, &format!("{:<6}", "--"));
         }
         Some(w) => {
-            s += &gauge(opts.color, w.used_percent, gauge_width);
-            s += " ";
-            s += &paint(
-                opts.color,
-                pct_code(w.used_percent),
-                &format!("{:>3}%", w.used_percent.round() as i64),
-            );
+            match w.used_percent {
+                Some(percent) => {
+                    s += &gauge(opts.color, percent, gauge_width);
+                    s += " ";
+                    s += &paint(
+                        opts.color,
+                        pct_code(percent),
+                        &format!("{:>3}%", percent.round() as i64),
+                    );
+                }
+                None => {
+                    s += &paint(opts.color, DIM, &"░".repeat(gauge_width));
+                    s += " ";
+                    s += &paint(opts.color, DIM, " --%");
+                }
+            }
             s += "  ";
             let reset = w.resets_at.as_deref().and_then(parse_utc);
             let rem = reset.map(|r| (r - now).num_seconds());
@@ -491,6 +500,23 @@ mod tests {
     }
 
     #[test]
+    fn unknown_percent_keeps_weekly_reset_in_statusline() {
+        let now = fixed_utc("2026-10-10T00:00:00Z");
+        let window = WindowOut {
+            kind: Some(WindowKind::Weekly),
+            used_percent: None,
+            resets_at: Some((now + chrono::Duration::days(5)).to_rfc3339()),
+            resets_in_seconds: None,
+        };
+        let rendered = window_seg(&plain_opts(), "1w", Some(&window), now, WEEK_TH, false, 8);
+        assert!(
+            rendered.contains("--%") && rendered.contains("5d"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("0%"), "{rendered}");
+    }
+
+    #[test]
     fn manual_reset_deadline_is_red_only_below_one_week() {
         let now = fixed_utc("2026-06-15T00:00:00Z");
         let week = chrono::Duration::weeks(1);
@@ -539,7 +565,7 @@ mod tests {
         let window = |kind, resets_at: Option<&str>| {
             Some(WindowOut {
                 kind: Some(kind),
-                used_percent: 20.0,
+                used_percent: Some(20.0),
                 resets_at: resets_at.map(str::to_string),
                 resets_in_seconds: None,
             })
@@ -671,7 +697,7 @@ mod tests {
         let opts = plain_opts();
         let w = WindowOut {
             kind: Some(WindowKind::Weekly),
-            used_percent: 54.0,
+            used_percent: Some(54.0),
             resets_at: Some("2026-06-17T16:10:00Z".to_string()),
             resets_in_seconds: Some(2 * 86400),
         };
@@ -700,7 +726,7 @@ mod tests {
 
         let expired = WindowOut {
             kind: Some(WindowKind::Weekly),
-            used_percent: 100.0,
+            used_percent: Some(100.0),
             resets_at: Some("2026-06-10T00:00:00Z".to_string()),
             resets_in_seconds: Some(0),
         };
@@ -719,7 +745,7 @@ mod tests {
         let opts = plain_opts();
         let w = WindowOut {
             kind: Some(WindowKind::Weekly),
-            used_percent: 50.0,
+            used_percent: Some(50.0),
             resets_at: Some("2026-06-17T00:00:00Z".to_string()),
             resets_in_seconds: Some(2 * 86400),
         };
@@ -747,7 +773,7 @@ mod tests {
             group_label: Some("Gemini".to_string()),
             short: Some(WindowOut {
                 kind: Some(WindowKind::Daily),
-                used_percent: 50.0,
+                used_percent: Some(50.0),
                 resets_at: Some("2026-06-16T00:00:00Z".to_string()),
                 resets_in_seconds: Some(86400),
             }),
@@ -786,7 +812,7 @@ mod tests {
             short: None,
             long: Some(WindowOut {
                 kind: None,
-                used_percent: 10.0,
+                used_percent: Some(10.0),
                 resets_at: Some("2026-06-17T00:00:00Z".to_string()),
                 resets_in_seconds: Some(2 * 86400),
             }),

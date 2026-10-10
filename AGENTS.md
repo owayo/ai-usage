@@ -400,21 +400,19 @@ Auth flow:
 3. `GET https://cli-chat-proxy.grok.com/v1/user?include=subscription` for
    `{ email, subscriptionTier, hasGrokCodeAccess, teamId, … }`. 401/403
    triggers one refresh + retry.
-4. `GET https://cli-chat-proxy.grok.com/v1/billing` for
-   `{ config: { monthlyLimit, used, billingPeriodStart, billingPeriodEnd,
-   history[] } }`. Non-auth failures leave `long = None` (the row still
-   shows plan / email as "quota なし"). Uses the plain `api` HTTP client:
-   the endpoint is Cloudflare-fronted but accepts a plain `Authorization:
-   Bearer` without Chrome fingerprint emulation.
+4. `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` with the
+   OAuth bearer and `x-xai-token-auth: xai-grok-cli`. The relevant shape is
+   `{ config: { creditUsagePercent?, currentPeriod: { type, start, end } } }`.
+   Non-auth failures leave `long = None`. Uses the plain `api` HTTP client.
 
 Map to `Usage`:
 
-- `long` = monthly billing cycle (`WindowKind::Monthly`):
-  `used_percent = used / monthlyLimit * 100` (clamped to `[0, 100]`).
-  When `monthlyLimit == 0` (Free / no active subscription) render as `0%`
-  and keep `resets_at = billingPeriodEnd` so the reset countdown still
-  informs the user. `short == None`, so the render layer merges into the
-  same wide long-only bar used by PixelLab and Antigravity summaries.
+- `long` = the actual `currentPeriod.type` (`Weekly` or `Monthly`), with
+  `resets_at` from `currentPeriod.end`. Only an explicit `creditUsagePercent`
+  is a measured usage rate. If absent, `used_percent = None` and render `--%`
+  with the known period/reset. Never substitute `onDemandUsed / onDemandCap`
+  or legacy `used / monthlyLimit`: those are billing amounts, not the rate
+  limit. `short == None`, so the render layer uses the wide long-only slot.
 - `short` = `None` (grok CLI does not expose a rolling short-window quota
   over REST; the 5-hour / weekly buckets that surface in the WS
   `authenticate` response are not attempted here).
@@ -427,6 +425,12 @@ The endpoints were confirmed against `grok --debug --debug-file=…` traces
 grouped 5-hour quota, extend `fetch` to populate `short` — the render layer
 will revert to the dual-slot layout automatically (see the same fallback in
 `src/antigravity.rs`).
+
+A free account can hit a model-specific rolling 24-hour token limit while the
+credits billing response supplies only a weekly period and no percentage.
+Neither that period nor the zero on-demand billing amounts prove 0% usage.
+Do not infer a live quota from historical CLI logs; they cannot account for
+other clients or tokens aging out of a rolling window.
 
 ## Statusline cache
 
@@ -452,7 +456,9 @@ The serialized account keys remain `five_hour` / `weekly` for external and
 cache compatibility, while each non-null window now includes a `kind`
 (`five_hour` / `daily` / `weekly` / `monthly`). `kind` is optional during
 deserialization so caches written by older binaries still render with the
-legacy slot/provider label fallback. Legacy PixelLab and Grok rows also use
+legacy slot/provider label fallback. `used_percent: null` means unavailable
+usage and is distinct from a measured 0%; older numeric caches still load.
+Legacy PixelLab and Grok rows also use
 monthly reset-warning thresholds, matching their `1m` labels instead of the
 weekly defaults. The optional `manual_resets` array (`kind`, `remaining`,
 `expires_at`, `paused`) is likewise skipped when absent, so older caches render

@@ -57,10 +57,11 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
    via `auth.x.ai/oauth2/token` (`refresh_token` grant, public
    OAuth client — no secret) when it is about to expire. Calls
    `cli-chat-proxy.grok.com/v1/user?include=subscription` for the plan (`subscriptionTier`
-   → falls back to `Free`) and `cli-chat-proxy.grok.com/v1/billing` for the monthly cycle
-   (`used / monthlyLimit`, plus `billingPeriodEnd` as the reset time). Like PixelLab this
-   renders as a single wide `1m` bar; when `monthlyLimit == 0` (Free) the bar stays at 0%
-   but keeps the reset countdown so you still see when the billing period turns over.
+   → falls back to `Free`) and `cli-chat-proxy.grok.com/v1/billing?format=credits` for the
+   current credit period. The period type sets the `1w` or `1m` badge and its end sets the
+   reset countdown. Only `creditUsagePercent` supplies a usage percentage; when the API omits
+   it, the single wide bar shows `--%` rather than an invented 0%. The CLI's model-specific
+   free-tier rate limit is separate from this credit period.
 
 ## Cloudflare and retries
 

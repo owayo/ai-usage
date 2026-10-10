@@ -182,7 +182,7 @@ fn parse_window(v: Option<&serde_json::Value>, kind: WindowKind) -> Option<Windo
         .map(|d| d.with_timezone(&Utc));
     Some(Window {
         kind,
-        used_percent: used,
+        used_percent: Some(used),
         resets_at,
     })
 }
@@ -371,7 +371,7 @@ mod tests {
         let v = json!({"utilization": 42.5, "resets_at": "2026-06-15T06:28:32Z"});
         let w = parse_window(Some(&v), WindowKind::Weekly).unwrap();
         assert_eq!(w.kind, WindowKind::Weekly);
-        assert_eq!(w.used_percent, 42.5);
+        assert_eq!(w.used_percent, Some(42.5));
         assert!(w.resets_at.is_some());
     }
 
@@ -388,7 +388,7 @@ mod tests {
         // 不正な resets_at は None で握りつぶす(used_percent は維持)。
         let v = json!({"utilization": 10.0, "resets_at": "not a date"});
         let w = parse_window(Some(&v), WindowKind::Weekly).unwrap();
-        assert_eq!(w.used_percent, 10.0);
+        assert_eq!(w.used_percent, Some(10.0));
         assert!(w.resets_at.is_none());
     }
 }

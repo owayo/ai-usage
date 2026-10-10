@@ -50,7 +50,7 @@ impl SortableRow for AccountOut {
         &self.profile
     }
     fn long_used_percent(&self) -> Option<f64> {
-        self.long.as_ref().map(|w| w.used_percent)
+        self.long.as_ref().and_then(|w| w.used_percent)
     }
     fn long_resets_in_seconds(&self, now: DateTime<Utc>) -> Option<i64> {
         self.long
@@ -70,7 +70,7 @@ impl SortableRow for AccountReport {
             .as_ref()
             .ok()
             .and_then(|u| u.long.as_ref())
-            .map(|w| w.used_percent)
+            .and_then(|w| w.used_percent)
     }
     fn long_resets_in_seconds(&self, now: DateTime<Utc>) -> Option<i64> {
         self.usage
@@ -156,7 +156,7 @@ mod tests {
             short: None,
             long: weekly_pct.map(|p| WindowOut {
                 kind: Some(WindowKind::Weekly),
-                used_percent: p,
+                used_percent: Some(p),
                 resets_at: weekly_resets_at.map(str::to_string),
                 resets_in_seconds: resets_in,
             }),
@@ -192,6 +192,17 @@ mod tests {
         ];
         let sorted = sorted_refs(&items, SortKey::WeeklyUsage, now, None);
         assert_eq!(profile_order(&sorted), vec!["a", "c", "b"]);
+    }
+
+    #[test]
+    fn sort_weekly_usage_puts_unknown_percent_after_measured_zero() {
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let mut unknown = out("unknown", Provider::Grok, Some(0.0), None);
+        unknown.long.as_mut().unwrap().used_percent = None;
+        let measured = out("measured", Provider::Claude, Some(0.0), None);
+        let items = [unknown, measured];
+        let sorted = sorted_refs(&items, SortKey::WeeklyUsage, now, None);
+        assert_eq!(profile_order(&sorted), vec!["measured", "unknown"]);
     }
 
     #[test]
@@ -291,7 +302,7 @@ mod tests {
         let mk = |name: &str, prov: Provider, pct: Option<f64>, resets_at: Option<&str>| {
             let long = pct.map(|p| Window {
                 kind: WindowKind::Weekly,
-                used_percent: p,
+                used_percent: Some(p),
                 resets_at: resets_at.and_then(parse_utc),
             });
             AccountReport {

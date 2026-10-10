@@ -289,11 +289,6 @@ fn window_spans(
     color: bool,
     area_width: u16,
 ) -> Vec<Span<'static>> {
-    let percent = if window.used_percent.is_finite() {
-        window.used_percent.clamp(0.0, 100.0)
-    } else {
-        0.0
-    };
     let width = if area_width < 64 {
         5
     } else if area_width < 80 {
@@ -301,14 +296,20 @@ fn window_spans(
     } else {
         12
     };
-    let filled = if percent > 0.0 {
-        ((percent * width as f64 / 100.0).ceil() as usize).min(width)
-    } else {
-        0
-    };
+    let percent = window
+        .used_percent
+        .filter(|percent| percent.is_finite())
+        .map(|percent| percent.clamp(0.0, 100.0));
+    let filled = percent.map_or(0, |percent| {
+        if percent > 0.0 {
+            ((percent * width as f64 / 100.0).ceil() as usize).min(width)
+        } else {
+            0
+        }
+    });
     let bar = format!("{}{}", "█".repeat(filled), "░".repeat(width - filled));
     let bar_style = if color {
-        Style::default().fg(usage_color(percent))
+        Style::default().fg(percent.map_or(Color::DarkGray, usage_color))
     } else {
         Style::default()
     };
@@ -319,7 +320,8 @@ fn window_spans(
         ),
         Span::styled(bar, bar_style),
         Span::raw(format!(
-            "  {percent:>3.0}%  reset {}",
+            "  {}  reset {}",
+            percent.map_or(" --%".to_string(), |p| format!("{p:>3.0}%")),
             reset_text(window, Utc::now())
         )),
     ]
@@ -406,7 +408,7 @@ mod tests {
     fn reset_text_ignores_stale_cached_countdown() {
         let window = WindowOut {
             kind: Some(WindowKind::Weekly),
-            used_percent: 12.0,
+            used_percent: Some(12.0),
             resets_at: Some((Utc::now() + chrono::Duration::hours(2)).to_rfc3339()),
             resets_in_seconds: Some(1),
         };
@@ -417,13 +419,31 @@ mod tests {
     fn legacy_short_and_long_windows_have_distinct_badges() {
         let window = WindowOut {
             kind: None,
-            used_percent: 20.0,
+            used_percent: Some(20.0),
             resets_at: None,
             resets_in_seconds: None,
         };
         assert_eq!(kind_label(&window, Provider::Claude, true), "5h");
         assert_eq!(kind_label(&window, Provider::Claude, false), "1w");
         assert_eq!(kind_label(&window, Provider::Grok, false), "1m");
+    }
+
+    #[test]
+    fn unknown_percent_is_not_shown_as_zero_in_tui() {
+        let window = WindowOut {
+            kind: Some(WindowKind::Weekly),
+            used_percent: None,
+            resets_at: None,
+            resets_in_seconds: None,
+        };
+        let line = Line::from(window_spans(&window, Provider::Grok, false, false, 60));
+        let text = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("1w") && text.contains("--%"), "{text}");
+        assert!(!text.contains("0%"), "{text}");
     }
 
     #[test]

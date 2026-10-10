@@ -62,8 +62,8 @@ impl WindowKind {
 #[derive(Clone, Debug)]
 pub struct Window {
     pub kind: WindowKind,
-    /// 使用率。percentage で `0..=100`。
-    pub used_percent: f64,
+    /// 実測された使用率。取得できない場合は `None` とし、0% と区別する。
+    pub used_percent: Option<f64>,
     pub resets_at: Option<DateTime<Utc>>,
 }
 

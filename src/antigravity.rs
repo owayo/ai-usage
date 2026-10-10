@@ -267,7 +267,7 @@ fn bucket_to_window(b: &Value, kind: WindowKind) -> Option<Window> {
     let used = ((1.0 - rf) * 100.0).clamp(0.0, 100.0);
     Some(Window {
         kind,
-        used_percent: used,
+        used_percent: Some(used),
         resets_at: bucket_reset(b),
     })
 }
@@ -789,14 +789,14 @@ mod tests {
         let w = rows[0].usage.long.as_ref().unwrap();
         assert_eq!(w.kind, WindowKind::Weekly);
         assert!(
-            (w.used_percent - 3.63).abs() < 0.05,
+            (w.used_percent.unwrap() - 3.63).abs() < 0.05,
             "got {}",
-            w.used_percent
+            w.used_percent.unwrap()
         );
         assert_eq!(rows[0].usage.email.as_deref(), Some("e@x.test"));
         assert_eq!(rows[0].usage.plan.as_deref(), Some("Pro"));
         assert_eq!(rows[1].group_label.as_deref(), Some("Claude&GPT"));
-        assert_eq!(rows[1].usage.long.as_ref().unwrap().used_percent, 0.0);
+        assert_eq!(rows[1].usage.long.as_ref().unwrap().used_percent, Some(0.0));
     }
 
     #[test]
@@ -813,9 +813,9 @@ mod tests {
         let w = rows[0].usage.short.as_ref().unwrap();
         assert_eq!(w.kind, WindowKind::Daily);
         assert!(
-            (w.used_percent - 60.0).abs() < 0.01,
+            (w.used_percent.unwrap() - 60.0).abs() < 0.01,
             "got {}",
-            w.used_percent
+            w.used_percent.unwrap()
         );
     }
 
@@ -832,9 +832,9 @@ mod tests {
         assert_eq!(w.kind, WindowKind::Daily);
         // nested 形でも 0.2 = 80% used の bucket を代表値にする。
         assert!(
-            (w.used_percent - 80.0).abs() < 0.01,
+            (w.used_percent.unwrap() - 80.0).abs() < 0.01,
             "expected nested most constrained bucket, got {}",
-            w.used_percent
+            w.used_percent.unwrap()
         );
     }
 
@@ -876,9 +876,9 @@ mod tests {
         });
         let w = bucket_to_window(&b, WindowKind::Weekly).unwrap();
         assert!(
-            (w.used_percent - 80.0).abs() < 0.01,
+            (w.used_percent.unwrap() - 80.0).abs() < 0.01,
             "used should be 80% got {}",
-            w.used_percent
+            w.used_percent.unwrap()
         );
     }
 
@@ -930,9 +930,9 @@ mod tests {
         let w = rows[0].usage.long.as_ref().unwrap();
         // 0.2 = 80% used が採用される(0.9 = 10% used が後勝ちで上書きされる旧バグの再現確認)。
         assert!(
-            (w.used_percent - 80.0).abs() < 0.01,
+            (w.used_percent.unwrap() - 80.0).abs() < 0.01,
             "expected 80% (most constrained), got {}",
-            w.used_percent
+            w.used_percent.unwrap()
         );
     }
 

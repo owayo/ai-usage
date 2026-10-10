@@ -350,7 +350,7 @@ fn build_usage(access: &str, account: &Value, subscription: Option<&Value>) -> R
         let resets_at = subscription.and_then(subscription_reset);
         Some(Window {
             kind: WindowKind::Monthly,
-            used_percent,
+            used_percent: Some(used_percent),
             resets_at,
         })
     } else {
@@ -530,9 +530,9 @@ mod tests {
         let w = u.long.as_ref().unwrap();
         assert_eq!(w.kind, WindowKind::Monthly);
         assert!(
-            (w.used_percent - 45.95).abs() < 0.05,
+            (w.used_percent.unwrap() - 45.95).abs() < 0.05,
             "expected ~45.95%, got {}",
-            w.used_percent
+            w.used_percent.unwrap()
         );
         // resets_at は generation_reset_date の RFC 3339 が UTC で入る。
         let r = w.resets_at.unwrap();
@@ -578,7 +578,7 @@ mod tests {
         .unwrap();
         assert_eq!(paid.plan.as_deref(), Some("Tier 2"));
         let w = paid.long.as_ref().unwrap();
-        assert!((w.used_percent - 20.0).abs() < 0.01);
+        assert!((w.used_percent.unwrap() - 20.0).abs() < 0.01);
         // subscription が無いと reset date も無い(bar だけ表示)。
         assert!(w.resets_at.is_none());
     }
@@ -625,7 +625,7 @@ mod tests {
             Some(&json!({ "name": "Pro" })),
         )
         .unwrap();
-        assert_eq!(u.long.as_ref().unwrap().used_percent, 100.0);
+        assert_eq!(u.long.as_ref().unwrap().used_percent, Some(100.0));
     }
 
     #[test]

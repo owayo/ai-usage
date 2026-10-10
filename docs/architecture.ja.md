@@ -55,11 +55,11 @@ flowchart LR
    (`refresh_token` grant、public OAuth
    client なので secret 不要) で更新した上で
    `cli-chat-proxy.grok.com/v1/user?include=subscription` でプラン (`subscriptionTier`
-   → null は `Free`) を、`cli-chat-proxy.grok.com/v1/billing` で月次サイクル
-   (`used / monthlyLimit`、`billingPeriodEnd` をリセット時刻) を取得する。
-   PixelLab と同じく短期枠がないため単一の `1m` 横長バーとして表示し、
-   `monthlyLimit == 0` の Free では 0% のまま billing period 末尾までの残り時間だけを
-   表示する。
+   → null は `Free`) を、`cli-chat-proxy.grok.com/v1/billing?format=credits` で
+   現在のクレジット期間を取得する。期間の種別を `1w` / `1m` のバッジに、終了日時を
+   リセットまでの残り時間に使う。使用率は `creditUsagePercent` が明示された場合だけ
+   表示し、欠落時は 0% を作らず `--%` とする。CLI のモデル別 Free 枠の制限は
+   このクレジット期間とは別である。
 
 ## Cloudflare と再試行
 

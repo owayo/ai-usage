@@ -225,7 +225,7 @@ fn parse_window(w: &serde_json::Value, kind: WindowKind) -> Option<Window> {
         .and_then(|e| Utc.timestamp_opt(e, 0).single());
     Some(Window {
         kind,
-        used_percent: used,
+        used_percent: Some(used),
         resets_at,
     })
 }
@@ -409,7 +409,7 @@ mod tests {
         let v = json!({"used_percent": 23.5, "reset_at": 1_700_000_000_i64});
         let w = parse_window(&v, WindowKind::Weekly).unwrap();
         assert_eq!(w.kind, WindowKind::Weekly);
-        assert_eq!(w.used_percent, 23.5);
+        assert_eq!(w.used_percent, Some(23.5));
         assert!(w.resets_at.is_some());
     }
 
@@ -429,10 +429,10 @@ mod tests {
         let (short, long) = classify_windows(Some(&rate));
         let short = short.expect("5 時間枠が短期スロットに入る");
         assert_eq!(short.kind, WindowKind::FiveHour);
-        assert_eq!(short.used_percent, 34.0);
+        assert_eq!(short.used_percent, Some(34.0));
         let long = long.expect("週次枠が長期スロットに入る");
         assert_eq!(long.kind, WindowKind::Weekly);
-        assert_eq!(long.used_percent, 12.0);
+        assert_eq!(long.used_percent, Some(12.0));
     }
 
     #[test]
@@ -459,7 +459,7 @@ mod tests {
             "secondary_window": null,
         });
         let (short, long) = classify_windows(Some(&partial));
-        assert_eq!(short.unwrap().used_percent, 7.0);
+        assert_eq!(short.unwrap().used_percent, Some(7.0));
         assert!(long.is_none(), "null の window は長期スロットを埋めない");
 
         // used_percent が読めない window はスロットを埋めない。
@@ -477,7 +477,7 @@ mod tests {
             "secondary_window": {},
         });
         let (short, long) = classify_windows(Some(&rate));
-        assert_eq!(short.expect("5h 枠が残る").used_percent, 7.0);
+        assert_eq!(short.expect("5h 枠が残る").used_percent, Some(7.0));
         assert!(long.is_none());
 
         // 順序が逆(先に長期が埋まる)でも同じ。
@@ -487,7 +487,7 @@ mod tests {
         });
         let (short, long) = classify_windows(Some(&reversed));
         assert!(short.is_none());
-        assert_eq!(long.expect("週次枠が残る").used_percent, 61.0);
+        assert_eq!(long.expect("週次枠が残る").used_percent, Some(61.0));
     }
 
     #[test]
@@ -501,10 +501,10 @@ mod tests {
         let (short, long) = classify_windows(Some(&rate));
         let short = short.expect("5h 枠は短期スロットに残る");
         assert_eq!(short.kind, WindowKind::FiveHour);
-        assert_eq!(short.used_percent, 7.0);
+        assert_eq!(short.used_percent, Some(7.0));
         let long = long.expect("duration 不明の secondary は長期スロットへ");
         assert_eq!(long.kind, WindowKind::Weekly);
-        assert_eq!(long.used_percent, 61.0);
+        assert_eq!(long.used_percent, Some(61.0));
 
         // フィールドごと無い場合も同じ扱い。
         let absent = json!({
@@ -512,8 +512,8 @@ mod tests {
             "secondary_window": {"used_percent": 61.0},
         });
         let (short, long) = classify_windows(Some(&absent));
-        assert_eq!(short.expect("primary は短期").used_percent, 7.0);
-        assert_eq!(long.expect("secondary は長期").used_percent, 61.0);
+        assert_eq!(short.expect("primary は短期").used_percent, Some(7.0));
+        assert_eq!(long.expect("secondary は長期").used_percent, Some(61.0));
     }
 
     #[test]

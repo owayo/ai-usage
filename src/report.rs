@@ -34,8 +34,9 @@ pub struct WindowOut {
     /// fallback する。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<WindowKind>,
-    /// 使用率 percentage。0-100。
-    pub used_percent: f64,
+    /// 実測された使用率。`null` は不明であり、実測の 0% と区別する。
+    #[serde(default)]
+    pub used_percent: Option<f64>,
     /// 絶対 reset time(RFC 3339)。statusline はここから countdown を再計算するため、
     /// cache が古くても正しい "reset までの時間" を表示できる。
     pub resets_at: Option<String>,
@@ -152,7 +153,7 @@ mod tests {
             plan: Some("Max".to_string()),
             short: Some(Window {
                 kind: WindowKind::FiveHour,
-                used_percent: 42.0,
+                used_percent: Some(42.0),
                 resets_at: None,
             }),
             long: None,
@@ -169,7 +170,7 @@ mod tests {
         assert!(a.error.is_none());
         let w = a.short.as_ref().unwrap();
         assert_eq!(w.kind, Some(WindowKind::FiveHour));
-        assert_eq!(w.used_percent, 42.0);
+        assert_eq!(w.used_percent, Some(42.0));
         // resets_at 無しなら reset 情報も無い。
         assert!(w.resets_at.is_none());
         assert!(w.resets_in_seconds.is_none());
@@ -211,12 +212,12 @@ mod tests {
             plan: None,
             short: Some(Window {
                 kind: WindowKind::FiveHour,
-                used_percent: 10.0,
+                used_percent: Some(10.0),
                 resets_at: Some(past),
             }),
             long: Some(Window {
                 kind: WindowKind::Weekly,
-                used_percent: 20.0,
+                used_percent: Some(20.0),
                 resets_at: Some(future),
             }),
             manual_resets: None,
@@ -234,6 +235,26 @@ mod tests {
     }
 
     #[test]
+    fn unknown_usage_round_trips_as_null_with_period_and_reset() {
+        let reset = Utc::now() + chrono::Duration::days(5);
+        let usage = Usage {
+            long: Some(Window {
+                kind: WindowKind::Weekly,
+                used_percent: None,
+                resets_at: Some(reset),
+            }),
+            ..Usage::default()
+        };
+        let json = serde_json::to_value(Report::build(&[report_with(Ok(usage))])).unwrap();
+        assert!(json["accounts"][0]["weekly"]["used_percent"].is_null());
+        let report: Report = serde_json::from_value(json).unwrap();
+        let window = report.accounts[0].long.as_ref().unwrap();
+        assert_eq!(window.kind, Some(WindowKind::Weekly));
+        assert_eq!(window.used_percent, None);
+        assert!(window.resets_at.is_some());
+    }
+
+    #[test]
     fn old_cache_without_window_kind_still_deserializes() {
         let json = r#"{
             "generated_at":"2026-06-15T00:00:00Z",
@@ -247,6 +268,10 @@ mod tests {
         }"#;
         let report: Report = serde_json::from_str(json).unwrap();
         assert_eq!(report.accounts[0].short.as_ref().unwrap().kind, None);
+        assert_eq!(
+            report.accounts[0].short.as_ref().unwrap().used_percent,
+            Some(12.0)
+        );
         assert!(report.accounts[0].manual_resets.is_none());
     }
 

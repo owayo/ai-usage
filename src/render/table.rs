@@ -144,14 +144,16 @@ fn window_cell(w: &Option<Window>, now: DateTime<Utc>, bar_width: usize, color: 
                 .resets_at
                 .map(|r| humanize(r - now))
                 .unwrap_or_else(|| "—".to_string());
-            let text = format!(
-                "{} {}  {:>3}%  · {}",
-                w.kind.label(),
-                tbar(w.used_percent, bar_width),
-                w.used_percent.round() as i64,
-                reset
-            );
-            tint(Cell::new(text.trim_start()), color, tlevel(w.used_percent))
+            let (bar, percent, color_code) = match w.used_percent {
+                Some(percent) => (
+                    tbar(percent, bar_width),
+                    format!("{:>3}%", percent.round() as i64),
+                    tlevel(percent),
+                ),
+                None => ("░".repeat(bar_width), " --%".to_string(), Color::DarkGrey),
+            };
+            let text = format!("{} {}  {}  · {}", w.kind.label(), bar, percent, reset);
+            tint(Cell::new(text.trim_start()), color, color_code)
         }
     }
 }
@@ -213,7 +215,7 @@ mod tests {
             report(Ok(crate::model::Usage {
                 short: Some(Window {
                     kind: crate::model::WindowKind::FiveHour,
-                    used_percent: 90.0,
+                    used_percent: Some(90.0),
                     resets_at: None,
                 }),
                 ..Default::default()
@@ -351,7 +353,7 @@ mod tests {
         let now = fixed_utc("2026-06-15T00:00:00Z");
         let w = Some(Window {
             kind: crate::model::WindowKind::Monthly,
-            used_percent: 46.0,
+            used_percent: Some(46.0),
             resets_at: Some(fixed_utc("2026-06-20T15:00:00Z")),
         });
         let cell = window_cell(&w, now, NORMAL_BAR_WIDTH, true).content();
@@ -367,12 +369,28 @@ mod tests {
     }
 
     #[test]
+    fn unknown_percent_keeps_period_and_reset_without_claiming_zero() {
+        let now = fixed_utc("2026-10-10T00:00:00Z");
+        let window = Some(Window {
+            kind: crate::model::WindowKind::Weekly,
+            used_percent: None,
+            resets_at: Some(now + Duration::days(5)),
+        });
+        let cell = window_cell(&window, now, NORMAL_BAR_WIDTH, false)
+            .content()
+            .to_string();
+        assert!(cell.starts_with("1w "), "{cell}");
+        assert!(cell.contains("--%") && cell.contains("in 5d"), "{cell}");
+        assert!(!cell.contains("0%"), "{cell}");
+    }
+
+    #[test]
     fn window_cell_wide_bar_matches_requested_width() {
         // merged 行(5h 無し)向けに、gauge 文字数が WIDE_BAR_WIDTH と一致する。
         let now = fixed_utc("2026-06-15T00:00:00Z");
         let w = Some(Window {
             kind: crate::model::WindowKind::Monthly,
-            used_percent: 50.0,
+            used_percent: Some(50.0),
             resets_at: Some(fixed_utc("2026-06-20T00:00:00Z")),
         });
         let cell = window_cell(&w, now, WIDE_BAR_WIDTH, true)
