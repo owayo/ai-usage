@@ -47,11 +47,10 @@ label = "antigravity"               # optional row label
 label = "grok"                      # optional row label
 # auth_path = "~/.grok/auth.json"
 
-# Statusline-only display filter. Hides rows from `--statusline` output while
-# keeping them in `--json` / table (so scripts and manual checks still see them).
-# Overridden by `--statusline-hide` on the CLI.
-[statusline]
-hide = ["antigravity"]              # subset of: claude / codex / antigravity / pixellab / grok
+# Exclude providers from table, JSON, statusline, TUI, and cached views.
+# Excluded providers are not fetched. --only temporarily includes one again.
+[providers]
+exclude = ["antigravity"]           # subset of: claude / codex / antigravity / pixellab / grok
 ```
 
 ## Configuration options
@@ -69,9 +68,12 @@ hide = ["antigravity"]              # subset of: claude / codex / antigravity / 
 | `[grok].enabled` | Show the Grok row when detected | `true` |
 | `[grok].label` | Row label for Grok | `grok` |
 | `[grok].auth_path` | Non-default `auth.json` path | `~/.grok/auth.json` |
+| `[providers].exclude` | Providers to omit from every output and skip during fetching | `[]` |
 | `[statusline].hide` | Providers to omit from `--statusline` (still in `--json` / table) | `[]` |
 
 Precedence: **CLI flags > config file > auto-detection**.
+
+`[providers].exclude` also filters older `--input` caches on every TUI refresh. `--only <PROVIDER>` temporarily includes that provider even when excluded. The older `[statusline].hide` setting remains statusline-only; `--statusline-hide` overrides that list but cannot reveal a provider excluded globally. Information commands (`--list-profiles` and `--init-config`) are unaffected.
 
 Profile matching is case-insensitive, with directory names taking precedence over display names. Each provider is fetched at most once per Chrome directory. Separate entries for distinct providers can retain different labels; the first matching entry wins for a repeated provider. Repeated display-name entries prefer unused matching profiles in discovery order; use directory names to choose a specific profile when names overlap.
 

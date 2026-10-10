@@ -47,10 +47,10 @@ label = "antigravity"               # 任意: 行に表示するラベル
 label = "grok"                      # 任意: 行に表示するラベル
 # auth_path = "~/.grok/auth.json"
 
-# statusline でのみ行を非表示にします。`--json` / table には影響しません。
-# CLI の `--statusline-hide` が指定された場合はそちらを優先します。
-[statusline]
-hide = ["antigravity"]              # claude / codex / antigravity / pixellab / grok
+# table / JSON / statusline / TUI / キャッシュ描画のすべてから除外します。
+# 除外したプロバイダは取得もしません。--only で一時的に表示できます。
+[providers]
+exclude = ["antigravity"]           # claude / codex / antigravity / pixellab / grok
 ```
 
 ## 設定オプション
@@ -68,9 +68,12 @@ hide = ["antigravity"]              # claude / codex / antigravity / pixellab / 
 | `[grok].enabled` | 検出時に Grok 行を表示 | `true` |
 | `[grok].label` | Grok 行のラベル | `grok` |
 | `[grok].auth_path` | 非既定の `auth.json` パス | `~/.grok/auth.json` |
+| `[providers].exclude` | 全表示モードから除外し、取得も省くプロバイダ | `[]` |
 | `[statusline].hide` | `--statusline` で非表示にするプロバイダ (`--json` / table には表示) | `[]` |
 
 優先順位は **CLI フラグ > 設定ファイル > 自動検出** です。
+
+`[providers].exclude` は古い `--input` キャッシュにも適用され、TUI の再読込時も同じプロバイダを隠します。`--only <PROVIDER>` を指定すると、そのプロバイダだけは一時的に表示できます。従来の `[statusline].hide` は statusline 限定のままです。`--statusline-hide` はその一覧を上書きしますが、全体の除外は解除しません。`--list-profiles` と `--init-config` には適用しません。
 
 照合時は大文字・小文字を区別せず、ディレクトリ名を表示名より優先します。同じ Chrome ディレクトリの各プロバイダからの取得は1回だけです。別プロバイダを別の設定行に書けば、個別のラベルを保持できます。同じプロバイダの重複指定は先の設定を優先します。同じ表示名を繰り返し指定した場合、検出順に未使用の一致プロファイルを優先します。名前が重複する場合はディレクトリ名で対象を明示してください。
 

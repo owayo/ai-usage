@@ -41,7 +41,7 @@ label = "antigravity"     # optional: 行に表示する label
 label = "grok"            # optional: 行に表示する label
 # auth_path = "~/.grok/auth.json"  # 既定以外の認証ファイル
 
-# statusline でのみ行を非表示にします。table / JSON 出力には影響しません。
-# CLI の --statusline-hide が指定された場合はそちらを優先します。
-[statusline]
-hide = ["antigravity"]   # claude / codex / antigravity / pixellab / grok
+# 全表示モード (table / JSON / statusline / TUI) から除外します。
+# 除外した provider は取得もしません。--only で一時的に表示できます。
+[providers]
+exclude = ["antigravity"] # claude / codex / antigravity / pixellab / grok

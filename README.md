@@ -164,6 +164,8 @@ Every command and option, including statusline active-row selection, `--input` f
 
 `ai-usage` needs **no configuration**: it auto-discovers every Chrome profile that has a Claude, Codex, or PixelLab session, plus available Antigravity and Grok OAuth credentials. To pin *which* profiles appear, rename them, or limit providers, put a file at **`~/.config/ai-usage/config.toml`** (or `$XDG_CONFIG_HOME/ai-usage/config.toml`). `--config <PATH>` reads another file instead.
 
+Set `exclude = ["antigravity"]` under `[providers]` to omit a provider from table, JSON, statusline, and TUI output, including cached views. Excluded providers are not fetched; `--only antigravity` temporarily includes one.
+
 Generate a starter config from your current sessions (a template also lives at [`config.example.toml`](config.example.toml)):
 
 ```bash

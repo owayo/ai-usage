@@ -21,6 +21,9 @@ pub struct Config {
     /// 空または未指定なら、signed-in 済み profile をすべて auto-discover する。
     pub profiles: Vec<ProfileCfg>,
 
+    /// 全表示モードから除外する provider。取得も行わない。
+    pub providers: Option<ProvidersCfg>,
+
     /// Antigravity(Google `agy`)使用量。ここで disabled にしない限り、`~/.gemini`、
     /// 実行中の Antigravity.app、または `agy` から auto-discover する。Chrome profile ではないため、
     /// `[[profiles]]` 配下ではなく top-level に置く。
@@ -30,8 +33,16 @@ pub struct Config {
     /// (`~/.grok/auth.json`)ベースで、Chrome profile とは無関係な top-level 設定。
     pub grok: Option<GrokCfg>,
 
-    /// `--statusline` 描画のみに効く設定。`--json` / table 出力には影響しない。
+    /// `--statusline` 描画のみに効く設定。全体の除外は `[providers]` で指定する。
     pub statusline: Option<StatuslineCfg>,
+}
+
+/// 取得対象を全表示モードで共有する設定(top-level `[providers]`)。
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct ProvidersCfg {
+    /// 取得も表示もしない provider。`--only` はこの除外より優先する。
+    pub exclude: Vec<String>,
 }
 
 /// `--statusline` 出力にだけ効く設定(top-level `[statusline]`)。
@@ -300,6 +311,9 @@ mod tests {
             enabled = true
             label = "agy"
 
+            [providers]
+            exclude = ["antigravity", "GROK"]
+
             [statusline]
             hide = ["claude", "codex"]
         "#;
@@ -319,6 +333,10 @@ mod tests {
         let agy = parsed.antigravity.as_ref().unwrap();
         assert_eq!(agy.enabled, Some(true));
         assert_eq!(agy.label.as_deref(), Some("agy"));
+        assert_eq!(
+            parsed.providers.as_ref().unwrap().exclude,
+            ["antigravity", "GROK"]
+        );
         let sl = parsed.statusline.as_ref().unwrap();
         assert_eq!(sl.hide, vec!["claude".to_string(), "codex".to_string()]);
     }
@@ -360,6 +378,7 @@ mod tests {
         let parsed: Config = toml::from_str("").unwrap();
         assert!(parsed.active_email.is_none());
         assert!(parsed.profiles.is_empty());
+        assert!(parsed.providers.is_none());
         assert!(parsed.antigravity.is_none());
     }
 

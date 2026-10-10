@@ -90,6 +90,28 @@ fn cached_statusline_without_filter_keeps_all_providers() {
 }
 
 #[test]
+fn cached_global_exclusion_applies_and_only_can_override_it() {
+    let cache = CacheDir::new();
+    std::fs::write(
+        cache.0.join("config.toml"),
+        "[providers]\nexclude = [\"grok\"]\n",
+    )
+    .unwrap();
+
+    let output = cache.render(&[]);
+    assert_eq!(output.lines().count(), 2, "{output}");
+    assert!(!output.contains("Grok"), "{output}");
+
+    let output = cache.render(&["--statusline-hide", "claude"]);
+    assert_eq!(output.lines().count(), 1, "{output}");
+    assert!(output.contains("Codex"), "{output}");
+
+    let output = cache.render(&["--only", "grok"]);
+    assert_eq!(output.lines().count(), 1, "{output}");
+    assert!(output.contains("Grok"), "{output}");
+}
+
+#[test]
 fn cached_resets_show_count_and_expiry_without_credentials_or_network() {
     let cache = CacheDir::new();
     let path = cache.0.join("report.json");

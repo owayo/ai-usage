@@ -164,6 +164,8 @@ TUI の各使用枠にはリセットの日時も併記します。
 
 `ai-usage` は **設定なしでも動作** します。Claude / Codex / PixelLab セッションを持つ Chrome プロファイルに加え、利用可能な Antigravity / Grok の OAuth 情報も自動検出します。表示対象のプロファイルを固定したい、表示名を変更したい、プロバイダを絞り込みたい場合は **`~/.config/ai-usage/config.toml`** (または `$XDG_CONFIG_HOME/ai-usage/config.toml`) を置いてください。`--config <PATH>` を付けると、代わりにそのファイルを読みます。
 
+`[providers]` に `exclude = ["antigravity"]` を設定すると、通常の表・JSON・statusline・TUI・キャッシュ描画のすべてから除外します。除外したプロバイダは取得せず、`--only antigravity` で一時的に表示できます。
+
 現在のセッションから雛形を生成できます (雛形は [`config.example.toml`](config.example.toml) にもあります)。
 
 ```bash

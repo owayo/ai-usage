@@ -52,7 +52,7 @@ Every command and option of `ai-usage`. The everyday examples are in the [README
 | `--help` | Print help |
 | `--version` | Print version |
 
-If the `--init-config` destination already exists, the template is printed to stdout instead. Cached output uses the accounts and labels recorded in the JSON file; set profile selection and labels when generating the cache. `--only` and statusline hiding still apply when rendering it.
+If the `--init-config` destination already exists, the template is printed to stdout instead. Cached output uses the accounts and labels recorded in the JSON file; set profile selection and labels when generating the cache. `[providers].exclude` filters all output modes, including cached statusline and TUI; `--only` can temporarily include an excluded provider. Statusline-specific hiding also applies when rendering that mode.
 
 When the reader of stdout stops early, as in `ai-usage --json | head -n 5`, the remaining output is discarded and the command exits with status 0.
 

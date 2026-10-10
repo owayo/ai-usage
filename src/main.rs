@@ -620,6 +620,8 @@ fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
         }
         out += "\n";
     }
+    out += "# 全表示モードから除外し、取得も省くプロバイダ。--only で一時的に表示できます。\n";
+    out += "# [providers]\n# exclude = [\"antigravity\"]\n";
     out
 }
 
@@ -862,6 +864,57 @@ fn statusline_opts(cli: &Cli, cfg: &config::Config) -> render::StatuslineOpts {
     }
 }
 
+/// `[providers] exclude` を全表示モード共通の除外対象に解決する。
+/// 明示的な `--only` は設定より優先し、その provider だけは表示する。
+fn excluded_providers(cli: &Cli, cfg: &config::Config) -> Vec<model::Provider> {
+    let only = cli.only.map(ProviderArg::to_provider);
+    let mut excluded = Vec::new();
+    if let Some(providers) = &cfg.providers {
+        for provider in providers
+            .exclude
+            .iter()
+            .filter_map(|name| parse_provider(name))
+        {
+            if Some(provider) != only && !excluded.contains(&provider) {
+                excluded.push(provider);
+            }
+        }
+    }
+    excluded
+}
+
+fn excluded_browser_wants(excluded: &[model::Provider]) -> BrowserWants {
+    BrowserWants {
+        claude: excluded.contains(&model::Provider::Claude),
+        codex: excluded.contains(&model::Provider::Codex),
+        pixellab: excluded.contains(&model::Provider::PixelLab),
+    }
+}
+
+/// config 行ごとの label と provider の受け持ちを決めた後で全体の除外を適用する。
+fn filter_targets(targets: Vec<Target>, excluded: &[model::Provider]) -> Vec<Target> {
+    let omitted = excluded_browser_wants(excluded);
+    targets
+        .into_iter()
+        .filter_map(|mut target| {
+            target.wants = target.wants.without(omitted);
+            target.wants.any().then_some(target)
+        })
+        .collect()
+}
+
+/// 古い JSON キャッシュにも同じ除外を適用する。`--only` を先に解決する。
+fn filter_cached_report(report: &mut report::Report, cli: &Cli, excluded: &[model::Provider]) {
+    if let Some(only) = cli.only {
+        report
+            .accounts
+            .retain(|account| account.provider == only.to_provider());
+    }
+    report
+        .accounts
+        .retain(|account| !excluded.contains(&account.provider));
+}
+
 /// `--statusline-hide`(CLI)と `[statusline] hide`(config)を Provider 集合に解決する。
 /// CLI 指定があればそちらを最優先。未知の文字列は wrap 無しで無視する
 /// (config を古い binary で読めるようにするのと同じ寛容ポリシー)。
@@ -897,6 +950,7 @@ fn render_cached_statusline(
     path: &std::path::Path,
     cli: &Cli,
     cfg: &config::Config,
+    excluded: &[model::Provider],
     active: Option<&render::ActiveTarget>,
 ) -> std::io::Result<()> {
     let Ok(data) = std::fs::read_to_string(path) else {
@@ -905,9 +959,7 @@ fn render_cached_statusline(
     let Ok(mut report) = serde_json::from_str::<report::Report>(&data) else {
         return Ok(());
     };
-    if let Some(only) = cli.only {
-        report.accounts.retain(|a| a.provider == only.to_provider());
-    }
+    filter_cached_report(&mut report, cli, excluded);
     render::statusline(&report, active, cli.sort, &statusline_opts(cli, cfg))
 }
 
@@ -942,16 +994,17 @@ fn uses_cached_tui(cli: &Cli) -> bool {
 }
 
 /// profile を検出し、info-only flag を処理してから usage を fetch/render する。
-fn needs_profile_discovery(cli: &Cli) -> bool {
+fn needs_profile_discovery(cli: &Cli, excluded: &[model::Provider]) -> bool {
     // 一覧と設定生成は provider filter にかかわらず Chrome profile が必要。
     // OAuth provider 単独取得とキャッシュ描画では Local State を読まない。
     cli.list_profiles
         || cli.init_config
         || !(uses_cached_statusline(cli) || uses_cached_tui(cli))
-            && !matches!(
-                cli.only,
-                Some(ProviderArg::Antigravity) | Some(ProviderArg::Grok)
-            )
+            && cli
+                .only
+                .map_or(BrowserWants::all(), only_wants)
+                .without(excluded_browser_wants(excluded))
+                .any()
 }
 
 async fn run(cli: Cli) -> Result<()> {
@@ -967,6 +1020,7 @@ async fn run(cli: Cli) -> Result<()> {
     } else {
         config::load(cli.config.as_deref())
     };
+    let excluded = excluded_providers(&cli, &cfg);
 
     // キャッシュ描画は Chrome の Local State、network、Keychain のいずれにも依存させない。
     if uses_cached_statusline(&cli) {
@@ -975,7 +1029,7 @@ async fn run(cli: Cli) -> Result<()> {
             .as_deref()
             .expect("キャッシュ描画モードでは入力パスが存在する");
         let active = active_target(&cli, &cfg);
-        render_cached_statusline(path, &cli, &cfg, active.as_ref())?;
+        render_cached_statusline(path, &cli, &cfg, &excluded, active.as_ref())?;
         return Ok(());
     }
 
@@ -984,9 +1038,7 @@ async fn run(cli: Cli) -> Result<()> {
         let read = || -> Result<report::Report> {
             let data = std::fs::read_to_string(path)?;
             let mut report: report::Report = serde_json::from_str(&data)?;
-            if let Some(only) = cli.only {
-                report.accounts.retain(|a| a.provider == only.to_provider());
-            }
+            filter_cached_report(&mut report, &cli, &excluded);
             Ok(report)
         };
         let initial = read()?;
@@ -1000,8 +1052,31 @@ async fn run(cli: Cli) -> Result<()> {
         .await;
     }
 
+    if [
+        Provider::Claude,
+        Provider::Codex,
+        Provider::Antigravity,
+        Provider::PixelLab,
+        Provider::Grok,
+    ]
+    .iter()
+    .all(|provider| excluded.contains(provider))
+    {
+        if cli.tui {
+            return render::tui(
+                Some(report::Report::build(&[])),
+                None,
+                cli.sort,
+                color_enabled(cli.no_color),
+            )
+            .await;
+        }
+        render_reports(&cli, &cfg, &[], None)?;
+        return Ok(());
+    }
+
     let root = profiles::chrome_root()?;
-    let all = if needs_profile_discovery(&cli) {
+    let all = if needs_profile_discovery(&cli, &excluded) {
         match profiles::discover(&root) {
             Ok(all) => all,
             // profile 一覧と設定生成は Chrome そのものが目的なので、従来どおり失敗させる。
@@ -1028,17 +1103,19 @@ async fn run(cli: Cli) -> Result<()> {
         return write_init_config(&root, &all, cli.config.as_deref());
     }
 
-    let targets = build_targets(all, &cli, &cfg);
-    let want_antigravity = match cli.only {
-        Some(ProviderArg::Antigravity) => true,
-        Some(_) => false,
-        None => antigravity::available(cfg.antigravity.as_ref()).await,
-    };
-    let want_grok = match cli.only {
-        Some(ProviderArg::Grok) => true,
-        Some(_) => false,
-        None => grok::available(cfg.grok.as_ref()),
-    };
+    let targets = filter_targets(build_targets(all, &cli, &cfg), &excluded);
+    let want_antigravity = !excluded.contains(&Provider::Antigravity)
+        && match cli.only {
+            Some(ProviderArg::Antigravity) => true,
+            Some(_) => false,
+            None => antigravity::available(cfg.antigravity.as_ref()).await,
+        };
+    let want_grok = !excluded.contains(&Provider::Grok)
+        && match cli.only {
+            Some(ProviderArg::Grok) => true,
+            Some(_) => false,
+            None => grok::available(cfg.grok.as_ref()),
+        };
     if cli.tui {
         let refresh: render::TuiFetch<'_> = Box::new(|| {
             Box::pin(async {
@@ -1526,6 +1603,56 @@ mod tests {
     }
 
     #[test]
+    fn global_exclusion_filters_fetch_targets_and_cached_accounts() {
+        let cfg = config::Config {
+            profiles: vec![
+                profile_cfg("Default", Some("claude-label"), Some(&["claude"])),
+                profile_cfg("Default", Some("codex-label"), Some(&["codex"])),
+                profile_cfg("Default", Some("pixel-label"), Some(&["pixellab"])),
+            ],
+            providers: Some(config::ProvidersCfg {
+                exclude: vec!["CoDeX".into(), "GROK".into(), "unknown".into()],
+            }),
+            ..Default::default()
+        };
+        let cli = Cli::parse_from(["ai-usage"]);
+        let excluded = excluded_providers(&cli, &cfg);
+        assert_eq!(excluded, [Provider::Codex, Provider::Grok]);
+
+        let targets = filter_targets(
+            build_targets(vec![profile("Default", "Work")], &cli, &cfg),
+            &excluded,
+        );
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].label.as_deref(), Some("claude-label"));
+        assert_eq!(targets[1].label.as_deref(), Some("pixel-label"));
+        assert!(targets[0].wants.claude);
+        assert!(targets[1].wants.pixellab);
+
+        let reports =
+            [Provider::Claude, Provider::Codex, Provider::Grok].map(|provider| AccountReport {
+                profile_name: "Work".into(),
+                profile_email: None,
+                label: None,
+                provider,
+                group_label: None,
+                usage: Ok(Default::default()),
+            });
+        let mut cached = report::Report::build(&reports);
+        filter_cached_report(&mut cached, &cli, &excluded);
+        assert_eq!(cached.accounts.len(), 1);
+        assert_eq!(cached.accounts[0].provider, Provider::Claude);
+
+        let explicit = Cli::parse_from(["ai-usage", "--only", "grok"]);
+        let excluded = excluded_providers(&explicit, &cfg);
+        assert_eq!(excluded, [Provider::Codex]);
+        let mut cached = report::Report::build(&reports);
+        filter_cached_report(&mut cached, &explicit, &excluded);
+        assert_eq!(cached.accounts.len(), 1);
+        assert_eq!(cached.accounts[0].provider, Provider::Grok);
+    }
+
+    #[test]
     fn only_broken_pipe_write_errors_end_quietly() {
         let broken = || anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
         assert!(is_broken_pipe(&broken()));
@@ -1544,15 +1671,15 @@ mod tests {
     fn profile_discovery_respects_info_oauth_and_cache_modes() {
         // OAuth provider 単独取得では Chrome の Local State を読まない。
         let grok = Cli::parse_from(["ai-usage", "--only", "grok"]);
-        assert!(!needs_profile_discovery(&grok));
+        assert!(!needs_profile_discovery(&grok, &[]));
         let antigravity = Cli::parse_from(["ai-usage", "--only", "antigravity"]);
-        assert!(!needs_profile_discovery(&antigravity));
+        assert!(!needs_profile_discovery(&antigravity, &[]));
 
         // 一覧・設定生成は --only と併用しても Chrome profile を対象にする。
         let list = Cli::parse_from(["ai-usage", "--only", "grok", "--list-profiles"]);
-        assert!(needs_profile_discovery(&list));
+        assert!(needs_profile_discovery(&list, &[]));
         let init = Cli::parse_from(["ai-usage", "--only", "antigravity", "--init-config"]);
-        assert!(needs_profile_discovery(&init));
+        assert!(needs_profile_discovery(&init, &[]));
 
         // キャッシュ描画は通常モードでも Chrome に依存しない。
         let cached = Cli::parse_from([
@@ -1561,12 +1688,12 @@ mod tests {
             "--input",
             "/tmp/ai-usage-cache.json",
         ]);
-        assert!(!needs_profile_discovery(&cached));
+        assert!(!needs_profile_discovery(&cached, &[]));
 
         let cached_tui =
             Cli::parse_from(["ai-usage", "--tui", "--input", "/tmp/ai-usage-cache.json"]);
         assert!(uses_cached_tui(&cached_tui));
-        assert!(!needs_profile_discovery(&cached_tui));
+        assert!(!needs_profile_discovery(&cached_tui, &[]));
 
         // 情報表示 flag は cache 指定より優先し、従来どおり profile を検出する。
         let cached_list = Cli::parse_from([
@@ -1576,7 +1703,7 @@ mod tests {
             "/tmp/ai-usage-cache.json",
             "--list-profiles",
         ]);
-        assert!(needs_profile_discovery(&cached_list));
+        assert!(needs_profile_discovery(&cached_list, &[]));
         assert!(!uses_cached_statusline(&cached_list));
 
         let cached_init = Cli::parse_from([
@@ -1586,8 +1713,19 @@ mod tests {
             "/tmp/ai-usage-cache.json",
             "--init-config",
         ]);
-        assert!(needs_profile_discovery(&cached_init));
+        assert!(needs_profile_discovery(&cached_init, &[]));
         assert!(!uses_cached_statusline(&cached_init));
-        assert!(needs_profile_discovery(&Cli::parse_from(["ai-usage"])));
+        assert!(needs_profile_discovery(&Cli::parse_from(["ai-usage"]), &[]));
+
+        let all_browser_hidden = [Provider::Claude, Provider::Codex, Provider::PixelLab];
+        assert!(!needs_profile_discovery(
+            &Cli::parse_from(["ai-usage"]),
+            &all_browser_hidden,
+        ));
+        assert!(needs_profile_discovery(&list, &all_browser_hidden));
+        assert!(needs_profile_discovery(
+            &Cli::parse_from(["ai-usage", "--only", "claude"]),
+            &[],
+        ));
     }
 }

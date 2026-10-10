@@ -21,7 +21,7 @@ resets and their expiry times. Antigravity (Google's `agy`) and Grok (xAI's
 | `src/jwt.rs`      | Unverified JWT payload decoding (`claims`), shared by the Codex account id, Grok expiry, and PixelLab expiry/email readers. |
 | `src/claude.rs` / `src/codex.rs` / `src/antigravity.rs` / `src/pixellab.rs` / `src/grok.rs` | Per-provider usage fetchers (Claude/Codex also parse manual resets). |
 | `src/model.rs`    | `Provider` / `Usage` / `Window` / `WindowKind` / `ManualReset` / `ResetKind` data model. |
-| `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles + Antigravity/Grok tables), `BrowserWants` set operations, and `expand_home` for configured paths. |
+| `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles, global provider exclusions, Antigravity/Grok tables), `BrowserWants` set operations, and `expand_home` for configured paths. |
 | `src/sort.rs`     | `SortKey` (`--sort`), shared by CLI and renderers. |
 | `src/report.rs`   | JSON DTO (shared by `--json` output and `--input` cache). |
 | `src/render.rs`   | Shared row resolution (display name, active highlight, brand colors), JSON output, and `write_stdout`; re-exports the renderers. |
@@ -168,6 +168,7 @@ listener bound for the whole test so a parallel test cannot take over its port.
 
 - テーブルにも `--no-color` / `NO_COLOR` / `TERM=dumb` を適用する。端末幅の自動調整は保つ。
 - キャッシュ描画でも `--only` を適用してから statusline の非表示設定を処理する。
+- `[providers].exclude` は table / JSON / statusline / TUI とキャッシュ描画に適用する。除外対象は取得せず、`--only` で明示したプロバイダは設定より優先する。旧 `[statusline].hide` は statusline 限定のまま保つ。
 - `--init-config --config <PATH>` は指定先へ排他的に新規作成し、既存ファイルやリンクを上書きしない。情報表示モードでは設定を読み込まない。
 - 同じ Chrome ディレクトリの同じプロバイダを二重取得しない。別プロバイダの設定とラベルは保持する。表示名が衝突する雛形は一意なディレクトリ名を使い、照合ではディレクトリ名を優先する。
 - 同じディレクトリのプロバイダ別の設定行は、`--profile` / `--only` を付けても各プロバイダをその行のラベルで表示する。行の受け持ちは config の `providers` だけで決め、`--only` はその後で当てる (`--only` は `providers` より優先し、どの行も挙げないプロバイダはそのディレクトリの先頭行で表示する)。
