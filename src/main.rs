@@ -18,6 +18,7 @@ mod sort;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -49,6 +50,10 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
+    /// 対話式の端末画面で利用枠を表示する
+    #[arg(long, conflicts_with_all = ["json", "statusline"])]
+    tui: bool,
+
     /// compact な colored statusline を出力する(1 account 1 行)
     #[arg(long)]
     statusline: bool,
@@ -58,25 +63,25 @@ struct Cli {
     #[arg(long)]
     logos: bool,
 
-    /// `--statusline` と併用し、network fetch の代わりにこの JSON file
+    /// `--statusline` / `--tui` と併用し、network fetch の代わりにこの JSON file
     /// (cached `--json` output)から account を読む。statusline の高速描画で使う
-    /// (`--statusline` なしでは無視され、通常どおり fetch する)。
+    /// (`--statusline` / `--tui` なしでは無視され、通常どおり fetch する)。
     #[arg(long, value_name = "PATH")]
     input: Option<PathBuf>,
 
-    /// active として highlight する account email
+    /// statusline で active として highlight する account email
     /// (default: CLAUDE_CONFIG_DIR/.claude.json から読む)
     #[arg(long, value_name = "EMAIL")]
     active_email: Option<String>,
 
-    /// この profile 名に一致する account を active として highlight する
+    /// statusline でこの profile 名に一致する account を active として highlight する
     /// `accounts[].profile` に対して case-insensitive に照合し、--active-email と
     /// .claude.json fallback より優先する。ログイン email ではなく profile で
     /// account を指定する tool 向け。
     #[arg(long, value_name = "NAME")]
     active_profile: Option<String>,
 
-    /// --active-profile と併用し、highlight 対象をこの provider 行に限定する
+    /// statusline の --active-profile と併用し、highlight 対象をこの provider 行に限定する
     /// 未指定なら一致 profile の Claude 行を highlight する。
     #[arg(long, value_enum)]
     active_provider: Option<ProviderArg>,
@@ -97,7 +102,7 @@ struct Cli {
     #[arg(long)]
     list_profiles: bool,
 
-    /// active account の解決結果と行ごとの match 判定を JSONL で stderr に出す
+    /// statusline の active account 解決結果と行ごとの match 判定を stderr に出す
     /// (stdout は汚さない)。行が active になる/ならない理由の診断用。
     #[arg(long)]
     debug: bool,
@@ -923,13 +928,7 @@ fn render_reports(
     } else if cli.json {
         render::json(&report::Report::build(reports), cli.sort)
     } else {
-        render::table(
-            reports,
-            active,
-            cli.sort,
-            color_enabled(cli.no_color),
-            cli.debug,
-        )
+        render::table(reports, cli.sort, color_enabled(cli.no_color))
     }
 }
 
@@ -938,13 +937,17 @@ fn uses_cached_statusline(cli: &Cli) -> bool {
     cli.statusline && cli.input.is_some() && !cli.list_profiles && !cli.init_config
 }
 
+fn uses_cached_tui(cli: &Cli) -> bool {
+    cli.tui && cli.input.is_some() && !cli.list_profiles && !cli.init_config
+}
+
 /// profile を検出し、info-only flag を処理してから usage を fetch/render する。
 fn needs_profile_discovery(cli: &Cli) -> bool {
     // 一覧と設定生成は provider filter にかかわらず Chrome profile が必要。
     // OAuth provider 単独取得とキャッシュ描画では Local State を読まない。
     cli.list_profiles
         || cli.init_config
-        || !uses_cached_statusline(cli)
+        || !(uses_cached_statusline(cli) || uses_cached_tui(cli))
             && !matches!(
                 cli.only,
                 Some(ProviderArg::Antigravity) | Some(ProviderArg::Grok)
@@ -952,6 +955,13 @@ fn needs_profile_discovery(cli: &Cli) -> bool {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    if cli.tui
+        && !cli.list_profiles
+        && !cli.init_config
+        && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal())
+    {
+        bail!("--tui requires an interactive terminal (use --json for redirected output)");
+    }
     let cfg = if cli.list_profiles || cli.init_config {
         config::Config::default()
     } else {
@@ -967,6 +977,15 @@ async fn run(cli: Cli) -> Result<()> {
         let active = active_target(&cli, &cfg);
         render_cached_statusline(path, &cli, &cfg, active.as_ref())?;
         return Ok(());
+    }
+
+    if uses_cached_tui(&cli) {
+        let data = std::fs::read_to_string(cli.input.as_deref().expect("checked input"))?;
+        let mut report: report::Report = serde_json::from_str(&data)?;
+        if let Some(only) = cli.only {
+            report.accounts.retain(|a| a.provider == only.to_provider());
+        }
+        return render::tui(Some(report), None, cli.sort, color_enabled(cli.no_color)).await;
     }
 
     let root = profiles::chrome_root()?;
@@ -997,7 +1016,6 @@ async fn run(cli: Cli) -> Result<()> {
         return write_init_config(&root, &all, cli.config.as_deref());
     }
 
-    let active = active_target(&cli, &cfg);
     let targets = build_targets(all, &cli, &cfg);
     let want_antigravity = match cli.only {
         Some(ProviderArg::Antigravity) => true,
@@ -1009,6 +1027,27 @@ async fn run(cli: Cli) -> Result<()> {
         Some(_) => false,
         None => grok::available(cfg.grok.as_ref()),
     };
+    if cli.tui {
+        let report = async {
+            let reports = fetch_reports(
+                &root,
+                &targets,
+                want_antigravity,
+                cfg.antigravity.as_ref(),
+                want_grok,
+                cfg.grok.as_ref(),
+            )
+            .await?;
+            Ok(report::Report::build(&reports))
+        };
+        return render::tui(
+            None,
+            Some(Box::pin(report)),
+            cli.sort,
+            color_enabled(cli.no_color),
+        )
+        .await;
+    }
     let reports = fetch_reports(
         &root,
         &targets,
@@ -1019,6 +1058,7 @@ async fn run(cli: Cli) -> Result<()> {
     )
     .await?;
 
+    let active = cli.statusline.then(|| active_target(&cli, &cfg)).flatten();
     render_reports(&cli, &cfg, &reports, active.as_ref())?;
     Ok(())
 }
@@ -1514,6 +1554,11 @@ mod tests {
             "/tmp/ai-usage-cache.json",
         ]);
         assert!(!needs_profile_discovery(&cached));
+
+        let cached_tui =
+            Cli::parse_from(["ai-usage", "--tui", "--input", "/tmp/ai-usage-cache.json"]);
+        assert!(uses_cached_tui(&cached_tui));
+        assert!(!needs_profile_discovery(&cached_tui));
 
         // 情報表示 flag は cache 指定より優先し、従来どおり profile を検出する。
         let cached_list = Cli::parse_from([

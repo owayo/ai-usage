@@ -17,7 +17,7 @@
 | オプション | 短縮 | 説明 |
 |-----------|------|------|
 | `--profile <NAMES>` | `-p` | プロファイル名をカンマ区切りで指定 (Chrome 表示名または on-disk ディレクトリ名) |
-| `--only <PROVIDER>` | | `claude` / `codex` / `antigravity` / `pixellab` / `grok` のみを表示。キャッシュからの statusline 描画にも適用 |
+| `--only <PROVIDER>` | | `claude` / `codex` / `antigravity` / `pixellab` / `grok` のみを表示。キャッシュからの statusline / TUI 描画にも適用 |
 
 ### 出力
 
@@ -25,6 +25,7 @@
 |-----------|------|
 | `--json` | 機械可読な JSON で出力 |
 | `--statusline` | 1 行/アカウントのコンパクト表示 (ステータスバー向け) |
+| `--tui` | 対話式の端末画面。`--json` / `--statusline` との併用不可 |
 | `--statusline --logos` | ブランドロゴ字形で表示 (BrandLogos フォントが必要) |
 | `--statusline --compact` | 狭いペイン向けにゲージ幅を半分にする |
 | `--statusline --reset-at` | 長期枠リセットの絶対時刻 (例: `(06/18 01:10)`) を末尾に併記 |
@@ -32,22 +33,22 @@
 | `--sort weekly-usage` | 長期枠の使用率が高い順 (リミットに近いアカウントを上に) |
 | `--sort weekly-reset` | 長期枠のリセット時刻が近い順 (リセット待ちが短いアカウントを上に) |
 | `--no-color` | ANSI カラーを無効化 (`NO_COLOR` 環境変数に空でない値が入っている場合 ([no-color.org](https://no-color.org/) の仕様) または `TERM=dumb` でも無効になります) |
-| `--input <PATH>` | フェッチせず、キャッシュ済み `--json` ファイルから statusline を描画。Chrome・Keychain・ネットワークのいずれにも触れないため、ステータスバーの再描画が高速 |
+| `--input <PATH>` | `--statusline` または `--tui` と併用し、キャッシュ済み `--json` ファイルから描画。Chrome・Keychain・ネットワークには触れない |
 
 ### アクティブ行の選択
 
 | オプション | 説明 |
 |-----------|------|
-| `--active-email <EMAIL>` | Claude 行のサインイン済みメールと照合 (既定: `$CLAUDE_CONFIG_DIR/.claude.json`。環境変数が未設定または空なら `~/.claude.json`) |
-| `--active-profile <NAME>` | プロファイル名で照合 |
-| `--active-provider <NAME>` | 1 プロバイダに固定: `claude` / `codex` / `antigravity` / `pixellab` / `grok` |
+| `--active-email <EMAIL>` | statusline の Claude 行のサインイン済みメールと照合 (既定: `$CLAUDE_CONFIG_DIR/.claude.json`。環境変数が未設定または空なら `~/.claude.json`) |
+| `--active-profile <NAME>` | statusline の行をプロファイル名で照合 |
+| `--active-provider <NAME>` | statusline の照合対象を 1 プロバイダに固定: `claude` / `codex` / `antigravity` / `pixellab` / `grok` |
 
 ### 設定・デバッグ・情報
 
 | オプション | 説明 |
 |-----------|------|
 | `--config <PATH>` | `~/.config/ai-usage/config.toml` の代わりにこの設定ファイルを使う。`--init-config` と併用すると、既存ファイルを上書きせず指定先に新規作成 |
-| `--debug` | 行ごとの判定結果を stderr に JSONL で出力 (stdout はクリーンなまま) |
+| `--debug` | statusline の行ごとの判定結果を stderr に JSONL で出力 (stdout はクリーンなまま) |
 | `--help` | ヘルプを表示 |
 | `--version` | バージョンを表示 |
 

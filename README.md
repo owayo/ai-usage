@@ -139,6 +139,11 @@ ai-usage --only grok
 # JSON output for scripts
 ai-usage --json
 
+# Interactive terminal dashboard
+ai-usage --tui
+ai-usage --tui --only codex
+ai-usage --tui --input usage.json  # browse saved JSON
+
 # Statusline for terminal status bar
 ai-usage --statusline
 ai-usage --statusline --logos --compact --reset-at
@@ -149,7 +154,9 @@ ai-usage --sort weekly-usage      # closest to the cap first
 ai-usage --sort weekly-reset      # soonest reset first
 ```
 
-Every command and option, including active-row selection, `--input` for fast status-bar redraws from a cached `--json` file, and `--debug`: [docs/cli-reference.md](docs/cli-reference.md)
+The TUI groups quota bars under each account heading, with each window labeled `5h`, `1d`, `1w`, or `1m` and its reset countdown beside it. Remaining manual resets also appear under the account. Use `↑` / `↓` or `j` / `k` to scroll, and `q` / `Esc` / `Ctrl+C` to quit. Reset countdowns update on screen. Restart the command to fetch new usage. `--tui --input <PATH>` reads a saved `--json` file without network access.
+
+Every command and option, including statusline active-row selection, `--input` for fast status-bar redraws from a cached `--json` file, and `--debug`: [docs/cli-reference.md](docs/cli-reference.md)
 
 ## Configuration
 

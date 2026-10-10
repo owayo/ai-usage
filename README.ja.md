@@ -139,6 +139,11 @@ ai-usage --only grok
 # JSON 出力 (スクリプト向け)
 ai-usage --json
 
+# 対話式の端末画面
+ai-usage --tui
+ai-usage --tui --only codex
+ai-usage --tui --input usage.json  # 保存済み JSON を閲覧
+
 # 端末ステータスバー向け
 ai-usage --statusline
 ai-usage --statusline --logos --compact --reset-at
@@ -149,7 +154,9 @@ ai-usage --sort weekly-usage      # リミットに近い順
 ai-usage --sort weekly-reset      # リセットが近い順
 ```
 
-全コマンドと全オプションは [docs/cli-reference.ja.md](docs/cli-reference.ja.md) にまとめています。アクティブ行の選択、キャッシュ済みの `--json` ファイルからステータスバーを速く描き直す `--input`、`--debug` もそちらにあります。
+TUI はアカウントごとに見出しを置き、その下に `5h` / `1d` / `1w` / `1m` の使用率バーとリセットまでの時間を枠ごとに表示します。手動リセットの残回数も確認できます。`↑` / `↓` または `j` / `k` でスクロールし、`q` / `Esc` / `Ctrl+C` で終了します。リセットまでの残り時間は画面内で更新されます。新しい使用量が必要なときは終了して再実行してください。`--tui --input <PATH>` は保存済み `--json` ファイルだけを読み、ネットワークに接続しません。
+
+全コマンドと全オプションは [docs/cli-reference.ja.md](docs/cli-reference.ja.md) にまとめています。statusline のアクティブ行の選択、キャッシュ済みの `--json` ファイルからステータスバーを速く描き直す `--input`、`--debug` もそちらにあります。
 
 ## 設定
 

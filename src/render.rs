@@ -8,9 +8,11 @@ mod manual_resets;
 mod sort;
 mod statusline;
 mod table;
+mod tui;
 
 pub use statusline::{StatuslineOpts, statusline};
 pub use table::table;
+pub use tui::run as tui;
 
 use std::io::{self, Write};
 
@@ -119,8 +121,7 @@ fn debug_row(
     );
 }
 
-/// 行の active 判定と `--debug` 診断出力をまとめて行う。table / statusline の
-/// 両レンダラーで同じ判定・同じ JSONL を出すための共有入口。
+/// statusline の active 判定と `--debug` 診断出力をまとめて行う。
 fn resolve_active(
     active: Option<&ActiveTarget>,
     provider: Provider,

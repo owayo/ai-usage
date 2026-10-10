@@ -2,11 +2,11 @@
 
 use chrono::{DateTime, Duration, Local, Utc};
 use comfy_table::presets::UTF8_FULL;
-use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
+use comfy_table::{Cell, Color, ContentArrangement, Table};
 
 use super::manual_resets::format_resets;
 use super::sort::sorted_refs;
-use super::{ActiveTarget, brand_rgb, display_name, preferred_email, resolve_active};
+use super::{brand_rgb, display_name};
 use crate::SortKey;
 use crate::model::{AccountReport, Provider, Window};
 use crate::report::ManualResetOut;
@@ -25,15 +25,9 @@ fn service_label(p: Provider, group: Option<&str>) -> String {
     }
 }
 
-pub fn table(
-    reports: &[AccountReport],
-    active: Option<&ActiveTarget>,
-    sort: SortKey,
-    color: bool,
-    debug: bool,
-) -> std::io::Result<()> {
+pub fn table(reports: &[AccountReport], sort: SortKey, color: bool) -> std::io::Result<()> {
     let now = Utc::now();
-    let table = build_table(reports, active, sort, color, debug, now);
+    let table = build_table(reports, sort, color, now);
     super::write_stdout(&format!(
         "{table}\n  updated {} · bars = usage, time = until reset\n",
         now.with_timezone(&Local).format("%H:%M")
@@ -41,14 +35,7 @@ pub fn table(
 }
 
 /// 端末幅による自動調整を保ったまま、色の要否に応じてセルを組み立てる。
-fn build_table(
-    reports: &[AccountReport],
-    active: Option<&ActiveTarget>,
-    sort: SortKey,
-    color: bool,
-    debug: bool,
-    now: DateTime<Utc>,
-) -> Table {
+fn build_table(reports: &[AccountReport], sort: SortKey, color: bool, now: DateTime<Utc>) -> Table {
     let mut table = Table::new();
     let show_resets = reports
         .iter()
@@ -69,18 +56,13 @@ fn build_table(
             Ok(u) => u.email.as_deref(),
             Err(_) => None,
         };
-        let row_email = preferred_email(provider_email, r.profile_email.as_deref());
         let name = display_name(
             r.label.as_deref(),
-            row_email,
+            provider_email,
             r.profile_email.as_deref(),
             &r.profile_name,
         );
-        let is_active = resolve_active(active, r.provider, &r.profile_name, row_email, debug);
-        let mut name_cell = Cell::new(&name);
-        if is_active && color {
-            name_cell = name_cell.fg(Color::Red).add_attribute(Attribute::Bold);
-        }
+        let name_cell = Cell::new(&name);
 
         match &r.usage {
             Ok(u) => {
@@ -217,7 +199,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn table_respects_color_for_success_error_and_active_cells() {
+    fn table_respects_color_for_success_and_error_cells() {
         let now = Utc::now();
         let report = |usage| AccountReport {
             profile_name: "Work".into(),
@@ -238,13 +220,8 @@ mod tests {
             })),
             report(Err(anyhow::anyhow!("test failure"))),
         ];
-        let active = ActiveTarget {
-            profile: Some("Work".into()),
-            email: None,
-            provider: None,
-        };
         for color in [false, true] {
-            let mut table = build_table(&rows, Some(&active), SortKey::Provider, color, false, now);
+            let mut table = build_table(&rows, SortKey::Provider, color, now);
             // 強制描画で、テスト実行時の TTY の有無に左右されず ANSI の有無を検証する。
             table.enforce_styling();
             assert_eq!(table.to_string().contains('\x1b'), color);
@@ -264,7 +241,7 @@ mod tests {
             usage,
         };
         let render = |rows: &[AccountReport]| {
-            let mut table = build_table(rows, None, SortKey::Provider, false, false, now);
+            let mut table = build_table(rows, SortKey::Provider, false, now);
             // テストを実行する端末の幅に左右されず、セルを折り返さずに描画する。
             table.set_width(500);
             table.lines().collect::<Vec<_>>()

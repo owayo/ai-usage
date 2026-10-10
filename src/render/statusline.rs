@@ -180,7 +180,7 @@ fn render_identity(
 /// Chrome profile 名から来るため、いずれも現実に起こる。
 ///
 /// ここでは端末上の表示幅で数え、溢れる分は切り詰め、右端に必ず 1 桁以上の区切りを残す。
-fn pad_display(s: &str, field_width: usize) -> String {
+pub(super) fn pad_display(s: &str, field_width: usize) -> String {
     // 1 桁は区切り用に確保するので、本文が使えるのは field_width - 1 桁まで。
     let budget = field_width.saturating_sub(1);
     let width = s.width();
