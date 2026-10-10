@@ -25,7 +25,7 @@
 |-----------|------|
 | `--json` | 機械可読な JSON で出力 |
 | `--statusline` | 1 行/アカウントのコンパクト表示 (ステータスバー向け) |
-| `--tui` | 対話式の端末画面。`--json` / `--statusline` との併用不可 |
+| `--tui` | 対話式の端末画面。使用量を1分ごとに更新し、手動リセットの有効期限も表示。`--json` / `--statusline` との併用不可 |
 | `--statusline --logos` | ブランドロゴ字形で表示 (BrandLogos フォントが必要) |
 | `--statusline --compact` | 狭いペイン向けにゲージ幅を半分にする |
 | `--statusline --reset-at` | 長期枠リセットの絶対時刻 (例: `(06/18 01:10)`) を末尾に併記 |
@@ -33,7 +33,7 @@
 | `--sort weekly-usage` | 長期枠の使用率が高い順 (リミットに近いアカウントを上に) |
 | `--sort weekly-reset` | 長期枠のリセット時刻が近い順 (リセット待ちが短いアカウントを上に) |
 | `--no-color` | ANSI カラーを無効化 (`NO_COLOR` 環境変数に空でない値が入っている場合 ([no-color.org](https://no-color.org/) の仕様) または `TERM=dumb` でも無効になります) |
-| `--input <PATH>` | `--statusline` または `--tui` と併用し、キャッシュ済み `--json` ファイルから描画。Chrome・Keychain・ネットワークには触れない |
+| `--input <PATH>` | `--statusline` または `--tui` と併用し、キャッシュ済み `--json` ファイルから描画。TUIでは1分ごとに読み直す。Chrome・Keychain・ネットワークには触れない |
 
 ### アクティブ行の選択
 

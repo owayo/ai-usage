@@ -12,7 +12,7 @@ mod tui;
 
 pub use statusline::{StatuslineOpts, statusline};
 pub use table::table;
-pub use tui::run as tui;
+pub use tui::{Fetch as TuiFetch, run as tui};
 
 use std::io::{self, Write};
 

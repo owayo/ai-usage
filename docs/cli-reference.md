@@ -25,7 +25,7 @@ Every command and option of `ai-usage`. The everyday examples are in the [README
 |--------|-------------|
 | `--json` | Machine-readable JSON output |
 | `--statusline` | Compact one-line-per-account output for status bars |
-| `--tui` | Interactive terminal dashboard; cannot be combined with `--json` or `--statusline` |
+| `--tui` | Interactive terminal dashboard; refreshes usage every minute and shows manual-reset expiries. Cannot be combined with `--json` or `--statusline` |
 | `--statusline --logos` | With brand-logo glyphs (requires the BrandLogos font) |
 | `--statusline --compact` | Half-width gauge for narrow panes |
 | `--statusline --reset-at` | Append the long-window reset clock-time, e.g. `(06/18 01:10)` |
@@ -33,7 +33,7 @@ Every command and option of `ai-usage`. The everyday examples are in the [README
 | `--sort weekly-usage` | Rank rows by long-window utilization (closest to the cap first) |
 | `--sort weekly-reset` | Rank rows by long-window reset time (soonest first) |
 | `--no-color` | Disable ANSI colors. Colors are also suppressed when `NO_COLOR` holds a non-empty value (per [no-color.org](https://no-color.org/)) or `TERM=dumb` |
-| `--input <PATH>` | With `--statusline` or `--tui`, render a cached `--json` file without accessing Chrome, Keychain, or the network |
+| `--input <PATH>` | With `--statusline` or `--tui`, render a cached `--json` file without accessing Chrome, Keychain, or the network. TUI rereads it every minute |
 
 ### Active row selection
 

@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Datelike, Local, Utc};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -14,14 +14,16 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
 
-use super::manual_resets::format_resets_compact;
+use super::manual_resets::format_resets_tui;
 use super::sort::sorted_refs;
-use super::{brand_rgb, display_name, parse_utc};
+use super::{brand_rgb, display_name, limit_observation_age, parse_utc};
 use crate::SortKey;
 use crate::model::{Provider, WindowKind};
 use crate::report::{AccountOut, Report, WindowOut};
 
-type Fetch<'a> = Pin<Box<dyn Future<Output = Result<Report>> + 'a>>;
+type FetchFuture<'a> = Pin<Box<dyn Future<Output = Result<Report>> + 'a>>;
+pub type Fetch<'a> = Box<dyn Fn() -> FetchFuture<'a> + 'a>;
+const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 struct RestoreTerminal;
 
@@ -59,7 +61,7 @@ impl App {
 /// `--tui` のメインループ。通信が終わる前にも取得中画面を表示する。
 pub async fn run(
     initial: Option<Report>,
-    mut fetch: Option<Fetch<'_>>,
+    fetch: Option<Fetch<'_>>,
     sort: SortKey,
     color: bool,
 ) -> Result<()> {
@@ -69,10 +71,16 @@ pub async fn run(
 
     let mut terminal = ratatui::try_init()?;
     let _restore = RestoreTerminal;
+    let mut pending = if initial.is_none() {
+        fetch.as_ref().map(|start| start())
+    } else {
+        None
+    };
+    let mut next_refresh = Instant::now() + REFRESH_INTERVAL;
     let mut app = App {
         report: initial,
         error: None,
-        loading: fetch.is_some(),
+        loading: pending.is_some(),
         scroll: 0,
         sort,
         color,
@@ -81,6 +89,14 @@ pub async fn run(
     let mut redraw = true;
     let mut last_draw = Instant::now();
     loop {
+        if pending.is_none() && Instant::now() >= next_refresh {
+            if let Some(start) = &fetch {
+                pending = Some(start());
+                app.loading = true;
+                redraw = true;
+            }
+            next_refresh = Instant::now() + REFRESH_INTERVAL;
+        }
         if redraw || last_draw.elapsed() >= Duration::from_secs(1) {
             terminal.draw(|frame| draw(frame, &app))?;
             last_draw = Instant::now();
@@ -88,11 +104,14 @@ pub async fn run(
         }
 
         tokio::select! {
-            result = async { fetch.as_mut().expect("fetch guard").as_mut().await }, if fetch.is_some() => {
-                fetch = None;
+            result = async { pending.as_mut().expect("fetch guard").as_mut().await }, if pending.is_some() => {
+                pending = None;
                 app.loading = false;
                 match result {
-                    Ok(report) => app.report = Some(report),
+                    Ok(report) => {
+                        app.report = Some(report);
+                        app.error = None;
+                    }
                     Err(error) => app.error = Some(format!("{error:#}")),
                 }
                 redraw = true;
@@ -144,7 +163,11 @@ fn draw(frame: &mut Frame, app: &App) {
     .split(area);
 
     let state = if app.loading {
-        "Fetching usage…".to_string()
+        if app.report.is_some() {
+            "Refreshing usage…".to_string()
+        } else {
+            "Fetching usage…".to_string()
+        }
     } else if let Some(error) = &app.error {
         format!("Fetch failed: {error}")
     } else if let Some(report) = &app.report {
@@ -194,7 +217,7 @@ fn draw(frame: &mut Frame, app: &App) {
     }
 
     frame.render_widget(
-        Paragraph::new("↑↓ / j k: scroll   Home/End/PgUp/PgDn: move   q/Esc/Ctrl-C: quit\nBars = used quota · reset = time left · restart to refresh"),
+        Paragraph::new("↑↓ / j k: scroll   Home/End/PgUp/PgDn: move   q/Esc/Ctrl-C: quit\nBars = used quota · reset = time left · auto-refresh every 1m"),
         chunks[2],
     );
 }
@@ -270,13 +293,45 @@ fn account_item<'a>(account: &AccountOut, color: bool, area_width: u16) -> ListI
                 )));
             }
         }
-        if account.short.is_none() && account.long.is_none() {
+        if account.short.is_none()
+            && account.long.is_none()
+            && !account
+                .limit_observation
+                .as_ref()
+                .is_some_and(|observation| limit_observation_age(observation, Utc::now()).is_some())
+        {
             lines.push(Line::from("  No usage quota reported"));
+        }
+        if let Some(observation) = account.limit_observation.as_ref()
+            && let Some(age) = limit_observation_age(observation, Utc::now())
+        {
+            lines.push(Line::from(vec![
+                Span::raw("  24h  "),
+                Span::styled(
+                    "LIMIT HIT",
+                    if color {
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    },
+                ),
+                Span::raw(format!("  {} · seen {age} ago", observation.model)),
+            ]));
+            lines.push(Line::from(format!(
+                "       {}/{} tokens at refusal",
+                observation.used_tokens, observation.limit_tokens
+            )));
         }
     }
     if let Some(resets) = &account.manual_resets {
-        let summary = format_resets_compact(resets, Utc::now());
-        lines.push(Line::from(format!("  Resets: {}", summary.counts)));
+        for (index, summary) in format_resets_tui(resets, Utc::now()).iter().enumerate() {
+            let prefix = if index == 0 {
+                "  Resets: "
+            } else {
+                "          "
+            };
+            lines.push(Line::from(format!("{prefix}{summary}")));
+        }
     }
     lines.push(Line::default());
     ListItem::new(lines)
@@ -313,6 +368,20 @@ fn window_spans(
     } else {
         Style::default()
     };
+    let reset_at = window
+        .resets_at
+        .as_deref()
+        .and_then(parse_utc)
+        .map(|time| {
+            let local = time.with_timezone(&Local);
+            let pattern = if local.year() == Local::now().year() {
+                "%m/%d %H:%M"
+            } else {
+                "%Y/%m/%d %H:%M"
+            };
+            format!(" ({})", local.format(pattern))
+        })
+        .unwrap_or_default();
     vec![
         Span::styled(
             format!("  {:<2}  ", kind_label(window, provider, short)),
@@ -320,9 +389,10 @@ fn window_spans(
         ),
         Span::styled(bar, bar_style),
         Span::raw(format!(
-            "  {}  reset {}",
+            "  {}  reset {}{}",
             percent.map_or(" --%".to_string(), |p| format!("{p:>3.0}%")),
-            reset_text(window, Utc::now())
+            reset_text(window, Utc::now()),
+            reset_at,
         )),
     ]
 }
@@ -413,6 +483,20 @@ mod tests {
             resets_in_seconds: Some(1),
         };
         assert!(reset_text(&window, Utc::now()).contains("1h"));
+        let absolute = window
+            .resets_at
+            .as_deref()
+            .and_then(parse_utc)
+            .unwrap()
+            .with_timezone(&Local)
+            .format("%m/%d %H:%M")
+            .to_string();
+        let line = Line::from(window_spans(&window, Provider::Grok, false, false, 80));
+        assert!(
+            line.spans
+                .iter()
+                .any(|span| span.content.contains(&absolute))
+        );
     }
 
     #[test]
@@ -444,6 +528,54 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("1w") && text.contains("--%"), "{text}");
         assert!(!text.contains("0%"), "{text}");
+    }
+
+    #[test]
+    fn tui_shows_each_manual_reset_expiry_and_recent_grok_limit() {
+        let expiry_a = (Utc::now() + chrono::Duration::days(1)).to_rfc3339();
+        let expiry_b = (Utc::now() + chrono::Duration::days(2)).to_rfc3339();
+        let report: Report = serde_json::from_value(serde_json::json!({
+            "generated_at": Utc::now().to_rfc3339(),
+            "accounts": [
+                {"profile":"Home","provider":"claude","ok":true,"plan":null,
+                 "email":null,"profile_email":null,"label":null,"group_label":null,
+                 "five_hour":null,"weekly":null,"error":null,
+                 "manual_resets":[
+                    {"kind":"full","remaining":1,"expires_at":expiry_a},
+                    {"kind":"full","remaining":1,"expires_at":expiry_b}
+                 ]},
+                {"profile":"Home","provider":"grok","ok":true,"plan":"Free",
+                 "email":null,"profile_email":null,"label":null,"group_label":null,
+                 "five_hour":null,"weekly":null,"error":null,
+                 "limit_observation":{"model":"grok-test","observed_at":Utc::now().to_rfc3339(),
+                                      "used_tokens":120,"limit_tokens":100}}
+            ]
+        }))
+        .unwrap();
+        let app = App {
+            report: Some(report),
+            error: None,
+            loading: false,
+            scroll: 0,
+            sort: SortKey::Provider,
+            color: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let screen = (0..20)
+            .map(|y| {
+                (0..100)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("Resets: full 2"), "{screen}");
+        assert_eq!(screen.matches("1@").count(), 2, "{screen}");
+        assert!(screen.contains("24h  LIMIT HIT"), "{screen}");
+        assert!(screen.contains("grok-test · seen"), "{screen}");
+        assert!(screen.contains("120/100 tokens at refusal"), "{screen}");
     }
 
     #[test]

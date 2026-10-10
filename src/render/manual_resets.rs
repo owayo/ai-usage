@@ -76,6 +76,23 @@ pub(super) fn format_resets(
     }
 }
 
+/// TUI では期限を付与分ごとの行に分け、狭い端末でも切れないようにする。
+pub(super) fn format_resets_tui(resets: &[ManualResetOut], now: DateTime<Utc>) -> Vec<String> {
+    let mut lines = Vec::new();
+    for group in summarize(resets, now) {
+        lines.push(group.label_count());
+        if group.total.is_some_and(|count| count > 0) {
+            for (expiry, count) in group.deadlines {
+                lines.push(format!("  {count}@{}", format_deadline(expiry, now)));
+            }
+        }
+    }
+    if lines.is_empty() {
+        lines.push("0".into());
+    }
+    lines
+}
+
 /// statusline は種類ごとの残回数と、行全体で最も近い有効期限だけを表示する。
 pub(super) fn format_resets_compact(
     resets: &[ManualResetOut],

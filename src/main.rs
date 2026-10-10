@@ -980,12 +980,24 @@ async fn run(cli: Cli) -> Result<()> {
     }
 
     if uses_cached_tui(&cli) {
-        let data = std::fs::read_to_string(cli.input.as_deref().expect("checked input"))?;
-        let mut report: report::Report = serde_json::from_str(&data)?;
-        if let Some(only) = cli.only {
-            report.accounts.retain(|a| a.provider == only.to_provider());
-        }
-        return render::tui(Some(report), None, cli.sort, color_enabled(cli.no_color)).await;
+        let path = cli.input.as_ref().expect("checked input");
+        let read = || -> Result<report::Report> {
+            let data = std::fs::read_to_string(path)?;
+            let mut report: report::Report = serde_json::from_str(&data)?;
+            if let Some(only) = cli.only {
+                report.accounts.retain(|a| a.provider == only.to_provider());
+            }
+            Ok(report)
+        };
+        let initial = read()?;
+        let refresh: render::TuiFetch<'_> = Box::new(|| Box::pin(async { read() }));
+        return render::tui(
+            Some(initial),
+            Some(refresh),
+            cli.sort,
+            color_enabled(cli.no_color),
+        )
+        .await;
     }
 
     let root = profiles::chrome_root()?;
@@ -1028,25 +1040,21 @@ async fn run(cli: Cli) -> Result<()> {
         None => grok::available(cfg.grok.as_ref()),
     };
     if cli.tui {
-        let report = async {
-            let reports = fetch_reports(
-                &root,
-                &targets,
-                want_antigravity,
-                cfg.antigravity.as_ref(),
-                want_grok,
-                cfg.grok.as_ref(),
-            )
-            .await?;
-            Ok(report::Report::build(&reports))
-        };
-        return render::tui(
-            None,
-            Some(Box::pin(report)),
-            cli.sort,
-            color_enabled(cli.no_color),
-        )
-        .await;
+        let refresh: render::TuiFetch<'_> = Box::new(|| {
+            Box::pin(async {
+                let reports = fetch_reports(
+                    &root,
+                    &targets,
+                    want_antigravity,
+                    cfg.antigravity.as_ref(),
+                    want_grok,
+                    cfg.grok.as_ref(),
+                )
+                .await?;
+                Ok(report::Report::build(&reports))
+            })
+        });
+        return render::tui(None, Some(refresh), cli.sort, color_enabled(cli.no_color)).await;
     }
     let reports = fetch_reports(
         &root,
