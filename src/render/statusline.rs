@@ -5,13 +5,16 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::manual_resets::format_resets_compact;
+use super::reset::{
+    FIVE_H_TH, legacy_long_window_thresholds, reset_color_index, window_thresholds,
+};
 use super::sort::{sorted_refs, statusline_default_cmp};
 use super::{
     ActiveTarget, brand_rgb, display_name, legacy_long_window_label, limit_observation_age,
     parse_utc, preferred_email, resolve_active, window_label,
 };
 use crate::SortKey;
-use crate::model::{Provider, WindowKind};
+use crate::model::Provider;
 use crate::report::{AccountOut, Report, WindowOut};
 
 // 256-color ANSI code(SGR wrapper なしの parameter 部分)。
@@ -34,10 +37,6 @@ const BOLD_RED: &str = "1;38;5;196"; // アクティブなアカウント。
 const NAME_FIELD_WIDTH: usize = 11;
 /// `--reset-at` が長期枠の後ろに付ける ` (MM/DD HH:MM)` の表示幅。
 const RESET_AT_WIDTH: usize = 14;
-const FIVE_H_TH: [i64; 3] = [3600, 7200, 10800];
-const DAILY_TH: [i64; 3] = [4 * 3600, 8 * 3600, 12 * 3600];
-const WEEK_TH: [i64; 3] = [86400, 172800, 259200];
-const MONTHLY_TH: [i64; 3] = [3 * 86400, 7 * 86400, 14 * 86400];
 
 /// brand color を ANSI SGR truecolor parameter として返す(statusline 用)。
 fn brand_sgr(p: Provider) -> String {
@@ -296,25 +295,6 @@ fn render_windows(account: &AccountOut, opts: &StatuslineOpts, now: DateTime<Utc
     rendered
 }
 
-fn window_thresholds(w: Option<&WindowOut>, legacy: [i64; 3]) -> [i64; 3] {
-    match w.and_then(|w| w.kind) {
-        Some(WindowKind::FiveHour) => FIVE_H_TH,
-        Some(WindowKind::Daily) => DAILY_TH,
-        Some(WindowKind::Weekly) => WEEK_TH,
-        Some(WindowKind::Monthly) => MONTHLY_TH,
-        None => legacy,
-    }
-}
-
-/// `kind` を持たない旧キャッシュ用の長期枠しきい値。
-/// ラベルと同じく PixelLab / Grok は月次、それ以外は週次として扱う。
-fn legacy_long_window_thresholds(provider: Provider) -> [i64; 3] {
-    match provider {
-        Provider::PixelLab | Provider::Grok => MONTHLY_TH,
-        _ => WEEK_TH,
-    }
-}
-
 fn window_seg(
     opts: &StatuslineOpts,
     label: &str,
@@ -360,7 +340,7 @@ fn window_seg(
                 Some(sec) if sec > 0 => {
                     s += &paint(
                         opts.color,
-                        reset_code(sec, th),
+                        &reset_code(sec, th),
                         &format!("{:<6}", compact_dur(sec)),
                     );
                     // --reset-at: 1w 行の残り時間の後ろに (MM/DD HH:MM) を local 時刻で併記。
@@ -430,16 +410,8 @@ fn pct_code(pct: f64) -> &'static str {
     }
 }
 
-fn reset_code(sec: i64, th: [i64; 3]) -> &'static str {
-    if sec < th[0] {
-        "38;5;196"
-    } else if sec < th[1] {
-        "38;5;208"
-    } else if sec < th[2] {
-        "38;5;178"
-    } else {
-        "38;5;35"
-    }
+fn reset_code(sec: i64, th: [i64; 3]) -> String {
+    format!("38;5;{}", reset_color_index(Some(sec), th))
 }
 
 fn compact_dur(sec: i64) -> String {
@@ -463,8 +435,9 @@ fn compact_dur(sec: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::reset::{MONTHLY_TH, WEEK_TH};
     use super::*;
-    use crate::model::ResetKind;
+    use crate::model::{ResetKind, WindowKind};
     use crate::report::ManualResetOut;
 
     fn fixed_utc(rfc3339: &str) -> DateTime<Utc> {

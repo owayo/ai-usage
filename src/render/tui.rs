@@ -15,6 +15,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
 
 use super::manual_resets::format_resets_tui;
+use super::reset::{
+    FIVE_H_TH, legacy_long_window_thresholds, reset_color_index, window_thresholds,
+};
 use super::sort::sorted_refs;
 use super::{brand_rgb, display_name, limit_observation_age, parse_utc};
 use crate::SortKey;
@@ -232,6 +235,7 @@ fn inner(area: Rect) -> Rect {
 }
 
 fn account_item<'a>(account: &AccountOut, color: bool, area_width: u16) -> ListItem<'a> {
+    let now = Utc::now();
     let (r, g, b) = brand_rgb(account.provider);
     let brand = if color {
         Style::default().fg(Color::Rgb(r, g, b))
@@ -290,6 +294,7 @@ fn account_item<'a>(account: &AccountOut, color: bool, area_width: u16) -> ListI
                     short,
                     color,
                     area_width,
+                    now,
                 )));
             }
         }
@@ -298,12 +303,12 @@ fn account_item<'a>(account: &AccountOut, color: bool, area_width: u16) -> ListI
             && !account
                 .limit_observation
                 .as_ref()
-                .is_some_and(|observation| limit_observation_age(observation, Utc::now()).is_some())
+                .is_some_and(|observation| limit_observation_age(observation, now).is_some())
         {
             lines.push(Line::from("  No usage quota reported"));
         }
         if let Some(observation) = account.limit_observation.as_ref()
-            && let Some(age) = limit_observation_age(observation, Utc::now())
+            && let Some(age) = limit_observation_age(observation, now)
         {
             lines.push(Line::from(vec![
                 Span::raw("  24h  "),
@@ -324,7 +329,7 @@ fn account_item<'a>(account: &AccountOut, color: bool, area_width: u16) -> ListI
         }
     }
     if let Some(resets) = &account.manual_resets {
-        for (index, summary) in format_resets_tui(resets, Utc::now()).iter().enumerate() {
+        for (index, summary) in format_resets_tui(resets, now).iter().enumerate() {
             let prefix = if index == 0 {
                 "  Resets: "
             } else {
@@ -343,6 +348,7 @@ fn window_spans(
     short: bool,
     color: bool,
     area_width: u16,
+    now: DateTime<Utc>,
 ) -> Vec<Span<'static>> {
     let width = if area_width < 64 {
         5
@@ -368,13 +374,24 @@ fn window_spans(
     } else {
         Style::default()
     };
-    let reset_at = window
-        .resets_at
-        .as_deref()
-        .and_then(parse_utc)
+    let reset = window.resets_at.as_deref().and_then(parse_utc);
+    let reset_style = if color {
+        let legacy = if short {
+            FIVE_H_TH
+        } else {
+            legacy_long_window_thresholds(provider)
+        };
+        Style::default().fg(Color::Indexed(reset_color_index(
+            reset.map(|time| (time - now).num_seconds()),
+            window_thresholds(Some(window), legacy),
+        )))
+    } else {
+        Style::default()
+    };
+    let reset_at = reset
         .map(|time| {
             let local = time.with_timezone(&Local);
-            let pattern = if local.year() == Local::now().year() {
+            let pattern = if local.year() == now.with_timezone(&Local).year() {
                 "%m/%d %H:%M"
             } else {
                 "%Y/%m/%d %H:%M"
@@ -389,11 +406,13 @@ fn window_spans(
         ),
         Span::styled(bar, bar_style),
         Span::raw(format!(
-            "  {}  reset {}{}",
+            "  {}  reset ",
             percent.map_or(" --%".to_string(), |p| format!("{p:>3.0}%")),
-            reset_text(window, Utc::now()),
-            reset_at,
         )),
+        Span::styled(
+            format!("{}{}", reset_text(window, now), reset_at),
+            reset_style,
+        ),
     ]
 }
 
@@ -491,12 +510,119 @@ mod tests {
             .with_timezone(&Local)
             .format("%m/%d %H:%M")
             .to_string();
-        let line = Line::from(window_spans(&window, Provider::Grok, false, false, 80));
+        let line = Line::from(window_spans(
+            &window,
+            Provider::Grok,
+            false,
+            false,
+            80,
+            Utc::now(),
+        ));
         assert!(
             line.spans
                 .iter()
                 .any(|span| span.content.contains(&absolute))
         );
+    }
+
+    #[test]
+    fn reset_countdown_and_date_use_period_specific_colors() {
+        let now = parse_utc("2026-10-11T00:00:00Z").unwrap();
+        for (kind, thresholds) in [
+            (WindowKind::FiveHour, [3600, 7200, 10800]),
+            (WindowKind::Daily, [14400, 28800, 43200]),
+            (WindowKind::Weekly, [86400, 172800, 259200]),
+            (WindowKind::Monthly, [259200, 604800, 1209600]),
+        ] {
+            for (seconds, index) in [
+                (1, 196),
+                (thresholds[0] - 1, 196),
+                (thresholds[0], 208),
+                (thresholds[1] - 1, 208),
+                (thresholds[1], 178),
+                (thresholds[2] - 1, 178),
+                (thresholds[2], 35),
+            ] {
+                let reset = now + chrono::Duration::seconds(seconds);
+                let window = WindowOut {
+                    kind: Some(kind),
+                    used_percent: Some(12.0),
+                    resets_at: Some(reset.to_rfc3339()),
+                    resets_in_seconds: Some(1),
+                };
+                // 明示 kind は、プロバイダーや格納先の旧周期より優先する。
+                for short in [true, false] {
+                    let spans = window_spans(&window, Provider::Grok, short, true, 80, now);
+                    let deadline = spans.last().unwrap();
+                    assert_eq!(
+                        deadline.style.fg,
+                        Some(Color::Indexed(index)),
+                        "{kind:?}, {seconds}s, short={short}"
+                    );
+                    let date = reset.with_timezone(&Local).format("%m/%d %H:%M");
+                    assert!(deadline.content.ends_with(&format!(" ({date})")));
+                    assert_eq!(spans[1].style.fg, Some(Color::Green));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reset_colors_use_legacy_periods_without_trusting_cached_seconds() {
+        let now = parse_utc("2026-10-11T00:00:00Z").unwrap();
+        let window = WindowOut {
+            kind: None,
+            used_percent: Some(12.0),
+            resets_at: Some((now + chrono::Duration::days(2)).to_rfc3339()),
+            resets_in_seconds: Some(1),
+        };
+        for (provider, short, index) in [
+            (Provider::Claude, false, 178),
+            (Provider::Codex, false, 178),
+            (Provider::Antigravity, false, 178),
+            (Provider::PixelLab, false, 196),
+            (Provider::Grok, false, 196),
+            (Provider::Grok, true, 35),
+        ] {
+            let spans = window_spans(&window, provider, short, true, 80, now);
+            let deadline = spans.last().unwrap();
+            assert_eq!(deadline.style.fg, Some(Color::Indexed(index)));
+            assert!(deadline.content.starts_with("2d 0h ("));
+        }
+    }
+
+    #[test]
+    fn reset_colors_handle_unknown_due_and_color_suppression() {
+        let now = parse_utc("2026-10-11T00:00:00Z").unwrap();
+        let due = now.to_rfc3339();
+        let past = (now - chrono::Duration::days(1)).to_rfc3339();
+        let future = (now + chrono::Duration::hours(1)).to_rfc3339();
+        for (reset, index, text) in [
+            (None, 242, "?"),
+            (Some("invalid"), 242, "?"),
+            (Some(due.as_str()), 35, "due"),
+            (Some(past.as_str()), 35, "due"),
+            (Some(future.as_str()), 196, "1h 0m"),
+        ] {
+            let window = WindowOut {
+                kind: Some(WindowKind::Weekly),
+                used_percent: Some(12.0),
+                resets_at: reset.map(str::to_string),
+                resets_in_seconds: Some(1),
+            };
+            let colored = window_spans(&window, Provider::Claude, false, true, 80, now);
+            let plain = window_spans(&window, Provider::Claude, false, false, 80, now);
+            assert_eq!(
+                colored.last().unwrap().style.fg,
+                Some(Color::Indexed(index))
+            );
+            assert!(colored.last().unwrap().content.starts_with(text));
+            assert!(plain.iter().all(|span| span.style.fg.is_none()));
+            assert_eq!(
+                Line::from(colored).to_string(),
+                Line::from(plain).to_string()
+            );
+        }
     }
 
     #[test]
@@ -520,7 +646,14 @@ mod tests {
             resets_at: None,
             resets_in_seconds: None,
         };
-        let line = Line::from(window_spans(&window, Provider::Grok, false, false, 60));
+        let line = Line::from(window_spans(
+            &window,
+            Provider::Grok,
+            false,
+            false,
+            60,
+            Utc::now(),
+        ));
         let text = line
             .spans
             .iter()

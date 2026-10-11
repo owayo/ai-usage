@@ -5,6 +5,7 @@
 //! 15 行で足りる JSON 出力を持つ。
 
 mod manual_resets;
+mod reset;
 mod sort;
 mod statusline;
 mod table;

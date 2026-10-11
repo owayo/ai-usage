@@ -154,7 +154,7 @@ ai-usage --sort weekly-usage      # closest to the cap first
 ai-usage --sort weekly-reset      # soonest reset first
 ```
 
-The TUI groups quota bars under each account heading, with each window labeled `5h`, `1d`, `1w`, or `1m` and its reset countdown beside it. Manual resets include each grant's expiry. Use `↑` / `↓` or `j` / `k` to scroll, and `q` / `Esc` / `Ctrl+C` to quit. Usage refreshes every minute. `--tui --input <PATH>` rereads the saved `--json` file every minute without network access. When the Grok CLI observed a model-specific free limit rejection within the last 24 hours, the TUI shows its model, observation age, and token counts separately from the weekly credit window. This observation is not a measurement of the current remaining quota.
+The TUI groups quota bars under each account heading, with each window labeled `5h`, `1d`, `1w`, or `1m` and its reset countdown beside it. The countdown and reset date use the statusline's period-specific thresholds, changing from green through yellow and orange to red as the reset approaches. Use `--no-color` to disable colors. Manual resets include each grant's expiry. Use `↑` / `↓` or `j` / `k` to scroll, and `q` / `Esc` / `Ctrl+C` to quit. Usage refreshes every minute. `--tui --input <PATH>` rereads the saved `--json` file every minute without network access. When the Grok CLI observed a model-specific free limit rejection within the last 24 hours, the TUI shows its model, observation age, and token counts separately from the weekly credit window. This observation is not a measurement of the current remaining quota.
 
 The TUI also shows each quota window's absolute reset date and time.
 
