@@ -54,6 +54,8 @@ Every command and option of `ai-usage`. The everyday examples are in the [README
 
 If the `--init-config` destination already exists, the template is printed to stdout instead. Cached output uses the accounts and labels recorded in the JSON file; set profile selection and labels when generating the cache. `[providers].exclude` filters all output modes, including cached statusline and TUI; `--only` can temporarily include an excluded provider. Statusline-specific hiding also applies when rendering that mode.
 
+With `--statusline --input <PATH>`, a missing, unreadable, empty, or invalid JSON cache produces no stdout, reports the path and cause on stderr, and exits with a nonzero status. A valid report with zero accounts exits with status 0 and no output. Callers must handle errors even before the first cache is generated; this mode does not regenerate the cache.
+
 When the reader of stdout stops early, as in `ai-usage --json | head -n 5`, the remaining output is discarded and the command exits with status 0.
 
 ## Manual usage resets

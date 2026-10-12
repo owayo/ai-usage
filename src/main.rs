@@ -22,7 +22,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 
 use config::BrowserWants;
@@ -944,23 +944,22 @@ fn parse_provider(s: &str) -> Option<model::Provider> {
     }
 }
 
-/// cached `--json` file から statusline を描画する。cache がない/不正な場合は何も出さず、
-/// 次の描画で再生成される。
+/// cached `--json` file から statusline を描画する。読み込み・解析の失敗は、
+/// 正常なアカウント 0 件と区別できるよう、パスと原因を付けて返す。
 fn render_cached_statusline(
     path: &std::path::Path,
     cli: &Cli,
     cfg: &config::Config,
     excluded: &[model::Provider],
     active: Option<&render::ActiveTarget>,
-) -> std::io::Result<()> {
-    let Ok(data) = std::fs::read_to_string(path) else {
-        return Ok(());
-    };
-    let Ok(mut report) = serde_json::from_str::<report::Report>(&data) else {
-        return Ok(());
-    };
+) -> Result<()> {
+    let data = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read statusline cache {}", path.display()))?;
+    let mut report: report::Report = serde_json::from_str(&data)
+        .with_context(|| format!("failed to parse statusline cache {}", path.display()))?;
     filter_cached_report(&mut report, cli, excluded);
-    render::statusline(&report, active, cli.sort, &statusline_opts(cli, cfg))
+    render::statusline(&report, active, cli.sort, &statusline_opts(cli, cfg))?;
+    Ok(())
 }
 
 /// fresh に fetch した report を CLI flag に応じた format で描画する。

@@ -42,8 +42,8 @@ impl CacheDir {
         Self(path)
     }
 
-    fn render(&self, args: &[&str]) -> String {
-        let output = Command::new(env!("CARGO_BIN_EXE_ai-usage"))
+    fn run(&self, args: &[&str]) -> std::process::Output {
+        Command::new(env!("CARGO_BIN_EXE_ai-usage"))
             .args(["--statusline", "--no-color", "--input"])
             .arg(self.0.join("report.json"))
             .args(["--config"])
@@ -52,7 +52,11 @@ impl CacheDir {
             .env("HOME", &self.0)
             .env("CLAUDE_CONFIG_DIR", &self.0)
             .output()
-            .unwrap();
+            .unwrap()
+    }
+
+    fn render(&self, args: &[&str]) -> String {
+        let output = self.run(args);
         assert!(output.status.success(), "{:?}", output.stderr);
         assert!(output.stderr.is_empty(), "{:?}", output.stderr);
         String::from_utf8(output.stdout).unwrap()
@@ -63,6 +67,61 @@ impl Drop for CacheDir {
     fn drop(&mut self) {
         std::fs::remove_dir_all(&self.0).unwrap();
     }
+}
+
+#[test]
+fn cached_statusline_reports_unreadable_cache() {
+    for directory in [false, true] {
+        let cache = CacheDir::new();
+        let path = cache.0.join("report.json");
+        std::fs::remove_file(&path).unwrap();
+        if directory {
+            std::fs::create_dir(&path).unwrap();
+        }
+        let cause = std::fs::read_to_string(&path).unwrap_err().to_string();
+        let output = cache.run(&[]);
+        assert!(!output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(&path.display().to_string()), "{stderr}");
+        assert!(stderr.contains(&cause), "{stderr}");
+    }
+}
+
+#[test]
+fn cached_statusline_reports_invalid_json() {
+    for (input, cause) in [
+        ("", "EOF"),
+        (
+            r#"{"generated_at":"2026-07-01T00:00:00Z","accounts":["#,
+            "EOF",
+        ),
+        (
+            r#"{"generated_at":"2026-07-01T00:00:00Z"}"#,
+            "missing field `accounts`",
+        ),
+    ] {
+        let cache = CacheDir::new();
+        let path = cache.0.join("report.json");
+        std::fs::write(&path, input).unwrap();
+        let output = cache.run(&[]);
+        assert!(!output.status.success(), "{input}: {output:?}");
+        assert!(output.stdout.is_empty(), "{input}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(&path.display().to_string()), "{stderr}");
+        assert!(stderr.contains(cause), "{stderr}");
+    }
+}
+
+#[test]
+fn cached_statusline_with_zero_accounts_succeeds_quietly() {
+    let cache = CacheDir::new();
+    std::fs::write(
+        cache.0.join("report.json"),
+        r#"{"generated_at":"2026-07-01T00:00:00Z","accounts":[]}"#,
+    )
+    .unwrap();
+    assert!(cache.render(&[]).is_empty());
 }
 
 #[test]
