@@ -12,13 +12,27 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
+use crate::diagnostics::Diagnostics;
 use crate::model::{Provider, UsageRow};
+
+/// 手元の認証情報を読めなかった場合は、次の起動で読み直せるようキャッシュしない。
+#[derive(Debug)]
+pub(crate) struct CredentialError(pub String);
+
+impl std::fmt::Display for CredentialError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CredentialError {}
 
 const ERROR_TTL: Duration = Duration::from_secs(15);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(35);
 
 #[derive(Clone)]
 pub struct Cache {
+    pub diagnostics: Diagnostics,
     root: PathBuf,
     ttl: Duration,
     refresh: bool,
@@ -106,17 +120,21 @@ impl Drop for Guard {
 }
 
 impl Cache {
-    pub fn new(ttl: Duration, refresh: bool) -> Result<Self> {
+    pub fn new(ttl: Duration, refresh: bool, diagnostics: Diagnostics) -> Result<Self> {
         let root = std::env::var_os("AI_USAGE_CACHE_DIR")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .or_else(|| dirs::cache_dir().map(|root| root.join("ai-usage")))
             .context("could not determine the usage cache directory")?;
-        Ok(Self::at(root.join("v1"), ttl, refresh))
+        Ok(Self {
+            diagnostics,
+            ..Self::at(root.join("v1"), ttl, refresh)
+        })
     }
 
     pub(crate) fn at(root: PathBuf, ttl: Duration, refresh: bool) -> Self {
         Self {
+            diagnostics: Diagnostics::default(),
             root,
             ttl,
             refresh,
@@ -211,6 +229,12 @@ impl Cache {
             return entry.into_result();
         }
         let result = fetch.await;
+        if result
+            .as_ref()
+            .is_err_and(|error| error.is::<CredentialError>())
+        {
+            return result;
+        }
         let entry = Entry {
             version: 1,
             updated_at: SystemTime::now(),
@@ -218,7 +242,8 @@ impl Cache {
             result: result.map_err(|error| format!("{error:#}")),
         };
         if let Err(error) = self.write(key, &entry) {
-            eprintln!("ai-usage: could not save usage cache: {error:#}");
+            self.diagnostics
+                .warn(format!("ai-usage: could not save usage cache: {error:#}"));
         }
         entry.into_result()
     }
@@ -388,6 +413,77 @@ mod tests {
                 .unwrap();
             assert!(cache.read("source", "auth").is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn cache_write_failures_keep_the_result_and_capture_a_warning() {
+        let dir = TestDir::new();
+        let mut cache = dir.cache(false);
+        cache.diagnostics = Diagnostics::new(true);
+        drop(cache.lock("source").await.unwrap());
+        fs::create_dir(cache.root.join("source.json")).unwrap();
+        let result = cache
+            .fetch("source", "auth", async { Ok(rows()) })
+            .await
+            .unwrap();
+        assert_eq!(result[0].usage.plan.as_deref(), Some("Test plan"));
+        let warnings = cache.diagnostics.take();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("could not save usage cache"));
+        assert!(!cache.root.join("source.tmp").exists());
+    }
+
+    #[tokio::test]
+    async fn credential_errors_are_not_cached_even_through_context() {
+        let dir = TestDir::new();
+        let cache = dir.cache(false);
+        let error = cache
+            .fetch("source", "auth", async {
+                Err(
+                    anyhow::Error::new(CredentialError("keychain denied".into()))
+                        .context("loading browser credentials"),
+                )
+            })
+            .await
+            .unwrap_err();
+        assert!(error.is::<CredentialError>());
+        assert!(!cache.root.join("source.json").exists());
+        let result = cache
+            .request()
+            .fetch("source", "auth", async { Ok(rows()) })
+            .await
+            .unwrap();
+        assert_eq!(result[0].usage.plan.as_deref(), Some("Test plan"));
+    }
+
+    #[tokio::test]
+    async fn unusable_cache_directories_and_locks_never_fetch_without_a_lock() {
+        let dir = TestDir::new();
+        let file_root = dir.0.join("file");
+        fs::write(&file_root, "existing file").unwrap();
+        let linked_root = dir.0.join("link");
+        let link_target = dir.0.join("target");
+        fs::create_dir(&link_target).unwrap();
+        std::os::unix::fs::symlink(&link_target, &linked_root).unwrap();
+        let blocked_lock = dir.0.join("blocked");
+        fs::create_dir_all(blocked_lock.join("source.lock")).unwrap();
+
+        for root in [file_root, linked_root, blocked_lock] {
+            let cache = Cache::at(root, Duration::from_secs(120), false);
+            assert!(
+                cache
+                    .fetch("source", "auth", async {
+                        panic!("lock failure must not trigger a fetch")
+                    })
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(dir.0.join("file")).unwrap(),
+            "existing file"
+        );
+        assert!(fs::read_dir(link_target).unwrap().next().is_none());
     }
 
     fn spawn_worker(dir: &TestDir, mode: &str, refresh: bool) -> Child {

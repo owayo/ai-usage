@@ -7,6 +7,7 @@ mod claude;
 mod codex;
 mod config;
 mod cookies;
+mod diagnostics;
 mod grok;
 mod http;
 mod jwt;
@@ -243,7 +244,7 @@ impl ChromeCredentials {
                 }
             })
             .as_ref()
-            .map_err(|error| anyhow::anyhow!("{error}"))
+            .map_err(|error| anyhow::Error::new(cache::CredentialError(error.clone())))
     }
 }
 
@@ -370,7 +371,12 @@ async fn fetch_with_retry(clients: &http::Clients, fetch: &FetchSpec) -> Result<
 }
 
 /// 必要な Chrome profile だけ Cookie を読み、signed-in provider の job を組み立てる。
-fn chrome_jobs(root: &std::path::Path, targets: &[Target], key: &ChromeKey) -> Result<Vec<Job>> {
+fn chrome_jobs(
+    root: &std::path::Path,
+    targets: &[Target],
+    key: &ChromeKey,
+    diagnostics: &diagnostics::Diagnostics,
+) -> Result<Vec<Job>> {
     if !targets.iter().any(|target| target.wants.any()) {
         return Ok(Vec::new());
     }
@@ -384,10 +390,10 @@ fn chrome_jobs(root: &std::path::Path, targets: &[Target], key: &ChromeKey) -> R
         let fingerprints = match cookies::session_fingerprints(&db) {
             Ok(fingerprints) => fingerprints,
             Err(error) => {
-                eprintln!(
+                diagnostics.warn(format!(
                     "ai-usage: skipping Chrome profile {}: {error:#}",
                     target.profile.name
-                );
+                ));
                 continue;
             }
         };
@@ -436,11 +442,15 @@ fn chrome_jobs(root: &std::path::Path, targets: &[Target], key: &ChromeKey) -> R
 /// OAuth provider が取得対象に残っているなら Chrome 行だけを諦めて続行する。
 /// 取得対象が Chrome だけのときは、原因の分かる元のエラー(「Keychain のダイアログを
 /// 承認して再実行」)をそのまま返す。
-fn chrome_jobs_or_degrade(jobs: Result<Vec<Job>>, has_oauth_targets: bool) -> Result<Vec<Job>> {
+fn chrome_jobs_or_degrade(
+    jobs: Result<Vec<Job>>,
+    has_oauth_targets: bool,
+    diagnostics: &diagnostics::Diagnostics,
+) -> Result<Vec<Job>> {
     match jobs {
         Ok(jobs) => Ok(jobs),
         Err(error) if has_oauth_targets => {
-            eprintln!("ai-usage: skipping Chrome profiles: {error:#}");
+            diagnostics.warn(format!("ai-usage: skipping Chrome profiles: {error:#}"));
             Ok(Vec::new())
         }
         Err(error) => Err(error),
@@ -486,7 +496,9 @@ async fn run_jobs(
         let (idx, provider, meta, rows) = match joined {
             Ok(result) => result,
             Err(error) => {
-                eprintln!("ai-usage: fetch task failed: {error}");
+                cache
+                    .diagnostics
+                    .warn(format!("ai-usage: fetch task failed: {error}"));
                 continue;
             }
         };
@@ -521,8 +533,9 @@ async fn fetch_reports(
     // Chrome Cookie job(Claude/Codex/PixelLab)。必要な場合だけ Keychain に触るため、
     // `--only antigravity` では prompt 自体を避けられる。
     let mut jobs = chrome_jobs_or_degrade(
-        chrome_jobs(root, targets, &key),
+        chrome_jobs(root, targets, &key, &cache.diagnostics),
         want_antigravity || want_grok,
+        &cache.diagnostics,
     )?;
 
     // Antigravity job は Chrome profile に紐づかない単一 OAuth/local account。
@@ -551,11 +564,12 @@ async fn fetch_reports(
         );
     }
 
-    let mut reports = run_jobs(clients, jobs, cache).await;
+    let mut reports = run_jobs(clients, jobs, cache.clone()).await;
     if let Some(Err(error)) = key.get() {
         chrome_jobs_or_degrade(
             Err(anyhow::anyhow!("{error}")),
             want_antigravity || want_grok,
+            &cache.diagnostics,
         )?;
         reports.retain(|report| matches!(report.provider, Provider::Antigravity | Provider::Grok));
     }
@@ -1141,6 +1155,7 @@ async fn run(cli: Cli) -> Result<()> {
         config::load(cli.config.as_deref())
     };
     let excluded = excluded_providers(&cli, &cfg);
+    let diagnostics = diagnostics::Diagnostics::new(cli.tui);
 
     // キャッシュ描画は Chrome の Local State、network、Keychain のいずれにも依存させない。
     if uses_cached_statusline(&cli) {
@@ -1168,6 +1183,7 @@ async fn run(cli: Cli) -> Result<()> {
             Some(refresh),
             cli.sort,
             color_enabled(cli.no_color),
+            diagnostics,
         )
         .await;
     }
@@ -1188,6 +1204,7 @@ async fn run(cli: Cli) -> Result<()> {
                 None,
                 cli.sort,
                 color_enabled(cli.no_color),
+                diagnostics,
             )
             .await;
         }
@@ -1207,7 +1224,7 @@ async fn run(cli: Cli) -> Result<()> {
             // 説明のつかない非対称が残る。個々の profile 読み取り失敗を握りつぶして
             // 続行する既存方針(fetch_reports)とも揃う。
             Err(error) => {
-                eprintln!("ai-usage: skipping Chrome profiles: {error:#}");
+                diagnostics.warn(format!("ai-usage: skipping Chrome profiles: {error:#}"));
                 Vec::new()
             }
         }
@@ -1236,7 +1253,11 @@ async fn run(cli: Cli) -> Result<()> {
             Some(_) => false,
             None => grok::available(cfg.grok.as_ref()),
         };
-    let cache = cache::Cache::new(Duration::from_secs(cli.cache_ttl), cli.refresh)?;
+    let cache = cache::Cache::new(
+        Duration::from_secs(cli.cache_ttl),
+        cli.refresh,
+        diagnostics.clone(),
+    )?;
     if cli.tui {
         let refresh: render::TuiFetch<'_> = Box::new(|| {
             Box::pin(async {
@@ -1253,7 +1274,14 @@ async fn run(cli: Cli) -> Result<()> {
                 Ok(report::Report::build(&reports))
             })
         });
-        return render::tui(None, Some(refresh), cli.sort, color_enabled(cli.no_color)).await;
+        return render::tui(
+            None,
+            Some(refresh),
+            cli.sort,
+            color_enabled(cli.no_color),
+            diagnostics,
+        )
+        .await;
     }
     let reports = fetch_reports(
         &root,
@@ -1293,6 +1321,19 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_credential_failures_keep_the_uncached_error_marker() {
+        for key in [Err("keychain denied".to_string()), Ok([0_u8; 16])] {
+            let credentials = ChromeCredentials {
+                db: PathBuf::from("/dev/null/Cookies"),
+                key: Arc::new(OnceLock::from(key)),
+                ..ChromeCredentials::default()
+            };
+            let error = credentials.load().err().unwrap();
+            assert!(error.is::<cache::CredentialError>(), "{error:#}");
+        }
+    }
 
     #[tokio::test]
     async fn chrome_cache_hits_keep_current_labels_without_loading_credentials() {
@@ -1564,16 +1605,19 @@ mod tests {
 
     #[test]
     fn chrome_failure_degrades_only_when_oauth_targets_remain() {
+        let diagnostics = diagnostics::Diagnostics::new(true);
         // Keychain 拒否などで Chrome 系 job が取れなくても、Antigravity / Grok が対象に
         // 残っているなら Chrome 行だけを諦めて続行する(OAuth provider を巻き添えにしない)。
         let degraded =
-            chrome_jobs_or_degrade(Err(anyhow::anyhow!("keychain denied")), true).unwrap();
+            chrome_jobs_or_degrade(Err(anyhow::anyhow!("keychain denied")), true, &diagnostics)
+                .unwrap();
         assert!(degraded.is_empty());
 
         // Chrome だけが対象なら、原因の分かる元のエラーをそのまま返す。
-        let fatal = chrome_jobs_or_degrade(Err(anyhow::anyhow!("keychain denied")), false)
-            .err()
-            .expect("Chrome だけが対象なら失敗を握り潰さない");
+        let fatal =
+            chrome_jobs_or_degrade(Err(anyhow::anyhow!("keychain denied")), false, &diagnostics)
+                .err()
+                .expect("Chrome だけが対象なら失敗を握り潰さない");
         assert_eq!(fatal.to_string(), "keychain denied");
 
         // 成功時は job をそのまま通す(OAuth 対象の有無で中身を変えない)。
@@ -1581,6 +1625,7 @@ mod tests {
             let jobs = chrome_jobs_or_degrade(
                 Ok(vec![Job::oauth("Grok", None, FetchSpec::Grok(None))]),
                 has_oauth,
+                &diagnostics,
             )
             .unwrap();
             assert_eq!(jobs.len(), 1);

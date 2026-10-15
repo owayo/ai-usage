@@ -307,20 +307,15 @@ async fn refresh_session(client: &Client, refresh: &str) -> Result<SessionTokens
     Ok(SessionTokens { access, refresh })
 }
 
-/// `/get-account-data` + optional `/get-subscription` を Usage に畳み込む。
-/// - `imageGenerated / imageAmount` を monthly generation window として `weekly` に入れる
-///   (統一 model の long-window スロットを再利用)。resets_at は subscription の
-///   `generation_reset_date`、なければ `next_bill_date` を使う。
-/// - `credits`(USD pay-as-you-go)は plan ラベルに `+ $X.XX credits` として付ける。
+/// アカウント情報と、取得できた場合の購読情報を Usage にまとめる。
+/// 月次生成枠は長期スロットに入れ、生成数が不明なら使用率も不明のまま残す。
+/// リセット時刻は購読情報から読み、プリペイド残高はプラン名に追記する。
 fn build_usage(access: &str, account: &Value, subscription: Option<&Value>) -> Result<Usage> {
     let image_amount = account
         .get("imageAmount")
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
-    let image_generated = account
-        .get("imageGenerated")
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
+    let image_generated = account.get("imageGenerated").and_then(Value::as_f64);
     let credits = account
         .get("credits")
         .and_then(Value::as_f64)
@@ -346,11 +341,12 @@ fn build_usage(access: &str, account: &Value, subscription: Option<&Value>) -> R
     };
 
     let long = if image_amount > 0.0 {
-        let used_percent = (image_generated / image_amount * 100.0).clamp(0.0, 100.0);
+        let used_percent =
+            image_generated.map(|generated| (generated / image_amount * 100.0).clamp(0.0, 100.0));
         let resets_at = subscription.and_then(subscription_reset);
         Some(Window {
             kind: WindowKind::Monthly,
-            used_percent: Some(used_percent),
+            used_percent,
             resets_at,
         })
     } else {
@@ -582,6 +578,34 @@ mod tests {
         assert!((w.used_percent.unwrap() - 20.0).abs() < 0.01);
         // subscription が無いと reset date も無い(bar だけ表示)。
         assert!(w.resets_at.is_none());
+    }
+
+    #[test]
+    fn missing_generation_count_is_unknown_while_explicit_zero_is_measured() {
+        let reset = "2026-11-01T00:00:00Z";
+        let subscription = json!({ "generation_reset_date": reset });
+        for generated in [
+            None,
+            Some(Value::Null),
+            Some(json!("invalid")),
+            Some(json!(0)),
+        ] {
+            let mut account = json!({ "imageAmount": 100, "tier": 1 });
+            if let Some(value) = &generated {
+                account["imageGenerated"] = value.clone();
+            }
+            let usage = build_usage("", &account, Some(&subscription)).unwrap();
+            let window = usage.long.unwrap();
+            assert_eq!(window.kind, WindowKind::Monthly);
+            assert_eq!(
+                window.resets_at.unwrap().to_rfc3339(),
+                "2026-11-01T00:00:00+00:00"
+            );
+            assert_eq!(
+                window.used_percent,
+                generated.and_then(|value| value.as_f64())
+            );
+        }
     }
 
     #[test]

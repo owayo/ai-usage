@@ -2,6 +2,35 @@
 
 Each section records a dependency update and code review. Changes address reproduced defects or behavior demonstrably incorrect from the code; suspected issues without that evidence are listed as unconfirmed observations and left unchanged.
 
+## 2026-10-15 review
+
+### Confirmed defects
+
+| Reproduction | Evidence | Fix and regression coverage |
+|---|---|---|
+| PixelLab returns `imageAmount: 100` with a missing, null, or nonnumeric `imageGenerated` | Parsing failures became `0.0`, presenting unknown usage as measured zero. The new test failed with `Some(0.0)` instead of `None` | Calculate the percentage as an `Option`, preserving the monthly window and reset time. Test missing, null, invalid, and explicitly zero generation counts |
+| A TUI refresh reduces three accounts to one after scrolling to the third account | The offset was not corrected on refresh; the rendering test reproduced `from 3/1` | Clamp the offset on refresh and draw. Test shrinking to one account and then zero |
+| Decline Keychain access with only Chrome providers selected, then rerun within 15 seconds | The cached credential error bypassed Keychain access and the fatal-error check. The second run returned an error row with exit status 0 instead of repeating the original failure | Mark credential-read errors with `CredentialError` and do not cache them. Test wrapped errors and consecutive real CLI invocations using a fake `security` command |
+| Cookie DB access or cache persistence fails while the TUI is drawing | Direct `eprintln!` calls alter the terminal outside ratatui's differential rendering | Deliver warnings to stderr normally and to an instance-owned queue in TUI mode. Render them in the header. Test worker sharing, draining, rendering, and preservation of fetched results after cache-write failure |
+
+### Dependencies and structure
+
+`depup --install --include-pinned` updated the direct comfy-table dependency from 8.0.0 to 8.0.1 and refreshed transitive dependencies, including async-compression and compression-codecs, adding Brotli 9. The [official changelog](https://github.com/dropbox/rust-brotli/blob/master/README.md) describes allocator API changes; AST analysis confirmed there are no direct uses here. Context7 was unavailable, so official upstream documentation was used.
+
+depup rolled newer candidates back under its release-age policy but returned status 2 because the previously locked indoc 2.0.8 and powerfmt 0.2.1 already fell inside that interval. Both retained their previous versions. The mise-managed Rust 1.98.1 and CMake 4.4.3 were kept.
+
+All source modules were inspected with astro-sight. The maximum cyclomatic complexity of 20 comes from CLI and TUI dispatch; a broad refactor was unnecessary. A Claude consultation supported localized fixes. Only warning delivery was extracted into `diagnostics.rs`, with no new process-global mutable state.
+
+### Deferred observation
+
+Claude suggested removing PixelLab token refresh because reuse would necessarily revoke the session. The [official Supabase session documentation](https://supabase.com/docs/guides/auth/sessions#what-is-refresh-token-reuse-detection-and-what-does-it-protect-from) includes an exception for reuse of the active token's parent, so that scenario does not prove revocation. The refresh path was retained. Grok reuse rules also require confirmation from the actual provider contract and were left unchanged.
+
+### Validation
+
+`make setup`, `make ci`, and `make build` passed, including rustfmt, clippy with `-D warnings`, 251 unit tests, and 14 CLI tests. `cargo audit` reported zero vulnerabilities or warnings; wreq still uses system-configuration 0.7.0.
+
+A real `--json --refresh` run fetched Claude, Codex, and Grok successfully with empty stderr. Antigravity and PixelLab were not tested against live endpoints in this review. A PTY smoke test used a malformed Cookie DB and a local fake OAuth server to verify the warning appears inside the TUI, stderr stays empty while drawing, and `q` exits successfully. Additional coverage verifies that lock failures never trigger an unlocked fetch.
+
 ## 2026-10-08 review
 
 ### Confirmed defects

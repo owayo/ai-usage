@@ -168,3 +168,59 @@ fn concurrent_cli_instances_make_one_http_request_and_share_errors_across_format
     server.join().unwrap();
     assert_eq!(requests.load(Ordering::Relaxed), 1);
 }
+
+#[test]
+fn declining_keychain_is_retried_on_the_next_cli_run() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TestDir::new();
+    let chrome = dir.0.join("Library/Application Support/Google/Chrome");
+    fs::create_dir_all(chrome.join("Default")).unwrap();
+    fs::write(
+        chrome.join("Local State"),
+        r#"{"profile":{"info_cache":{"Default":{"name":"Home"}}}}"#,
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(chrome.join("Default/Cookies")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, encrypted_value BLOB);
+        INSERT INTO cookies VALUES ('.claude.ai', 'sessionKey', x'01');",
+    )
+    .unwrap();
+    drop(db);
+    fs::write(dir.0.join("config.toml"), "").unwrap();
+
+    // macOS のダイアログを開かず、拒否された鍵取得と再実行時の呼び出し回数を検証する。
+    let bin = dir.0.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let security = bin.join("security");
+    fs::write(
+        &security,
+        "#!/bin/sh\nprintf 'called\\n' >> \"$AI_USAGE_TEST_KEYCHAIN_CALLS\"\nexit 1\n",
+    )
+    .unwrap();
+    fs::set_permissions(&security, fs::Permissions::from_mode(0o755)).unwrap();
+    let calls = dir.0.join("calls");
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let path = std::env::join_paths(paths).unwrap();
+    for _ in 0..2 {
+        let output = Command::new(env!("CARGO_BIN_EXE_ai-usage"))
+            .args(["--only", "claude", "--config"])
+            .arg(dir.0.join("config.toml"))
+            .env("HOME", &dir.0)
+            .env("AI_USAGE_CACHE_DIR", dir.0.join("cache"))
+            .env("AI_USAGE_TEST_KEYCHAIN_CALLS", &calls)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("approve the macOS prompt"),
+            "{output:?}"
+        );
+    }
+    assert_eq!(fs::read_to_string(calls).unwrap(), "called\ncalled\n");
+}

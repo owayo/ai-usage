@@ -25,6 +25,7 @@ resets and their expiry times. Antigravity (Google's `agy`) and Grok (xAI's
 | `src/sort.rs`     | `SortKey` (`--sort`), shared by CLI and renderers. |
 | `src/report.rs`   | JSON DTO (shared by `--json` output and `--input` cache). |
 | `src/cache.rs` | Per-source usage cache (120 s by default), credential fingerprints, process locks, and atomic writes. |
+| `src/diagnostics.rs` | Warning delivery: stderr for normal commands, a shared queue while the TUI draws. |
 | `src/render.rs`   | Shared row resolution (display name, active highlight, brand colors), JSON output, and `write_stdout`; re-exports the renderers. |
 | `src/render/sort.rs` / `src/render/table.rs` / `src/render/statusline.rs` | Row sorting (`SortableRow`), human table, compact statusline. |
 | `src/render/manual_resets.rs` | Manual-reset summaries shared by the table column and the statusline `R:` suffix. |
@@ -167,6 +168,10 @@ listener bound for the whole test so a parallel test cannot take over its port.
 
 ## 保守時に維持する動作
 
+- PixelLab の `imageGenerated` が欠落・null・数値以外の場合は、使用率を `None` とする。生成上限が分かる月次枠とリセット時刻は残し、実測の0%と区別する。
+- TUI の更新で行数が減った場合は、リストと `from X/Y` の表示に使うスクロール位置を現在の行数に収める。
+- Keychain や Cookie DB の読み込み失敗は `cache::CredentialError` として返し、共有キャッシュへ保存しない。直後の再実行でも鍵の取得と縮退判定をやり直す。
+- TUI の初期取得・自動更新中の警告は `diagnostics::Diagnostics` で集め、ヘッダーに表示する。描画中に stderr へ直接書き込まない。通常のコマンドでは従来どおり stderr に出す。
 - テーブルにも `--no-color` / `NO_COLOR` / `TERM=dumb` を適用する。端末幅の自動調整は保つ。
 - キャッシュ描画でも `--only` を適用してから statusline の非表示設定を処理する。
 - `[providers].exclude` は table / JSON / statusline / TUI とキャッシュ描画に適用する。除外対象は取得せず、`--only` で明示したプロバイダは設定より優先する。旧 `[statusline].hide` は statusline 限定のまま保つ。
@@ -447,8 +452,8 @@ not affect it. Entries store typed usage rows and credential fingerprints, never
 credential values. Chrome fingerprints hash session-cookie ciphertext (plus the
 Claude organization) from a read-only, WAL-aware connection. Keychain and cookie
 decryption are lazy and skipped on a hit. OAuth fingerprints use file metadata.
-Successful results live for `--cache-ttl` seconds (default 120), errors for up to
-15 seconds. `--refresh` / TTL 0 still share updates completed after the request
+Successful results live for `--cache-ttl` seconds (default 120), provider errors for up to
+15 seconds. Local credential-read failures are never cached. `--refresh` / TTL 0 still share updates completed after the request
 began. Hold one stable OS lock per source, re-read after acquiring it, and never
 unlink the lock file. Lock errors must not fall back to an unlocked fetch.
 `AI_USAGE_CACHE_DIR` overrides the cache parent; always isolate it in tests.

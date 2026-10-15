@@ -21,6 +21,7 @@ use super::reset::{
 use super::sort::sorted_refs;
 use super::{brand_rgb, display_name, limit_observation_age, parse_utc};
 use crate::SortKey;
+use crate::diagnostics::Diagnostics;
 use crate::model::{Provider, WindowKind};
 use crate::report::{AccountOut, Report, WindowOut};
 
@@ -28,15 +29,19 @@ type FetchFuture<'a> = Pin<Box<dyn Future<Output = Result<Report>> + 'a>>;
 pub type Fetch<'a> = Box<dyn Fn() -> FetchFuture<'a> + 'a>;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
-struct RestoreTerminal;
+struct RestoreTerminal(Diagnostics);
 
 impl Drop for RestoreTerminal {
     fn drop(&mut self) {
         ratatui::restore();
+        for warning in self.0.take() {
+            eprintln!("{warning}");
+        }
     }
 }
 
 struct App {
+    warnings: Vec<String>,
     report: Option<Report>,
     error: Option<String>,
     loading: bool,
@@ -55,9 +60,8 @@ impl App {
 
     fn move_scroll(&mut self, delta: isize) {
         let len = self.rows().len();
-        if len > 0 {
-            self.scroll = self.scroll.saturating_add_signed(delta).min(len - 1);
-        }
+        let last = len.saturating_sub(1);
+        self.scroll = self.scroll.min(last).saturating_add_signed(delta).min(last);
     }
 }
 
@@ -67,20 +71,23 @@ pub async fn run(
     fetch: Option<Fetch<'_>>,
     sort: SortKey,
     color: bool,
+    diagnostics: Diagnostics,
 ) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("--tui requires an interactive terminal (use --json for redirected output)");
     }
 
     let mut terminal = ratatui::try_init()?;
-    let _restore = RestoreTerminal;
+    let _restore = RestoreTerminal(diagnostics.clone());
     let mut pending = if initial.is_none() {
         fetch.as_ref().map(|start| start())
     } else {
         None
     };
     let mut next_refresh = Instant::now() + REFRESH_INTERVAL;
+    let initial_warnings = diagnostics.take();
     let mut app = App {
+        warnings: initial_warnings.clone(),
         report: initial,
         error: None,
         loading: pending.is_some(),
@@ -113,10 +120,13 @@ pub async fn run(
                 match result {
                     Ok(report) => {
                         app.report = Some(report);
+                        app.move_scroll(0);
                         app.error = None;
                     }
                     Err(error) => app.error = Some(format!("{error:#}")),
                 }
+                app.warnings = initial_warnings.clone();
+                app.warnings.extend(diagnostics.take());
                 redraw = true;
             }
             _ = tokio::time::sleep(Duration::from_millis(100)) => {}
@@ -159,7 +169,7 @@ fn draw(frame: &mut Frame, app: &App) {
     }
 
     let chunks = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(if app.warnings.is_empty() { 3 } else { 4 }),
         Constraint::Min(3),
         Constraint::Length(2),
     ])
@@ -185,21 +195,27 @@ fn draw(frame: &mut Frame, app: &App) {
     } else {
         "No data".to_string()
     };
+    let mut status = vec![Line::from(state)];
+    if !app.warnings.is_empty() {
+        status.push(Line::from(format!("Warning: {}", app.warnings.join("; "))));
+    }
     frame.render_widget(
-        Paragraph::new(state).block(Block::bordered().title(" ai-usage · usage dashboard ")),
+        Paragraph::new(status).block(Block::bordered().title(" ai-usage · usage dashboard ")),
         chunks[0],
     );
 
     let rows = app.rows();
+    // 更新で行数が減った場合も、リストと位置表示には同じ有効な位置を使う。
+    let scroll = app.scroll.min(rows.len().saturating_sub(1));
     let items: Vec<ListItem> = rows
         .iter()
         .map(|account| account_item(account, app.color, chunks[1].width))
         .collect();
-    let mut position = ListState::default().with_offset(app.scroll);
+    let mut position = ListState::default().with_offset(scroll);
     frame.render_stateful_widget(
         List::new(items).block(Block::bordered().title(format!(
             " Accounts · from {}/{} ",
-            if rows.is_empty() { 0 } else { app.scroll + 1 },
+            if rows.is_empty() { 0 } else { scroll + 1 },
             rows.len()
         ))),
         chunks[1],
@@ -480,6 +496,7 @@ mod tests {
         }))
         .unwrap();
         let mut app = App {
+            warnings: Vec::new(),
             report: Some(report),
             error: None,
             loading: false,
@@ -491,6 +508,78 @@ mod tests {
         assert_eq!(app.scroll, 1);
         app.move_scroll(-10);
         assert_eq!(app.scroll, 0);
+    }
+
+    #[test]
+    fn refreshed_shorter_reports_keep_the_displayed_scroll_in_range() {
+        let report: Report = serde_json::from_value(serde_json::json!({
+            "generated_at": "2026-10-10T00:00:00Z",
+            "accounts": [
+                {"profile":"Home", "provider":"claude", "ok":true, "plan":null,
+                 "email":null, "profile_email":null, "label":null, "group_label":null,
+                 "five_hour":null, "weekly":null, "error":null}
+            ]
+        }))
+        .unwrap();
+        // 更新前の3行目までスクロールした状態で、取得結果が1行、続いて0行になる。
+        let mut app = App {
+            warnings: Vec::new(),
+            report: Some(report),
+            error: None,
+            loading: false,
+            scroll: 2,
+            sort: SortKey::Provider,
+            color: false,
+        };
+        for (count, expected) in [(1, "from 1/1"), (0, "from 0/0")] {
+            app.report.as_mut().unwrap().accounts.truncate(count);
+            let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let screen = (0..12)
+                .map(|y| {
+                    (0..80)
+                        .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(screen.contains(expected), "{screen}");
+            assert!(
+                screen.contains(if count == 0 {
+                    "No accounts to display"
+                } else {
+                    "Claude"
+                }),
+                "{screen}"
+            );
+        }
+    }
+
+    #[test]
+    fn captured_warnings_render_inside_the_dashboard() {
+        let app = App {
+            warnings: vec!["skipping Chrome profiles: keychain denied".into()],
+            report: None,
+            error: None,
+            loading: false,
+            scroll: 0,
+            sort: SortKey::Provider,
+            color: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            screen.contains("Warning: skipping Chrome profiles: keychain denied"),
+            "{screen}"
+        );
     }
 
     #[test]
@@ -686,6 +775,7 @@ mod tests {
         }))
         .unwrap();
         let app = App {
+            warnings: Vec::new(),
             report: Some(report),
             error: None,
             loading: false,
@@ -734,6 +824,7 @@ mod tests {
             ]
         })).unwrap();
         let mut app = App {
+            warnings: Vec::new(),
             report: Some(report),
             error: None,
             loading: false,
