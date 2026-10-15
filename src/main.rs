@@ -2,6 +2,7 @@
 //! PixelLab / Grok の利用枠とリセット時刻を表示する。
 
 mod antigravity;
+mod cache;
 mod claude;
 mod codex;
 mod config;
@@ -20,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -68,6 +70,14 @@ struct Cli {
     /// (`--statusline` / `--tui` なしでは無視され、通常どおり fetch する)。
     #[arg(long, value_name = "PATH")]
     input: Option<PathBuf>,
+
+    /// 共有キャッシュを使う秒数(既定120秒)。0でも同時取得は1つにまとめる。
+    #[arg(long, value_name = "SECONDS", default_value_t = 120)]
+    cache_ttl: u64,
+
+    /// キャッシュの期限を待たず再取得する。同時に要求された更新は共有する。
+    #[arg(long)]
+    refresh: bool,
 
     /// statusline で active として highlight する account email
     /// (default: CLAUDE_CONFIG_DIR/.claude.json から読む)
@@ -155,9 +165,9 @@ impl ProviderArg {
 /// provider と認証材料を 1 つの enum に閉じ込める。provider/auth を別々に保持して
 /// 実行時に不整合を検出するのではなく、不正な組み合わせ自体を表現不能にする。
 enum FetchSpec {
-    Claude(HashMap<String, String>),
-    Codex(HashMap<String, String>),
-    PixelLab(HashMap<String, String>),
+    Claude(Arc<ChromeCredentials>),
+    Codex(Arc<ChromeCredentials>),
+    PixelLab(Arc<ChromeCredentials>),
     Antigravity(Option<config::AntigravityCfg>),
     Grok(Option<config::GrokCfg>),
 }
@@ -175,15 +185,65 @@ impl FetchSpec {
 
     async fn fetch(&self, clients: &http::Clients) -> Result<Vec<UsageRow>> {
         match self {
-            FetchSpec::Claude(cookies) => claude::fetch(&clients.browser, cookies).await,
-            FetchSpec::Codex(cookies) => codex::fetch(&clients.browser, cookies).await,
-            FetchSpec::PixelLab(cookies) => pixellab::fetch(&clients.browser, cookies).await,
+            FetchSpec::Claude(source) => {
+                let cookies = &source.load()?.claude;
+                anyhow::ensure!(
+                    claude::has_session(cookies),
+                    "not signed in to claude.ai in this profile"
+                );
+                claude::fetch(&clients.browser, cookies).await
+            }
+            FetchSpec::Codex(source) => {
+                let cookies = &source.load()?.chatgpt;
+                anyhow::ensure!(
+                    codex::has_session(cookies),
+                    "not signed in to chatgpt.com in this profile"
+                );
+                codex::fetch(&clients.browser, cookies).await
+            }
+            FetchSpec::PixelLab(source) => {
+                let cookies = &source.load()?.pixellab;
+                anyhow::ensure!(
+                    pixellab::has_session(cookies),
+                    "not signed in to pixellab.ai in this profile"
+                );
+                pixellab::fetch(&clients.browser, cookies).await
+            }
             FetchSpec::Antigravity(cfg) => antigravity::fetch(&clients.api, cfg.as_ref()).await,
             // cli-chat-proxy.grok.com は Cloudflare 前面にあるが、`Authorization: Bearer` だけで
             // 通ることを実測で確認済み。Cookie 系プロバイダとは違って Chrome fingerprint は不要
             // なため、Antigravity と同じ plain `api` client を使う。
             FetchSpec::Grok(cfg) => grok::fetch(&clients.api, cfg.as_ref()).await,
         }
+    }
+}
+
+type ChromeKey = Arc<OnceLock<std::result::Result<[u8; 16], String>>>;
+
+/// Keychain はキャッシュミス時だけ参照し、鍵と各プロファイルの復号結果を1回だけ読む。
+#[derive(Default)]
+struct ChromeCredentials {
+    db: PathBuf,
+    key: ChromeKey,
+    cookies: OnceLock<std::result::Result<cookies::ProfileCookies, String>>,
+}
+
+impl ChromeCredentials {
+    fn load(&self) -> Result<&cookies::ProfileCookies> {
+        self.cookies
+            .get_or_init(|| {
+                let key = self.key.get_or_init(|| {
+                    cookies::safe_storage_key("Chrome Safe Storage")
+                        .map(|password| cookies::derive_key(&password))
+                        .map_err(|error| format!("{error:#}"))
+                });
+                match key {
+                    Ok(key) => cookies::load(&self.db, key).map_err(|error| format!("{error:#}")),
+                    Err(error) => Err(error.clone()),
+                }
+            })
+            .as_ref()
+            .map_err(|error| anyhow::anyhow!("{error}"))
     }
 }
 
@@ -225,12 +285,22 @@ impl JobMeta {
 struct Job {
     meta: JobMeta,
     fetch: FetchSpec,
+    cache_key: String,
+    fingerprint: String,
 }
 
 impl Job {
     /// Chrome profile の表示メタデータと認証材料を 1 job にまとめる。
-    fn chrome(target: &Target, fetch: FetchSpec) -> Self {
+    fn chrome(
+        target: &Target,
+        fetch: FetchSpec,
+        source: &std::path::Path,
+        fingerprint: String,
+    ) -> Self {
+        let cache_key = cache::key(fetch.provider(), source);
         Self {
+            cache_key,
+            fingerprint,
             meta: JobMeta {
                 profile_name: target.profile.name.clone(),
                 profile_email: target.profile.email.clone(),
@@ -242,7 +312,23 @@ impl Job {
 
     /// Chrome profile に属さない OAuth account 用の job を作る。
     fn oauth(profile_name: &str, label: Option<String>, fetch: FetchSpec) -> Self {
+        let source = match &fetch {
+            FetchSpec::Antigravity(cfg) => antigravity::token_path(cfg.as_ref())
+                .or_else(|| dirs::home_dir().map(|home| home.join(".gemini"))),
+            FetchSpec::Grok(cfg) => grok::auth_path(cfg.as_ref()),
+            _ => unreachable!("OAuth job requires an OAuth fetch"),
+        };
+        let cache_key = cache::key(
+            fetch.provider(),
+            source.as_deref().unwrap_or(std::path::Path::new(".")),
+        );
+        let fingerprint = source
+            .as_deref()
+            .map(cache::file_fingerprint)
+            .unwrap_or_default();
         Self {
+            cache_key,
+            fingerprint,
             meta: JobMeta {
                 profile_name: profile_name.to_string(),
                 profile_email: None,
@@ -284,20 +370,19 @@ async fn fetch_with_retry(clients: &http::Clients, fetch: &FetchSpec) -> Result<
 }
 
 /// 必要な Chrome profile だけ Cookie を読み、signed-in provider の job を組み立てる。
-fn chrome_jobs(root: &std::path::Path, targets: &[Target]) -> Result<Vec<Job>> {
+fn chrome_jobs(root: &std::path::Path, targets: &[Target], key: &ChromeKey) -> Result<Vec<Job>> {
     if !targets.iter().any(|target| target.wants.any()) {
         return Ok(Vec::new());
     }
 
-    let password = cookies::safe_storage_key("Chrome Safe Storage")?;
-    let key = cookies::derive_key(&password);
     let mut jobs = Vec::new();
+    let mut credentials_by_source = HashMap::new();
     for target in targets {
         let Some(db) = profiles::cookies_db(root, &target.profile.dir) else {
             continue;
         };
-        let profile_cookies = match cookies::load(&db, &key) {
-            Ok(profile_cookies) => profile_cookies,
+        let fingerprints = match cookies::session_fingerprints(&db) {
+            Ok(fingerprints) => fingerprints,
             Err(error) => {
                 eprintln!(
                     "ai-usage: skipping Chrome profile {}: {error:#}",
@@ -306,22 +391,37 @@ fn chrome_jobs(root: &std::path::Path, targets: &[Target]) -> Result<Vec<Job>> {
                 continue;
             }
         };
-        if target.wants.claude && claude::has_session(&profile_cookies.claude) {
+        let credentials =
+            Arc::clone(credentials_by_source.entry(db.clone()).or_insert_with(|| {
+                Arc::new(ChromeCredentials {
+                    db: db.clone(),
+                    key: Arc::clone(key),
+                    ..ChromeCredentials::default()
+                })
+            }));
+        let [claude_fingerprint, codex_fingerprint, pixellab_fingerprint] = fingerprints;
+        if let Some(fingerprint) = claude_fingerprint.filter(|_| target.wants.claude) {
             jobs.push(Job::chrome(
                 target,
-                FetchSpec::Claude(profile_cookies.claude),
+                FetchSpec::Claude(Arc::clone(&credentials)),
+                &db,
+                fingerprint,
             ));
         }
-        if target.wants.codex && codex::has_session(&profile_cookies.chatgpt) {
+        if let Some(fingerprint) = codex_fingerprint.filter(|_| target.wants.codex) {
             jobs.push(Job::chrome(
                 target,
-                FetchSpec::Codex(profile_cookies.chatgpt),
+                FetchSpec::Codex(Arc::clone(&credentials)),
+                &db,
+                fingerprint,
             ));
         }
-        if target.wants.pixellab && pixellab::has_session(&profile_cookies.pixellab) {
+        if let Some(fingerprint) = pixellab_fingerprint.filter(|_| target.wants.pixellab) {
             jobs.push(Job::chrome(
                 target,
-                FetchSpec::PixelLab(profile_cookies.pixellab),
+                FetchSpec::PixelLab(credentials),
+                &db,
+                fingerprint,
             ));
         }
     }
@@ -348,25 +448,33 @@ fn chrome_jobs_or_degrade(jobs: Result<Vec<Job>>, has_oauth_targets: bool) -> Re
 }
 
 /// job を並行実行し、完了順ではなく入力順に AccountReport を返す。
-async fn run_jobs(clients: http::Clients, jobs: Vec<Job>) -> Vec<AccountReport> {
+async fn run_jobs(
+    clients: http::Clients,
+    jobs: Vec<Job>,
+    cache: cache::Cache,
+) -> Vec<AccountReport> {
     let mut set = tokio::task::JoinSet::new();
     for (idx, job) in jobs.into_iter().enumerate() {
         let clients = clients.clone();
+        let cache = cache.clone();
         set.spawn(async move {
-            if idx > 0 {
-                tokio::time::sleep(Duration::from_millis(150 * idx as u64)).await;
-            }
             let provider = job.fetch.provider();
-            let rows =
-                match tokio::time::timeout(JOB_DEADLINE, fetch_with_retry(&clients, &job.fetch))
-                    .await
-                {
-                    Ok(rows) => rows,
-                    Err(_) => Err(anyhow::anyhow!(
-                        "fetch timed out after {}s (including retries)",
-                        JOB_DEADLINE.as_secs()
-                    )),
-                };
+            let rows = cache
+                .fetch(&job.cache_key, &job.fingerprint, async {
+                    if idx > 0 {
+                        tokio::time::sleep(Duration::from_millis(150 * idx as u64)).await;
+                    }
+                    match tokio::time::timeout(JOB_DEADLINE, fetch_with_retry(&clients, &job.fetch))
+                        .await
+                    {
+                        Ok(rows) => rows,
+                        Err(_) => Err(anyhow::anyhow!(
+                            "fetch timed out after {}s (including retries)",
+                            JOB_DEADLINE.as_secs()
+                        )),
+                    }
+                })
+                .await;
             (idx, provider, job.meta, rows)
         });
     }
@@ -405,12 +513,17 @@ async fn fetch_reports(
     antigravity_cfg: Option<&config::AntigravityCfg>,
     want_grok: bool,
     grok_cfg: Option<&config::GrokCfg>,
+    cache: &cache::Cache,
 ) -> Result<Vec<AccountReport>> {
+    let cache = cache.request();
     let clients = http::clients()?;
+    let key = ChromeKey::default();
     // Chrome Cookie job(Claude/Codex/PixelLab)。必要な場合だけ Keychain に触るため、
     // `--only antigravity` では prompt 自体を避けられる。
-    let mut jobs =
-        chrome_jobs_or_degrade(chrome_jobs(root, targets), want_antigravity || want_grok)?;
+    let mut jobs = chrome_jobs_or_degrade(
+        chrome_jobs(root, targets, &key),
+        want_antigravity || want_grok,
+    )?;
 
     // Antigravity job は Chrome profile に紐づかない単一 OAuth/local account。
     if want_antigravity {
@@ -438,7 +551,15 @@ async fn fetch_reports(
         );
     }
 
-    Ok(run_jobs(clients, jobs).await)
+    let mut reports = run_jobs(clients, jobs, cache).await;
+    if let Some(Err(error)) = key.get() {
+        chrome_jobs_or_degrade(
+            Err(anyhow::anyhow!("{error}")),
+            want_antigravity || want_grok,
+        )?;
+        reports.retain(|report| matches!(report.provider, Provider::Antigravity | Provider::Grok));
+    }
+    Ok(reports)
 }
 
 /// Claude Code 設定 file の path。`$CLAUDE_CONFIG_DIR/.claude.json`、未設定なら
@@ -1115,6 +1236,7 @@ async fn run(cli: Cli) -> Result<()> {
             Some(_) => false,
             None => grok::available(cfg.grok.as_ref()),
         };
+    let cache = cache::Cache::new(Duration::from_secs(cli.cache_ttl), cli.refresh)?;
     if cli.tui {
         let refresh: render::TuiFetch<'_> = Box::new(|| {
             Box::pin(async {
@@ -1125,6 +1247,7 @@ async fn run(cli: Cli) -> Result<()> {
                     cfg.antigravity.as_ref(),
                     want_grok,
                     cfg.grok.as_ref(),
+                    &cache,
                 )
                 .await?;
                 Ok(report::Report::build(&reports))
@@ -1139,6 +1262,7 @@ async fn run(cli: Cli) -> Result<()> {
         cfg.antigravity.as_ref(),
         want_grok,
         cfg.grok.as_ref(),
+        &cache,
     )
     .await?;
 
@@ -1169,6 +1293,55 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn chrome_cache_hits_keep_current_labels_without_loading_credentials() {
+        let dir = std::env::temp_dir().join(format!(
+            "ai-usage-lazy-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let source = dir.join("Cookies");
+        let target = Target {
+            profile: profile("Default", "Work"),
+            label: Some("current label".to_string()),
+            wants: BrowserWants::all(),
+        };
+        let credentials = Arc::new(ChromeCredentials {
+            db: source.clone(),
+            ..ChromeCredentials::default()
+        });
+        let job = Job::chrome(
+            &target,
+            FetchSpec::Claude(Arc::clone(&credentials)),
+            &source,
+            "auth".to_string(),
+        );
+        let cache = cache::Cache::at(dir.join("cache"), Duration::from_secs(120), false);
+        cache
+            .fetch(&job.cache_key, "auth", async {
+                Ok(UsageRow::single(model::Usage {
+                    email: Some("you@example.com".to_string()),
+                    ..model::Usage::default()
+                }))
+            })
+            .await
+            .unwrap();
+        let reports = run_jobs(http::clients().unwrap(), vec![job], cache.request()).await;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].label.as_deref(), Some("current label"));
+        assert_eq!(
+            reports[0].usage.as_ref().unwrap().email.as_deref(),
+            Some("you@example.com")
+        );
+        assert!(credentials.key.get().is_none());
+        assert!(credentials.cookies.get().is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn claude_config_path_treats_empty_env_as_unset() {
@@ -1374,12 +1547,12 @@ mod tests {
     #[test]
     fn fetch_spec_owns_its_provider_identity() {
         assert_eq!(
-            FetchSpec::Claude(HashMap::new()).provider(),
+            FetchSpec::Claude(Arc::default()).provider(),
             Provider::Claude
         );
-        assert_eq!(FetchSpec::Codex(HashMap::new()).provider(), Provider::Codex);
+        assert_eq!(FetchSpec::Codex(Arc::default()).provider(), Provider::Codex);
         assert_eq!(
-            FetchSpec::PixelLab(HashMap::new()).provider(),
+            FetchSpec::PixelLab(Arc::default()).provider(),
             Provider::PixelLab
         );
         assert_eq!(

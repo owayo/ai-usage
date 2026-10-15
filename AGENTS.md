@@ -24,6 +24,7 @@ resets and their expiry times. Antigravity (Google's `agy`) and Grok (xAI's
 | `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles, global provider exclusions, Antigravity/Grok tables), `BrowserWants` set operations, and `expand_home` for configured paths. |
 | `src/sort.rs`     | `SortKey` (`--sort`), shared by CLI and renderers. |
 | `src/report.rs`   | JSON DTO (shared by `--json` output and `--input` cache). |
+| `src/cache.rs` | Per-source usage cache (120 s by default), credential fingerprints, process locks, and atomic writes. |
 | `src/render.rs`   | Shared row resolution (display name, active highlight, brand colors), JSON output, and `write_stdout`; re-exports the renderers. |
 | `src/render/sort.rs` / `src/render/table.rs` / `src/render/statusline.rs` | Row sorting (`SortableRow`), human table, compact statusline. |
 | `src/render/manual_resets.rs` | Manual-reset summaries shared by the table column and the statusline `R:` suffix. |
@@ -439,6 +440,19 @@ the live balance or the weekly percentage. Read only
 the last 1 MiB of the log, and derive its path from the chosen `auth.json`.
 
 ## Statusline cache
+
+Normal fetches now share `src/cache.rs` across table / JSON / statusline / TUI.
+The slot is provider + canonical source path; labels and CLI output filters do
+not affect it. Entries store typed usage rows and credential fingerprints, never
+credential values. Chrome fingerprints hash session-cookie ciphertext (plus the
+Claude organization) from a read-only, WAL-aware connection. Keychain and cookie
+decryption are lazy and skipped on a hit. OAuth fingerprints use file metadata.
+Successful results live for `--cache-ttl` seconds (default 120), errors for up to
+15 seconds. `--refresh` / TTL 0 still share updates completed after the request
+began. Hold one stable OS lock per source, re-read after acquiring it, and never
+unlink the lock file. Lock errors must not fall back to an unlocked fetch.
+`AI_USAGE_CACHE_DIR` overrides the cache parent; always isolate it in tests.
+The explicit `--input` modes and information modes do not use this cache.
 
 `~/.claude/statusline.sh` drives the second-line usage display: it calls
 `ai-usage --json`, caches the result at `/tmp/claude-statusline-<uid>/ai-usage.json`

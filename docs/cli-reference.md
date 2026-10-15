@@ -35,6 +35,21 @@ Every command and option of `ai-usage`. The everyday examples are in the [README
 | `--no-color` | Disable ANSI colors. Colors are also suppressed when `NO_COLOR` holds a non-empty value (per [no-color.org](https://no-color.org/)) or `TERM=dumb` |
 | `--input <PATH>` | With `--statusline` or `--tui`, render a cached `--json` file without accessing Chrome, Keychain, or the network. TUI rereads it every minute |
 
+### Shared usage cache
+
+| Option | Description |
+|--------|-------------|
+| `--cache-ttl <SECONDS>` | Reuse each source's usage for this many seconds (default: `120`). `0` skips reuse of an earlier result while still coalescing overlapping fetches |
+| `--refresh` | Ignore an earlier cached result. An update completed after this request began is shared with concurrent requests |
+
+The table, JSON, statusline, and live TUI share results per provider and normalized credential-source path. Output settings, profile labels, and `--only` do not create separate caches. Only selected sources are fetched; a broad request can reuse sources previously fetched with `--only`. The TUI checks for updates every minute and applies the same cache lifetime. Chrome cache hits read session-cookie fingerprints without decrypting cookies or accessing Keychain. Changing session cookies, the active Claude organization, or an OAuth credential file invalidates that source's result. Crossing a known quota reset also expires it.
+
+Errors are shared for up to 15 seconds (bounded by `--cache-ttl`); an expired success is replaced by the current error rather than displayed as current usage. An updater holds an OS file lock until its result has been saved atomically. Other processes wait up to 35 seconds and reuse its result. A crashed updater releases its lock automatically. If the lock cannot be acquired, the row reports an error without making an additional API call. A save failure warns on stderr; that result is still displayed, but later runs may need to fetch again.
+
+On macOS the cache is in `~/Library/Caches/ai-usage/v1/`. Set `AI_USAGE_CACHE_DIR` to change the parent of `v1/`. The directory is private (`0700`), and entries and lock files are `0600`. Saved entries contain usage, timestamps, credential fingerprints, and error messages; cookies, access tokens, and refresh tokens are not saved. Do not delete lock files while instances are running.
+
+`--statusline --input` and `--tui --input` remain file-only render modes; `--refresh` and `--cache-ttl` do not make them fetch. Profile listing and config generation also bypass the shared usage cache.
+
 ### Active row selection
 
 | Option | Description |

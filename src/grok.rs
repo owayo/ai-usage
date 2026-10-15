@@ -337,7 +337,7 @@ impl Auth {
     }
 }
 
-fn auth_path(cfg: Option<&GrokCfg>) -> Option<PathBuf> {
+pub(crate) fn auth_path(cfg: Option<&GrokCfg>) -> Option<PathBuf> {
     if let Some(p) = cfg.and_then(|c| c.auth_path.as_ref()) {
         return Some(crate::config::expand_home(p));
     }

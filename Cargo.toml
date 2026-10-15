@@ -38,7 +38,7 @@ crossterm = "0.29"
 unicode-width = "0.2.2"
 # 表示名を絵文字や結合文字の途中で切らないため、書記素の境界で切り詰める。
 unicode-segmentation = "1.13.3"
-chrono = "0.4.45"
+chrono = { version = "0.4.45", features = ["serde"] }
 dirs = "7.0.0"
 anyhow = "1.0.104"
 toml = "1.1.6"

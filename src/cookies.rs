@@ -13,7 +13,7 @@ use std::process::Command;
 
 use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 use anyhow::{Context, Result, anyhow};
-use sha1::Sha1;
+use sha1::{Digest, Sha1};
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
@@ -202,6 +202,63 @@ pub struct DetectedSessions {
     pub pixellab: bool,
 }
 
+/// セッション Cookie の暗号文だけで認証の変更を検知する。キャッシュに当たる起動では
+/// 復号鍵を取得しない。Chrome が更新中の WAL も `mode=ro` で読む。
+pub fn session_fingerprints(db_path: &Path) -> Result<[Option<String>; 3]> {
+    use rusqlite::{Connection, OpenFlags};
+    let conn = Connection::open_with_flags(
+        sqlite_read_only_uri(db_path),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )?;
+    let mut stmt = conn
+        .prepare("SELECT host_key, name, encrypted_value FROM cookies ORDER BY host_key, name")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Vec<u8>>(2)?,
+        ))
+    })?;
+    let mut hashes = [Sha1::new(), Sha1::new(), Sha1::new()];
+    let mut present = [false; 3];
+    for row in rows {
+        let (host, name, encrypted) = row?;
+        if encrypted.is_empty() {
+            continue;
+        }
+        let index = if host_matches_domain(&host, CLAUDE_DOMAIN)
+            && matches!(name.as_str(), "sessionKey" | "lastActiveOrg")
+        {
+            present[0] |= name == "sessionKey";
+            0
+        } else if host_matches_domain(&host, CHATGPT_DOMAIN) && is_codex_session_cookie(&name) {
+            present[1] |=
+                name == CODEX_SESSION_COOKIE || name == format!("{CODEX_SESSION_COOKIE}.0");
+            1
+        } else if host_matches_domain(&host, PIXELLAB_DOMAIN) && is_pixellab_session_cookie(&name) {
+            present[2] |=
+                name == PIXELLAB_SESSION_COOKIE || name == format!("{PIXELLAB_SESSION_COOKIE}.0");
+            2
+        } else {
+            continue;
+        };
+        for bytes in [host.as_bytes(), name.as_bytes(), &encrypted] {
+            hashes[index].update((bytes.len() as u64).to_le_bytes());
+            hashes[index].update(bytes);
+        }
+    }
+    Ok(std::array::from_fn(|index| {
+        present[index].then(|| {
+            hashes[index]
+                .clone()
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        })
+    }))
+}
+
 pub fn detect_sessions(db_path: &Path) -> DetectedSessions {
     use rusqlite::{Connection, OpenFlags};
     let uri = sqlite_read_only_uri(db_path);
@@ -327,6 +384,59 @@ mod tests {
             .unwrap();
         }
         path
+    }
+
+    #[test]
+    fn fingerprints_track_sessions_and_orgs_without_decryption_or_tracking_cookies() {
+        let path = encrypted_cookie_db(
+            "fingerprints",
+            None,
+            &[
+                (".claude.ai", "sessionKey", b"encrypted-session".to_vec()),
+                (
+                    "chatgpt.com",
+                    "__Secure-next-auth.session-token.0",
+                    b"encrypted-head".to_vec(),
+                ),
+                (
+                    "www.pixellab.ai",
+                    "supabase-auth-token.1",
+                    b"orphan-chunk".to_vec(),
+                ),
+            ],
+        );
+        let initial = session_fingerprints(&path).unwrap();
+        assert!(initial[0].is_some());
+        assert!(initial[1].is_some());
+        assert!(initial[2].is_none());
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.execute(
+            "INSERT INTO cookies VALUES ('claude.ai', 'cf_clearance', x'01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cookies VALUES ('other.example', 'sessionKey', x'01')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(initial, session_fingerprints(&path).unwrap());
+        conn.execute(
+            "INSERT INTO cookies VALUES ('claude.ai', 'lastActiveOrg', x'02')",
+            [],
+        )
+        .unwrap();
+        let org_changed = session_fingerprints(&path).unwrap();
+        assert_ne!(initial[0], org_changed[0]);
+        assert_eq!(initial[1], org_changed[1]);
+        conn.execute("UPDATE cookies SET encrypted_value = x'03' WHERE name = '__Secure-next-auth.session-token.0'", []).unwrap();
+        assert_ne!(org_changed[1], session_fingerprints(&path).unwrap()[1]);
+        conn.execute("DELETE FROM cookies WHERE name = 'sessionKey'", [])
+            .unwrap();
+        assert!(session_fingerprints(&path).unwrap()[0].is_none());
+        drop(conn);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

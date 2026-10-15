@@ -100,6 +100,8 @@ The first run with a browser-backed provider triggers a macOS Keychain prompt (*
 
 ## Usage
 
+Usage results are shared between processes for 120 seconds by default. Starting several instances, including different output modes or overlapping `--only` / `--profile` selections, fetches each source once. A cache hit skips API calls and Chrome Keychain access. Use `ai-usage --refresh` to update immediately, or `--cache-ttl 60` to choose a different lifetime. See [shared caching](docs/cli-reference.md#shared-usage-cache).
+
 Run `ai-usage` with no arguments to see every signed-in account:
 
 ```text

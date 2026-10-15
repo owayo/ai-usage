@@ -59,7 +59,7 @@ impl WindowKind {
 }
 
 /// 単一の rate-limit window。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Window {
     pub kind: WindowKind,
     /// 実測された使用率。取得できない場合は `None` とし、0% と区別する。
@@ -68,7 +68,7 @@ pub struct Window {
 }
 
 /// Grok CLI が会話時に受け取った24時間枠の拒否応答。取得 API の週次枠とは別。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LimitObservation {
     pub model: String,
     pub observed_at: DateTime<Utc>,
@@ -99,7 +99,7 @@ impl ResetKind {
 }
 
 /// 同じ種類でも期限が異なる付与分は別々に保持する。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ManualReset {
     pub kind: ResetKind,
     /// None は不明。取得できた 0 回と区別する。
@@ -120,7 +120,7 @@ impl ManualReset {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Usage {
     pub email: Option<String>,
     pub plan: Option<String>,
@@ -137,7 +137,7 @@ pub struct Usage {
 /// 表示可能な usage 1 行。provider fetch は 1 行以上を返す。多くの provider は
 /// group なしの単一行(`group_label = None`)だが、Antigravity は model group
 /// ("Gemini", "Claude & GPT")ごとに tag 付きの行を返す。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UsageRow {
     /// usage を group 分割する provider の model-group label。
     pub group_label: Option<String>,

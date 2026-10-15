@@ -576,7 +576,7 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-fn token_path(cfg: Option<&AntigravityCfg>) -> Option<PathBuf> {
+pub(crate) fn token_path(cfg: Option<&AntigravityCfg>) -> Option<PathBuf> {
     if let Some(p) = cfg.and_then(|c| c.token_path.as_ref()) {
         return Some(crate::config::expand_home(p));
     }
