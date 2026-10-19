@@ -170,6 +170,8 @@ listener bound for the whole test so a parallel test cannot take over its port.
 
 - PixelLab の `imageGenerated` が欠落・null・数値以外の場合は、使用率を `None` とする。生成上限が分かる月次枠とリセット時刻は残し、実測の0%と区別する。
 - TUI の更新で行数が減った場合は、リストと `from X/Y` の表示に使うスクロール位置を現在の行数に収める。
+- TUI のアカウントは行に展開して描画し、表示領域より高いアカウントも見える部分を残す。スクロールと `from X/Y` はアカウント単位を維持する。
+- TUI の残り1〜59秒は `1m` と表示し、期限前の利用枠を `0m` にしない。
 - Keychain や Cookie DB の読み込み失敗は `cache::CredentialError` として返し、共有キャッシュへ保存しない。直後の再実行でも鍵の取得と縮退判定をやり直す。
 - TUI の初期取得・自動更新中の警告は `diagnostics::Diagnostics` で集め、ヘッダーに表示する。描画中に stderr へ直接書き込まない。通常のコマンドでは従来どおり stderr に出す。
 - テーブルにも `--no-color` / `NO_COLOR` / `TERM=dumb` を適用する。端末幅の自動調整は保つ。
@@ -184,6 +186,10 @@ listener bound for the whole test so a parallel test cannot take over its port.
 - `--reset-at` のときは、長期枠の日時を出せない行 (時刻不明・リセット済み・長期枠なし・短期枠のみ) にも同じ14桁を空け、後ろに続く `R:` の列を揃える。
 
 再現条件と修正根拠は [保守レビュー記録](docs/maintenance.ja.md) を参照。
+
+`tests/shared_cache.rs` は OAuth 更新の401と503の両方で、同時起動した CLI と後続の
+table / statusline が1回の更新要求を共有することを確認する。503も送信済みの
+refresh token を外側の再試行で再送しないことが重要。
 
 ## Dependency safety
 

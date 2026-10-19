@@ -41,6 +41,7 @@ It reads each Chrome profile's session straight from the browser, so it can repo
 - **Manual Resets**: Claude and Codex rows show how many manual usage resets remain and when each grant expires — the table lists every expiry, while the statusline shows the totals and the nearest date (in red once fewer than seven days remain). A count that could not be fetched reads `?` rather than `0`, and expired grants drop out even when rendering an older cache
 - **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
 - **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars. Labels are padded by display width and truncated at grapheme boundaries, preserving emoji and combining characters
+- **Interactive Dashboard**: `--tui` groups quotas and manual resets by account. Short terminals show the visible part of each account; reset countdowns of 1–59 seconds show `1m`
 - **JSON Output**: Machine-readable output for scripting and dashboards
 - **Zero Config**: Auto-discovers all signed-in profiles by default; optional `~/.config/ai-usage/config.toml` for pinning
 - **Sort Options**: Rank rows by long-window utilization or reset time (`weekly-*` option names are retained for compatibility)
@@ -213,6 +214,7 @@ Per-provider endpoints, cookie handling, and the retry policy: [docs/architectur
 ## Notes & Limitations
 
 - **macOS + Google Chrome only**. Chrome uses `v10` cookie encryption on macOS; Windows' `v20` app-bound scheme is not handled.
+- `--tui` requires an interactive terminal of at least 48 columns × 9 rows. Scrolling moves by account. Enlarge the terminal to see the lower lines of an account taller than the available area.
 - Chrome is optional for the OAuth-only providers. When Chrome isn't installed, its `Local State` can't be read, or you decline the Keychain prompt, a normal run prints `skipping Chrome profiles: …` on stderr and still renders Antigravity and Grok. Only `--list-profiles` / `--init-config` fail outright, since Chrome is the whole point of those modes — and when Chrome is the *only* target, the Keychain error is reported verbatim so you know to approve the prompt and re-run.
 - An unreadable config falls back to auto-discovery. A missing *default* config is silent, but a `--config` path you passed explicitly is reported on stderr, so a typo doesn't masquerade as "my config is being ignored".
 - If a `cf_clearance` cookie has gone stale you'll see a *Cloudflare challenge* error for that one account — open the relevant site once in that Chrome profile to refresh it, then re-run. Other accounts are unaffected.

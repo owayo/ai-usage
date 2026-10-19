@@ -12,7 +12,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 
 use super::manual_resets::format_resets_tui;
 use super::reset::{
@@ -207,19 +207,19 @@ fn draw(frame: &mut Frame, app: &App) {
     let rows = app.rows();
     // 更新で行数が減った場合も、リストと位置表示には同じ有効な位置を使う。
     let scroll = app.scroll.min(rows.len().saturating_sub(1));
-    let items: Vec<ListItem> = rows
+    // List は表示領域より高い項目を丸ごと省くため、行へ展開して見える部分を描く。
+    let lines: Vec<_> = rows
         .iter()
-        .map(|account| account_item(account, app.color, chunks[1].width))
+        .skip(scroll)
+        .flat_map(|account| account_lines(account, app.color, chunks[1].width))
         .collect();
-    let mut position = ListState::default().with_offset(scroll);
-    frame.render_stateful_widget(
-        List::new(items).block(Block::bordered().title(format!(
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(format!(
             " Accounts · from {}/{} ",
             if rows.is_empty() { 0 } else { scroll + 1 },
             rows.len()
         ))),
         chunks[1],
-        &mut position,
     );
     if rows.is_empty() {
         let message = if app.loading {
@@ -250,7 +250,7 @@ fn inner(area: Rect) -> Rect {
     )
 }
 
-fn account_item<'a>(account: &AccountOut, color: bool, area_width: u16) -> ListItem<'a> {
+fn account_lines(account: &AccountOut, color: bool, area_width: u16) -> Vec<Line<'static>> {
     let now = Utc::now();
     let (r, g, b) = brand_rgb(account.provider);
     let brand = if color {
@@ -355,7 +355,7 @@ fn account_item<'a>(account: &AccountOut, color: bool, area_width: u16) -> ListI
         }
     }
     lines.push(Line::default());
-    ListItem::new(lines)
+    lines
 }
 
 fn window_spans(
@@ -451,6 +451,8 @@ fn reset_text(window: &WindowOut, now: DateTime<Utc>) -> String {
     if seconds <= 0 {
         return "due".into();
     }
+    // 期限前の1〜59秒は、表と同じく最低1分として表示する。
+    let seconds = seconds.max(60);
     let days = seconds / 86_400;
     let hours = seconds % 86_400 / 3_600;
     let minutes = seconds % 3_600 / 60;
@@ -799,6 +801,74 @@ mod tests {
         assert!(screen.contains("24h  LIMIT HIT"), "{screen}");
         assert!(screen.contains("grok-test · seen"), "{screen}");
         assert!(screen.contains("120/100 tokens at refusal"), "{screen}");
+    }
+
+    #[test]
+    fn reset_text_handles_minute_hour_and_day_boundaries() {
+        let now = parse_utc("2026-10-19T00:00:00Z").unwrap();
+        let mut window = WindowOut {
+            kind: Some(WindowKind::FiveHour),
+            used_percent: Some(10.0),
+            resets_at: None,
+            resets_in_seconds: Some(999),
+        };
+        for (seconds, expected) in [
+            (-1, "due"),
+            (0, "due"),
+            (1, "1m"),
+            (59, "1m"),
+            (60, "1m"),
+            (61, "1m"),
+            (3599, "59m"),
+            (3600, "1h 0m"),
+            (86399, "23h 59m"),
+            (86400, "1d 0h"),
+        ] {
+            window.resets_at = Some((now + chrono::Duration::seconds(seconds)).to_rfc3339());
+            assert_eq!(reset_text(&window, now), expected, "{seconds} seconds");
+        }
+        for reset in [None, Some("invalid".to_string())] {
+            window.resets_at = reset;
+            assert_eq!(reset_text(&window, now), "?");
+        }
+    }
+
+    #[test]
+    fn short_terminal_keeps_an_oversized_account_visible() {
+        let report: Report = serde_json::from_value(serde_json::json!({
+            "generated_at": "2026-10-10T00:00:00Z",
+            "accounts": [{
+                "profile":"Home", "provider":"claude", "ok":true,
+                "plan":null, "email":null, "profile_email":null, "label":null,
+                "group_label":null, "error":null,
+                "five_hour":{"used_percent":62.0,"resets_at":null,"resets_in_seconds":null},
+                "weekly":{"used_percent":85.0,"resets_at":null,"resets_in_seconds":null}
+            }]
+        }))
+        .unwrap();
+        let app = App {
+            warnings: Vec::new(),
+            report: Some(report),
+            error: None,
+            loading: false,
+            scroll: 0,
+            sort: SortKey::Provider,
+            color: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(48, 9)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let screen = (0..9)
+            .map(|y| {
+                (0..48)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("Claude"), "{screen}");
+        assert!(screen.contains("62%"), "{screen}");
+        assert!(screen.contains("from 1/1"), "{screen}");
     }
 
     #[test]

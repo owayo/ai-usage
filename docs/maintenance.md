@@ -2,6 +2,31 @@
 
 Each section records a dependency update and code review. Changes address reproduced defects or behavior demonstrably incorrect from the code; suspected issues without that evidence are listed as unconfirmed observations and left unchanged.
 
+## 2026-10-19 review
+
+### Confirmed defects
+
+| Reproduction | Evidence | Fix and regression coverage |
+|---|---|---|
+| Display an account with both quota windows in a 48-column, 9-row TUI | The list has two inner rows, but the account item occupies four. Ratatui List omits items that do not fit; the pre-fix rendering test showed an empty account area | Flatten account lines into a Paragraph so the visible portion is rendered. Preserve account-based scrolling and `from X/Y`. Add a 48×9 rendering test |
+| Set a TUI reset time 1–59 seconds in the future | Truncating seconds to minutes produces `0m`; the new boundary test failed with one second remaining | Display at least one minute before expiry. Cover expired, zero, 1/59/60/61-second, hour/day, missing, and invalid timestamp cases |
+
+Enlarge the terminal vertically to see the lower lines of an account taller than the available area. Line-based scrolling was not added.
+
+### Dependencies and review
+
+`depup --install --include-pinned` updated Tokio to 1.53.2 and refreshed locked cc, libc, and mio dependencies. The mise toolchain now uses Rust 1.99.0 and CMake 4.4.4. No dependency major update required an API migration. depup returned status 2 because the previously locked indoc 2.0.8 and powerfmt 0.2.1 still fell inside its release-age interval; both retained their previous versions.
+
+All source structure and references were reviewed with astro-sight. The maximum cyclomatic complexity of 20 remains in CLI and TUI control flow, so a broad refactor was unnecessary. A Claude consultation supported localized display fixes. `generated_at` means report generation time, not fetch time; a proposal to add fetch timestamps was left outside this defect fix.
+
+### Validation
+
+`make setup`, `make ci`, and `make build` passed, including rustfmt, clippy with `-D warnings`, 253 unit tests, and 15 CLI tests. New CLI coverage confirms that concurrent processes and subsequent output formats share a failed OAuth refresh with HTTP 503, making only one refresh request. `cargo audit` reported zero vulnerabilities or warnings; wreq still uses system-configuration 0.7.0.
+
+A real `--json --refresh` run fetched Claude and Codex successfully with empty stderr. Grok's OAuth refresh was rejected with HTTP 400 (`Invalid or unknown refresh token`). Antigravity and PixelLab were not tested against live endpoints in this review.
+
+A 48×9 PTY smoke test also verified visible account and quota text, exit status 0 on `q`, and empty stderr.
+
 ## 2026-10-15 review
 
 ### Confirmed defects

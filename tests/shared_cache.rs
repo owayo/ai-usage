@@ -50,6 +50,16 @@ impl Drop for TestDir {
 
 #[test]
 fn concurrent_cli_instances_make_one_http_request_and_share_errors_across_formats() {
+    assert_shared_refresh_failure("401 Unauthorized");
+}
+
+#[test]
+fn transient_refresh_failure_is_not_retried_or_repeated_by_concurrent_cli_instances() {
+    // 更新応答が503でもトークンは送信済みなので、外側の再試行で再送してはいけない。
+    assert_shared_refresh_failure("503 Service Unavailable");
+}
+
+fn assert_shared_refresh_failure(response_status: &'static str) {
     let dir = TestDir::new();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -99,7 +109,7 @@ fn concurrent_cli_instances_make_one_http_request_and_share_errors_across_format
             count.fetch_add(1, Ordering::Relaxed);
             std::thread::sleep(Duration::from_millis(150));
             let body = r#"{"error":"fixture refresh rejected"}"#;
-            write!(stream, "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            write!(stream, "HTTP/1.1 {response_status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
     });
     let auth_path = dir.0.join("auth.json");
