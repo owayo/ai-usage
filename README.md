@@ -41,7 +41,7 @@ It reads each Chrome profile's session straight from the browser, so it can repo
 - **Manual Resets**: Claude and Codex rows show how many manual usage resets remain and when each grant expires — the table lists every expiry, while the statusline shows the totals and the nearest date (in red once fewer than seven days remain). A count that could not be fetched reads `?` rather than `0`, and expired grants drop out even when rendering an older cache
 - **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
 - **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars. Labels are padded by display width and truncated at grapheme boundaries, preserving emoji and combining characters
-- **Interactive Dashboard**: `--tui` groups quotas and manual resets by account. Short terminals show the visible part of each account; reset countdowns of 1–59 seconds show `1m`
+- **Interactive Dashboard**: `--tui` groups quotas and manual resets by account, with a disk panel at the bottom showing the startup disk's used, purgeable, and free space. Short terminals show the visible part of each account; reset countdowns of 1–59 seconds show `1m`
 - **JSON Output**: Machine-readable output for scripting and dashboards
 - **Zero Config**: Auto-discovers all signed-in profiles by default; optional `~/.config/ai-usage/config.toml` for pinning
 - **Sort Options**: Rank rows by long-window utilization or reset time (`weekly-*` option names are retained for compatibility)
@@ -161,6 +161,8 @@ The TUI groups quota bars under each account heading, with each window labeled `
 
 The TUI also shows each quota window's absolute reset date and time. If a refresh returns fewer accounts, the displayed scroll position stays within the new list. Fetch warnings appear in the dashboard header.
 
+Below the accounts, a disk panel shows the startup disk (for example `Macintosh HD`) followed by any volumes listed in `[tui].disk_mounts`. Each bar splits used (`█`), purgeable (`▒`), and free (`░`) space; available space and the decimal units match Finder. Each volume is reread in the background 30 seconds after its previous read. With `--input`, disk values are still read live from this Mac. Hide the panel with `--no-disk` or by setting `[tui].disk` to `false`. See [Disk usage](docs/architecture.md#disk-usage) for how the values are measured and displayed.
+
 If PixelLab supplies a generation limit but omits the generation count, its monthly window and reset time remain visible with an unknown percentage (`--%`). An explicit zero count still displays `0%`.
 
 Every command and option, including statusline active-row selection, `--input` for fast status-bar redraws from a cached `--json` file, and `--debug`: [docs/cli-reference.md](docs/cli-reference.md)
@@ -193,7 +195,7 @@ match = "Home"
 label = "home"
 ```
 
-Precedence: **CLI flags > config file > auto-detection**. The Antigravity, Grok, and statusline tables and every key with its default: [docs/configuration.md](docs/configuration.md)
+Precedence: **CLI flags > config file > auto-detection**. The Antigravity, Grok, statusline, and TUI tables and every key with its default: [docs/configuration.md](docs/configuration.md)
 
 ## How It Works
 
@@ -214,7 +216,7 @@ Per-provider endpoints, cookie handling, and the retry policy: [docs/architectur
 ## Notes & Limitations
 
 - **macOS + Google Chrome only**. Chrome uses `v10` cookie encryption on macOS; Windows' `v20` app-bound scheme is not handled.
-- `--tui` requires an interactive terminal of at least 48 columns × 9 rows. Scrolling moves by account. Enlarge the terminal to see the lower lines of an account taller than the available area.
+- `--tui` requires an interactive terminal of at least 48 columns × 9 rows. Scrolling moves by account. Enlarge the terminal to see the lower lines of an account taller than the available area. The bordered disk panel needs a terminal at least 14 rows tall (15 while the header shows a warning). Each additional volume needs one more row; volumes that do not fit are summarized as `+N more` in the panel title. At 12–13 rows the panel shrinks to a single line without a border, and on shorter terminals it is hidden so the accounts keep their space.
 - Chrome is optional for the OAuth-only providers. When Chrome isn't installed, its `Local State` can't be read, or you decline the Keychain prompt, a normal run prints `skipping Chrome profiles: …` on stderr and still renders Antigravity and Grok. Only `--list-profiles` / `--init-config` fail outright, since Chrome is the whole point of those modes — and when Chrome is the *only* target, the Keychain error is reported verbatim so you know to approve the prompt and re-run.
 - An unreadable config falls back to auto-discovery. A missing *default* config is silent, but a `--config` path you passed explicitly is reported on stderr, so a typo doesn't masquerade as "my config is being ignored".
 - If a `cf_clearance` cookie has gone stale you'll see a *Cloudflare challenge* error for that one account — open the relevant site once in that Chrome profile to refresh it, then re-run. Other accounts are unaffected.

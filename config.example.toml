@@ -45,3 +45,12 @@ label = "grok"            # optional: 行に表示する label
 # 除外した provider は取得もしません。--only で一時的に表示できます。
 [providers]
 exclude = ["antigravity"] # claude / codex / antigravity / pixellab / grok
+
+# TUI (--tui) 下部のディスク欄。起動ディスク (/ の volume) は既定で先頭に表示されるため、
+# config は不要です。local volume を追加したい場合、または欄を off にしたい場合だけ追加します。
+# disk_mounts には mount point をそのまま書きます (先頭の ~/ は展開)。mount されていない
+# path は unavailable: not mounted、network volume は問い合わせずに
+# unavailable: not a local volume と表示します。
+# [tui]
+# disk = true                        # false ならディスク欄を非表示 (--no-disk と同じ)
+# disk_mounts = ["/Volumes/Archive"] # 起動ディスクの後にこの順で表示

@@ -9,7 +9,8 @@ Storage" Keychain key) and reports Claude, Codex, and PixelLab usage limits —
 typed 5-hour / daily / weekly / monthly windows plus reset times — for every
 signed-in profile. Claude and Codex rows also carry the remaining manual usage
 resets and their expiry times. Antigravity (Google's `agy`) and Grok (xAI's
-`grok` CLI) are fetched via OAuth alongside them.
+`grok` CLI) are fetched via OAuth alongside them. The `--tui` dashboard also
+shows this Mac's disk usage at the bottom.
 
 ## Source map
 
@@ -21,14 +22,16 @@ resets and their expiry times. Antigravity (Google's `agy`) and Grok (xAI's
 | `src/jwt.rs`      | Unverified JWT payload decoding (`claims`), shared by the Codex account id, Grok expiry, and PixelLab expiry/email readers. |
 | `src/claude.rs` / `src/codex.rs` / `src/antigravity.rs` / `src/pixellab.rs` / `src/grok.rs` | Per-provider usage fetchers (Claude/Codex also parse manual resets). |
 | `src/model.rs`    | `Provider` / `Usage` / `Window` / `WindowKind` / `ManualReset` / `ResetKind` data model. |
-| `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles, global provider exclusions, Antigravity/Grok tables), `BrowserWants` set operations, and `expand_home` for configured paths. |
+| `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles, global provider exclusions, Antigravity/Grok tables, `[tui]` disk settings), `BrowserWants` set operations, and `expand_home` for configured paths. |
 | `src/sort.rs`     | `SortKey` (`--sort`), shared by CLI and renderers. |
 | `src/report.rs`   | JSON DTO (shared by `--json` output and `--input` cache). |
 | `src/cache.rs` | Per-source usage cache (120 s by default), credential fingerprints, process locks, and atomic writes. |
 | `src/diagnostics.rs` | Warning delivery: stderr for normal commands, a shared queue while the TUI draws. |
+| `src/disk.rs` / `src/disk/macos.rs` | TUI disk panel data: Finder-style capacity (`Volume`), target list, and the detached-thread `Monitor`. `macos.rs` holds the only `unsafe` code (mount table via `getfsstat`, NSURL key constants). |
 | `src/render.rs`   | Shared row resolution (display name, active highlight, brand colors), JSON output, and `write_stdout`; re-exports the renderers. |
 | `src/render/sort.rs` / `src/render/table.rs` / `src/render/statusline.rs` | Row sorting (`SortableRow`), human table, compact statusline. |
 | `src/render/manual_resets.rs` | Manual-reset summaries shared by the table column and the statusline `R:` suffix. |
+| `src/render/tui.rs` / `src/render/tui/disk.rs` | TUI event loop and layout; the disk panel's placement, bar, and text. |
 | `src/main.rs`     | CLI, config-row binding and provider resolution, concurrent fetch. |
 
 ## Transient failures vs auth failures
@@ -166,6 +169,18 @@ malformed JSON, plus the headers sent). Those HTTP tests build their client with
 `no_proxy()` so a system proxy cannot intercept loopback requests, and they keep each
 listener bound for the whole test so a parallel test cannot take over its port.
 
+The disk panel adds capacity normalization (important-usage capacity of `0`, missing,
+or above the total falls back to plain free space with an unknown purgeable size; a
+skewed reading below free is raised to free), target lists (startup disk first,
+duplicates and `/` dropped), the `Monitor` (one reader per volume while a read hangs,
+the next read only `INTERVAL` after completion, stale values kept on failure but dropped
+for unmounted or network volumes), the real mount table and startup-disk query
+(`disk.rs` / `disk/macos.rs`), and rendering: placement thresholds, bar cells that always
+fill the width and keep small non-zero parts visible, `0%` / `100%` only at exact
+extremes, decimal units, width-dependent detail text, stale / `no response` /
+`unavailable` rows, colors, and the TUI layout at 9–24 rows (`render/tui/disk.rs`,
+`render/tui.rs`).
+
 ## 保守時に維持する動作
 
 - PixelLab の `imageGenerated` が欠落・null・数値以外の場合は、使用率を `None` とする。生成上限が分かる月次枠とリセット時刻は残し、実測の0%と区別する。
@@ -184,6 +199,10 @@ listener bound for the whole test so a parallel test cannot take over its port.
 - Grok の認証情報は小数秒を捨てず作成時刻を比較する。
 - stdout へは `render::write_stdout` で書き、`print!` / `println!` を使わない。読み手が先に閉じた pipe (`| head`) は panic させず、`main` で終了コード 0 の正常終了にする。
 - `--reset-at` のときは、長期枠の日時を出せない行 (時刻不明・リセット済み・長期枠なし・短期枠のみ) にも同じ14桁を空け、後ろに続く `R:` の列を揃える。
+- TUI のディスク欄は、描画と切り離した `std::thread` の切り離しスレッドで読む。パージ可能な量の問い合わせは1回40〜120msかかり、戻らないこともある。`tokio::task::spawn_blocking` は終了時に作業の完了を待つため使わない。2秒を過ぎた取得は `no response` の表示に切り替えるだけで打ち切らず、同じボリュームの次の取得は前回が戻ってから30秒後に始める。
+- 追加ボリューム (`[tui] disk_mounts`) は、`getfsstat(MNT_NOWAIT)` のマウント表でマウントポイントかつローカルだと確かめてから問い合わせる。ネットワークボリュームには問い合わせない。抜いたディスクやネットワークボリュームは古い値を出さず `unavailable` にする。
+- ディスクの使用率は Finder と同じく `total − 重要な用途に使える容量` で数え、表示する%とバーの色に同じ値を使う。重要な用途の容量が0・欠落・総容量超えのときは通常の空きで代え、パージ可能な量は不明として扱う (0にしない)。
+- ディスク欄はアカウント一覧に6行を残せる高さのときだけ枠付きで出し、足りなければ枠なしの1行、それも足りなければ出さない。
 
 再現条件と修正根拠は [保守レビュー記録](docs/maintenance.ja.md) を参照。
 
@@ -229,6 +248,14 @@ Note that `wreq` enables the system proxy by default (`auto_sys_proxy = true`)
 and applies **no loopback exclusion**, so any client that must not leave the
 machine has to call `no_proxy()` explicitly — see the Antigravity localhost
 client below.
+
+The TUI disk panel adds `objc2-foundation`, `objc2`, and `libc` as macOS-only
+dependencies (`[target.'cfg(target_os = "macos")'.dependencies]`), so the crate still
+builds elsewhere and the panel just reports `unavailable`. `objc2-foundation` runs with
+`default-features = false` and only the classes it needs; its NSURL query is a safe
+fn, unlike the CFURL bindings in `objc2-core-foundation`. All `unsafe` code in the crate
+lives in `src/disk/macos.rs`: two `getfsstat` calls into a `libc::statfs::default()`
+buffer and the read of Foundation's NSURL key constants. Keep it there.
 
 ## Adding a provider
 

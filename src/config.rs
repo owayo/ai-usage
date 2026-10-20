@@ -35,6 +35,21 @@ pub struct Config {
 
     /// `--statusline` 描画のみに効く設定。全体の除外は `[providers]` で指定する。
     pub statusline: Option<StatuslineCfg>,
+
+    /// `--tui` 描画のみに効く設定。
+    pub tui: Option<TuiCfg>,
+}
+
+/// `--tui` 出力にだけ効く設定(top-level `[tui]`)。
+#[derive(Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct TuiCfg {
+    /// `None` = 最下部に起動ディスクの容量を表示する(既定)、`Some(false)` = 表示しない。
+    /// CLI `--no-disk` はこれより優先する。
+    pub disk: Option<bool>,
+    /// 起動ディスクの後に表示する、ローカルボリュームのマウントポイント
+    /// (例: "/Volumes/Archive")。マウントされていない・ネットワークのボリュームには問い合わせない。
+    pub disk_mounts: Vec<String>,
 }
 
 /// 取得対象を全表示モードで共有する設定(top-level `[providers]`)。
@@ -316,6 +331,10 @@ mod tests {
 
             [statusline]
             hide = ["claude", "codex"]
+
+            [tui]
+            disk = false
+            disk_mounts = ["/Volumes/Archive"]
         "#;
         let parsed: Config = toml::from_str(text).unwrap();
         assert_eq!(parsed.active_email.as_deref(), Some("alice@example.com"));
@@ -339,6 +358,9 @@ mod tests {
         );
         let sl = parsed.statusline.as_ref().unwrap();
         assert_eq!(sl.hide, vec!["claude".to_string(), "codex".to_string()]);
+        let tui = parsed.tui.as_ref().unwrap();
+        assert_eq!(tui.disk, Some(false));
+        assert_eq!(tui.disk_mounts, ["/Volumes/Archive"]);
     }
 
     #[test]
@@ -380,6 +402,12 @@ mod tests {
         assert!(parsed.profiles.is_empty());
         assert!(parsed.providers.is_none());
         assert!(parsed.antigravity.is_none());
+        assert!(parsed.tui.is_none());
+        // `[tui]` だけを書いた場合も、ディスク欄は既定で表示する。
+        let parsed: Config = toml::from_str("[tui]\n").unwrap();
+        let tui = parsed.tui.unwrap();
+        assert_eq!(tui.disk, None);
+        assert!(tui.disk_mounts.is_empty());
     }
 
     fn temp_path(name: &str) -> PathBuf {

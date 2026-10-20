@@ -8,6 +8,7 @@ mod codex;
 mod config;
 mod cookies;
 mod diagnostics;
+mod disk;
 mod grok;
 mod http;
 mod jwt;
@@ -56,6 +57,10 @@ struct Cli {
     /// 対話式の端末画面で利用枠を表示する
     #[arg(long, conflicts_with_all = ["json", "statusline"])]
     tui: bool,
+
+    /// `--tui` の最下部にディスク使用量を表示しない(config の `[tui] disk` より優先)
+    #[arg(long)]
+    no_disk: bool,
 
     /// compact な colored statusline を出力する(1 account 1 行)
     #[arg(long)]
@@ -999,6 +1004,15 @@ fn statusline_opts(cli: &Cli, cfg: &config::Config) -> render::StatuslineOpts {
     }
 }
 
+/// `--tui` の最下部に容量を表示するボリューム。`--no-disk` は `[tui] disk` より優先する。
+fn disk_targets(cli: &Cli, cfg: &config::Config) -> Vec<disk::Target> {
+    let tui = cfg.tui.as_ref();
+    if cli.no_disk || tui.and_then(|tui| tui.disk) == Some(false) {
+        return Vec::new();
+    }
+    disk::targets(tui.map_or(&[], |tui| tui.disk_mounts.as_slice()))
+}
+
 /// `[providers] exclude` を全表示モード共通の除外対象に解決する。
 /// 明示的な `--only` は設定より優先し、その provider だけは表示する。
 fn excluded_providers(cli: &Cli, cfg: &config::Config) -> Vec<model::Provider> {
@@ -1184,6 +1198,7 @@ async fn run(cli: Cli) -> Result<()> {
             cli.sort,
             color_enabled(cli.no_color),
             diagnostics,
+            disk_targets(&cli, &cfg),
         )
         .await;
     }
@@ -1205,6 +1220,7 @@ async fn run(cli: Cli) -> Result<()> {
                 cli.sort,
                 color_enabled(cli.no_color),
                 diagnostics,
+                disk_targets(&cli, &cfg),
             )
             .await;
         }
@@ -1280,6 +1296,7 @@ async fn run(cli: Cli) -> Result<()> {
             cli.sort,
             color_enabled(cli.no_color),
             diagnostics,
+            disk_targets(&cli, &cfg),
         )
         .await;
     }
@@ -1817,6 +1834,34 @@ mod tests {
 
         // [statusline] が無ければ何も隠さない。
         assert!(resolve_statusline_hide(&cli, &config::Config::default()).is_empty());
+    }
+
+    #[test]
+    fn disk_targets_follow_the_cli_flag_and_tui_config() {
+        let tui = |disk: Option<bool>| config::Config {
+            tui: Some(config::TuiCfg {
+                disk,
+                disk_mounts: vec!["/Volumes/Archive".to_string()],
+            }),
+            ..Default::default()
+        };
+        let cli = Cli::parse_from(["ai-usage", "--tui"]);
+        // 設定が無くても起動ディスクは表示する。
+        assert_eq!(
+            disk_targets(&cli, &config::Config::default()),
+            [disk::Target::Startup]
+        );
+        assert_eq!(
+            disk_targets(&cli, &tui(None)),
+            [
+                disk::Target::Startup,
+                disk::Target::Mount("/Volumes/Archive".into())
+            ]
+        );
+        assert!(disk_targets(&cli, &tui(Some(false))).is_empty());
+        // `--no-disk` は設定で有効にしていても優先する。
+        let no_disk = Cli::parse_from(["ai-usage", "--tui", "--no-disk"]);
+        assert!(disk_targets(&no_disk, &tui(Some(true))).is_empty());
     }
 
     #[test]

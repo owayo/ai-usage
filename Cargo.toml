@@ -43,6 +43,17 @@ dirs = "7.0.0"
 anyhow = "1.0.104"
 toml = "1.1.6"
 
+# TUI のディスク欄 (src/disk/macos.rs)。Finder と同じ「利用可能」(パージ可能な領域を含む) は
+# NSURL のリソース値でしか取れない。objc2-foundation は必要なクラスだけを有効にし、CFURL 版
+# (objc2-core-foundation) と違って問い合わせ自体を safe fn で呼べる。
+# libc の getfsstat(MNT_NOWAIT) は、ネットワークボリュームに問い合わせる前にブロックせず
+# マウント表を読むために使う。他の OS ではディスク欄が「取得できない」と表示するだけで、
+# ビルドは従来どおり通る。
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.190"
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSObject", "NSString", "NSURL", "NSValue"] }
+
 [profile.release]
 lto = true
 codegen-units = 1

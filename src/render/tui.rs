@@ -1,5 +1,7 @@
 //! 全アカウントの使用枠を同時に比較できる対話式の端末表示。
 
+mod disk;
+
 use std::future::Future;
 use std::io::{self, IsTerminal};
 use std::pin::Pin;
@@ -22,6 +24,7 @@ use super::sort::sorted_refs;
 use super::{brand_rgb, display_name, limit_observation_age, parse_utc};
 use crate::SortKey;
 use crate::diagnostics::Diagnostics;
+use crate::disk::{Monitor as DiskMonitor, Target as DiskTarget};
 use crate::model::{Provider, WindowKind};
 use crate::report::{AccountOut, Report, WindowOut};
 
@@ -48,6 +51,8 @@ struct App {
     scroll: usize,
     sort: SortKey,
     color: bool,
+    /// 最下部のディスク欄。`--no-disk` などで無効なら None。
+    disk: Option<DiskMonitor>,
 }
 
 impl App {
@@ -66,12 +71,16 @@ impl App {
 }
 
 /// `--tui` のメインループ。通信が終わる前にも取得中画面を表示する。
+///
+/// `disk` が空でなければ、最下部にそのボリュームの容量を表示する。利用枠を保存済みの
+/// JSON から読む場合も、ディスクの値はこの Mac から読む。
 pub async fn run(
     initial: Option<Report>,
     fetch: Option<Fetch<'_>>,
     sort: SortKey,
     color: bool,
     diagnostics: Diagnostics,
+    disk: Vec<DiskTarget>,
 ) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("--tui requires an interactive terminal (use --json for redirected output)");
@@ -94,11 +103,18 @@ pub async fn run(
         scroll: 0,
         sort,
         color,
+        disk: (!disk.is_empty()).then(|| DiskMonitor::new(disk, Instant::now())),
     };
 
     let mut redraw = true;
     let mut last_draw = Instant::now();
     loop {
+        // ディスクの取得は別スレッドで進む。ここでは結果の反映と次の取得の開始だけを行う。
+        if let Some(monitor) = app.disk.as_mut()
+            && monitor.poll(Instant::now())
+        {
+            redraw = true;
+        }
         if pending.is_none() && Instant::now() >= next_refresh {
             if let Some(start) = &fetch {
                 pending = Some(start());
@@ -168,10 +184,20 @@ fn draw(frame: &mut Frame, app: &App) {
         return;
     }
 
+    let header = if app.warnings.is_empty() { 3 } else { 4 };
+    let footer = 2;
+    // ディスク欄はアカウント一覧の下、キー操作の説明の上に置く。高さが足りなければ一覧を優先する。
+    let disk = disk::placement(
+        app.disk.as_ref().map_or(0, |monitor| monitor.rows().len()),
+        area.height,
+        header,
+        footer,
+    );
     let chunks = Layout::vertical([
-        Constraint::Length(if app.warnings.is_empty() { 3 } else { 4 }),
+        Constraint::Length(header),
         Constraint::Min(3),
-        Constraint::Length(2),
+        Constraint::Length(disk.height()),
+        Constraint::Length(footer),
     ])
     .split(area);
 
@@ -235,9 +261,13 @@ fn draw(frame: &mut Frame, app: &App) {
         );
     }
 
+    if let Some(monitor) = &app.disk {
+        disk::render(frame, chunks[2], monitor, disk, app.color, Instant::now());
+    }
+
     frame.render_widget(
         Paragraph::new("↑↓ / j k: scroll   Home/End/PgUp/PgDn: move   q/Esc/Ctrl-C: quit\nBars = used quota · reset = time left · auto-refresh every 1m"),
-        chunks[2],
+        chunks[3],
     );
 }
 
@@ -505,6 +535,7 @@ mod tests {
             scroll: 0,
             sort: SortKey::Provider,
             color: false,
+            disk: None,
         };
         app.move_scroll(10);
         assert_eq!(app.scroll, 1);
@@ -532,6 +563,7 @@ mod tests {
             scroll: 2,
             sort: SortKey::Provider,
             color: false,
+            disk: None,
         };
         for (count, expected) in [(1, "from 1/1"), (0, "from 0/0")] {
             app.report.as_mut().unwrap().accounts.truncate(count);
@@ -568,6 +600,7 @@ mod tests {
             scroll: 0,
             sort: SortKey::Provider,
             color: false,
+            disk: None,
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal.draw(|frame| draw(frame, &app)).unwrap();
@@ -784,6 +817,7 @@ mod tests {
             scroll: 0,
             sort: SortKey::Provider,
             color: false,
+            disk: None,
         };
         let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
         terminal.draw(|frame| draw(frame, &app)).unwrap();
@@ -854,6 +888,7 @@ mod tests {
             scroll: 0,
             sort: SortKey::Provider,
             color: false,
+            disk: None,
         };
         let mut terminal = Terminal::new(TestBackend::new(48, 9)).unwrap();
         terminal.draw(|frame| draw(frame, &app)).unwrap();
@@ -901,6 +936,7 @@ mod tests {
             scroll: 0,
             sort: SortKey::Provider,
             color: false,
+            disk: None,
         };
         for width in [48, 60, 80] {
             let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
@@ -973,6 +1009,145 @@ mod tests {
         assert!(
             !screen.contains("Claude") && screen.contains("Codex"),
             "{screen}"
+        );
+    }
+
+    fn screen_lines(app: &App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn app_with_disk(warnings: Vec<String>) -> App {
+        let report: Report = serde_json::from_value(serde_json::json!({
+            "generated_at": "2026-10-10T00:00:00Z",
+            "accounts": [{
+                "profile":"Home", "provider":"claude", "ok":true,
+                "plan":null, "email":null, "profile_email":null, "label":null,
+                "group_label":null, "error":null,
+                "five_hour":{"used_percent":62.0,"resets_at":null,"resets_in_seconds":null},
+                "weekly":{"used_percent":85.0,"resets_at":null,"resets_in_seconds":null}
+            }]
+        }))
+        .unwrap();
+        let now = Instant::now();
+        let mut row = crate::disk::Row::new(DiskTarget::Startup, now);
+        let volume = crate::disk::Volume::new(
+            "Macintosh HD".into(),
+            494_384_795_648,
+            13_080_645_632,
+            Some(70_754_759_808),
+        )
+        .unwrap();
+        row.last = Some((volume, now));
+        App {
+            warnings,
+            report: Some(report),
+            error: None,
+            loading: false,
+            scroll: 0,
+            sort: SortKey::Provider,
+            color: false,
+            disk: Some(DiskMonitor::from_rows(vec![row])),
+        }
+    }
+
+    #[test]
+    fn disk_panel_sits_above_the_key_help_and_yields_to_accounts() {
+        let app = app_with_disk(Vec::new());
+        let lines = screen_lines(&app, 80, 24);
+        let legend = lines
+            .iter()
+            .position(|line| line.contains("Disk · █ used ▒ purgeable ░ free"))
+            .unwrap();
+        // 枠付きの欄 (3 行) の下に、キー操作の説明 (2 行) が残る。
+        assert_eq!(legend, 24 - 2 - 3, "{lines:#?}");
+        let row = &lines[legend + 1];
+        assert!(row.contains("Macintosh HD  █"), "{row}");
+        assert!(row.contains("86%  70.8 GB available of 494.4 GB"), "{row}");
+        assert!(lines[22].contains("q/Esc/Ctrl-C: quit"), "{lines:#?}");
+        assert!(lines.iter().any(|line| line.contains("62%")));
+        assert!(lines.iter().any(|line| line.contains("85%")));
+
+        // 最小幅でもバーと利用可能な容量は残す。
+        let narrow = screen_lines(&app, 48, 14);
+        assert!(
+            narrow[10].contains("86%  70.8 GB available") && !narrow[10].contains("of 494.4"),
+            "{narrow:#?}"
+        );
+
+        // 12〜13 行では枠なしの 1 行にし、それより低い端末ではアカウント一覧に譲る。
+        for height in [12, 13] {
+            let lines = screen_lines(&app, 80, height);
+            assert!(
+                lines[usize::from(height) - 3].starts_with("Disk  Macintosh HD  █"),
+                "{height}: {lines:#?}"
+            );
+            assert!(!lines.iter().any(|line| line.contains("purgeable ░ free")));
+        }
+        for height in [9, 11] {
+            let lines = screen_lines(&app, 80, height);
+            assert!(
+                !lines.iter().any(|line| line.contains("Macintosh HD")),
+                "{height}: {lines:#?}"
+            );
+            assert!(lines.iter().any(|line| line.contains("Claude")));
+        }
+
+        // ヘッダーに警告の行が増えると、同じ置き方に 1 行多く要る。
+        let warned = app_with_disk(vec!["skipping Chrome profiles: keychain denied".into()]);
+        let lines = screen_lines(&warned, 80, 14);
+        assert!(lines[11].starts_with("Disk  Macintosh HD"), "{lines:#?}");
+        let lines = screen_lines(&warned, 80, 15);
+        assert!(lines.iter().any(|line| line.contains("purgeable ░ free")));
+    }
+
+    #[test]
+    fn disk_panel_lists_extra_volumes_and_summarizes_rows_that_do_not_fit() {
+        let mut app = app_with_disk(Vec::new());
+        let now = Instant::now();
+        let mut unplugged =
+            crate::disk::Row::new(DiskTarget::Mount("/Volumes/Archive".into()), now);
+        unplugged.error = Some(crate::disk::ReadError::NotMounted);
+        let photos = crate::disk::Row::new(DiskTarget::Mount("/Volumes/Photos".into()), now);
+        let startup = app.disk.take().unwrap().rows()[0].last.clone().unwrap();
+        let mut first = crate::disk::Row::new(DiskTarget::Startup, now);
+        first.last = Some(startup);
+        app.disk = Some(DiskMonitor::from_rows(vec![first, unplugged, photos]));
+
+        let lines = screen_lines(&app, 80, 24);
+        let legend = lines
+            .iter()
+            .position(|line| line.contains("purgeable ░ free"))
+            .unwrap();
+        assert_eq!(legend, 24 - 2 - 5, "{lines:#?}");
+        // バーの位置を揃えるため、名前の欄は最も長い名前に合わせる。
+        assert!(lines[legend + 1].contains("Macintosh HD  █"), "{lines:#?}");
+        assert!(
+            lines[legend + 2].contains("Archive       unavailable: not mounted"),
+            "{lines:#?}"
+        );
+        assert!(
+            lines[legend + 3].contains("Photos        reading…"),
+            "{lines:#?}"
+        );
+
+        // 一覧の 6 行を残すと 2 行分しか入らない高さでは、残りを見出しにまとめる。
+        let lines = screen_lines(&app, 80, 15);
+        assert!(
+            lines.iter().any(|line| line.contains("free · +1 more")),
+            "{lines:#?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains("Photos")),
+            "{lines:#?}"
         );
     }
 }

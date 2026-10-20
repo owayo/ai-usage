@@ -71,6 +71,23 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
 
 `claude.ai` and `chatgpt.com` sit behind Cloudflare, so the HTTP client ([`wreq`](https://crates.io/crates/wreq)) emulates Chrome's TLS/HTTP2 fingerprint and replays the profile's `cf_clearance` cookie — a plain HTTP client just gets a `403`. Transport failures and HTTP `408` / `429` / `5xx` responses use the same bounded retry policy for GET and POST requests, with a 20-second deadline per provider job. Once a token refresh has been sent for a provider, its remaining failures are *not* retried: ai-usage never writes a rotated refresh token back, so replaying that fetch would resend a token the server may already have rotated away.
 
+## Disk usage
+
+The `--tui` disk panel reads each volume's capacity locally through Foundation's `NSURL` volume resource values. Nothing is sent over the network, and disk usage is not part of `--json`, the table, `--statusline`, or the shared usage cache.
+
+- **Total**: the volume's total capacity.
+- **Available**: the capacity available for important usage. This is the figure Finder reports as available, and it includes purgeable space.
+- **Free**: the space that is free right now.
+- **Purgeable**: available − free. This is an estimate and is not guaranteed to match Finder's purgeable figure exactly.
+
+Used space is total − available, so the percentage matches how full Finder considers the disk. Volumes that do not report capacity for important usage (for example, some external or Time Machine disks) show available = free and no purgeable part. Sizes use decimal units like Finder (1 GB = 1,000,000,000 bytes). The percentage reads 0% or 100% only when the disk is exactly empty or full.
+
+The startup disk (the volume mounted at `/`) is always the first row, labeled with the volume name macOS reports, such as `Macintosh HD`. Volumes from `[tui].disk_mounts` follow in the listed order. The panel title doubles as the legend: `Disk · █ used ▒ purgeable ░ free`. Each row shows the volume name, a bar, the used percentage, and text such as `70.8 GB available of 494.4 GB · 13.1 GB free · 57.7 GB purgeable`. The whole bar takes one color from the used percentage: green below 80%, yellow from 80%, light red from 90%, and red from 95%. The glyphs keep the segments distinguishable without color, and `--no-color`, `NO_COLOR`, and `TERM=dumb` turn the colors off as elsewhere in the TUI. Narrow terminals keep the bar and shorten the text after it in steps, from the full breakdown down to the available size and finally to the percentage alone.
+
+Reads run on a background thread, so drawing and key handling never wait for them. The first read starts when the TUI opens, and each volume is read again 30 seconds after its previous read finishes, independently of the one-minute usage refresh. At most one read per volume runs at a time. If a read takes longer than 2 seconds, the row shows `no response`, or keeps the last values with their age (for example `· 3m ago`). Quitting never waits for a stuck read. A failed read also keeps the last values with their age. With `--tui --input`, account usage comes from the saved file, but disk values are always read live from this Mac.
+
+`[tui].disk_mounts` entries are checked against the system mount table before any query, and network volumes are never queried, so an unreachable share cannot stall the TUI. See [Configuration](configuration.md#configuration-options) for what an unmounted or network entry shows.
+
 ## Privacy
 
 Nothing leaves your machine except authenticated usage requests to Anthropic, OpenAI, Google, PixelLab, and xAI. No tokens or cookies are printed or stored.
