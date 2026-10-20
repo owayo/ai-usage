@@ -176,10 +176,10 @@ duplicates and `/` dropped), the `Monitor` (one reader per volume while a read h
 the next read only `INTERVAL` after completion, stale values kept on failure but dropped
 for unmounted or network volumes), the real mount table and startup-disk query
 (`disk.rs` / `disk/macos.rs`), and rendering: placement thresholds, bar cells that always
-fill the width and keep small non-zero parts visible, `0%` / `100%` only at exact
-extremes, decimal units, width-dependent detail text, stale / `no response` /
-`unavailable` rows, colors, and the TUI layout at 9–24 rows (`render/tui/disk.rs`,
-`render/tui.rs`).
+fill the width and keep small non-zero used / free parts visible, `0%` / `100%` only at
+exact extremes, decimal units, width-dependent detail text and bar widths, one shared
+bar width per panel, stale / `no response` / `unavailable` rows, colors, and the TUI
+layout at 9–24 rows (`render/tui/disk.rs`, `render/tui.rs`).
 
 ## 保守時に維持する動作
 
@@ -203,6 +203,7 @@ extremes, decimal units, width-dependent detail text, stale / `no response` /
 - 追加ボリューム (`[tui] disk_mounts`) は、`getfsstat(MNT_NOWAIT)` のマウント表でマウントポイントかつローカルだと確かめてから問い合わせる。ネットワークボリュームには問い合わせない。抜いたディスクやネットワークボリュームは古い値を出さず `unavailable` にする。
 - ディスクの使用率は Finder と同じく `total − 重要な用途に使える容量` で数え、表示する%とバーの色に同じ値を使う。重要な用途の容量が0・欠落・総容量超えのときは通常の空きで代え、パージ可能な量は不明として扱う (0にしない)。
 - ディスク欄はアカウント一覧に6行を残せる高さのときだけ枠付きで出し、足りなければ枠なしの1行、それも足りなければ出さない。
+- ディスク欄の行どうしでバーの幅を揃える (説明の最も長い行に合わせる)。説明はバーを16セル残せる範囲で最も詳しいものを選び、狭い端末でだけバーを6セルまで縮める。バーの3区分の合計は常にバーの幅に一致させ、最低1セルの補正は使用中と空きにだけ掛ける。1セルに満たないパージ可能分のために使用中のセルを削らない。
 
 再現条件と修正根拠は [保守レビュー記録](docs/maintenance.ja.md) を参照。
 

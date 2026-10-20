@@ -18,6 +18,8 @@ const MIN_ACCOUNT_ROWS: u16 = 6;
 /// ボリューム名の欄の最大幅。
 const MAX_NAME_WIDTH: usize = 16;
 const MIN_BAR: usize = 6;
+/// 説明を足すために、これより短くはしないバーの幅。狭い端末では `MIN_BAR` まで縮める。
+const COMFORT_BAR: usize = 16;
 const MAX_BAR: usize = 40;
 const LEGEND: &str = "Disk · █ used ▒ purgeable ░ free";
 
@@ -70,14 +72,10 @@ pub(super) fn render(
         Placement::Line => {
             let prefix = "Disk  ";
             let width = usize::from(area.width).saturating_sub(prefix.len());
+            let names = name_width(&rows[..1]);
+            let bar = preferred_bar(&rows[0], names, width, now).unwrap_or(MIN_BAR);
             let mut spans = vec![Span::raw(prefix)];
-            spans.extend(row_spans(
-                &rows[0],
-                name_width(&rows[..1]),
-                width,
-                color,
-                now,
-            ));
+            spans.extend(row_spans(&rows[0], names, width, bar, color, now));
             frame.render_widget(Paragraph::new(Line::from(spans)), area);
         }
         Placement::Panel(shown) => {
@@ -90,9 +88,15 @@ pub(super) fn render(
             };
             let width = usize::from(area.width.saturating_sub(2));
             let names = name_width(shown);
+            // 行どうしを比べられるよう、バーの幅は最も説明の長い行に合わせて揃える。
+            let bar = shown
+                .iter()
+                .filter_map(|row| preferred_bar(row, names, width, now))
+                .min()
+                .unwrap_or(MIN_BAR);
             let lines: Vec<Line> = shown
                 .iter()
-                .map(|row| Line::from(row_spans(row, names, width, color, now)))
+                .map(|row| Line::from(row_spans(row, names, width, bar, color, now)))
                 .collect();
             frame.render_widget(
                 Paragraph::new(lines).block(Block::bordered().title(title)),
@@ -117,11 +121,62 @@ fn name_width(rows: &[Row]) -> usize {
         .min(MAX_NAME_WIDTH)
 }
 
-/// 1 ボリュームの行。バーの後ろの説明は、幅に収まる最も詳しいものを選ぶ。
+/// 名前の欄 (末尾の区切りを含む)。
+fn name_field(row: &Row, name_width: usize) -> String {
+    format!("{} ", pad_display(&row_name(row), name_width + 1))
+}
+
+/// 値のある行の使用率と、バーの後ろに置ける説明 (詳しい順、最後は空)。
+fn texts(row: &Row, now: Instant) -> Option<(&Volume, String, Vec<String>)> {
+    let (volume, read_at) = row.last.as_ref()?;
+    // 直近の取得が失敗した、または戻らないときは、表示中の値がいつのものかを添える。
+    let stale = (row.error.is_some() || row.overdue(now))
+        .then(|| format!("{} ago", age(now.saturating_duration_since(*read_at))));
+    let details = details(volume)
+        .into_iter()
+        .map(|detail| match (&stale, detail.is_empty()) {
+            (Some(stale), true) => stale.clone(),
+            (Some(stale), false) => format!("{detail} · {stale}"),
+            (None, _) => detail,
+        })
+        .collect();
+    Some((volume, format!("  {}", percent_label(volume)), details))
+}
+
+/// 説明の前に空ける 2 桁を含めた、説明に要る幅。
+fn detail_width(detail: &str) -> usize {
+    if detail.is_empty() {
+        0
+    } else {
+        2 + detail.width()
+    }
+}
+
+/// 最も詳しい説明を出せるバーの幅。値のない行は None。
+fn preferred_bar(row: &Row, name_width: usize, width: usize, now: Instant) -> Option<usize> {
+    let (_, percent, details) = texts(row, now)?;
+    let budget = width.saturating_sub(name_field(row, name_width).width() + percent.width());
+    let needs: Vec<usize> = details.iter().map(|detail| detail_width(detail)).collect();
+    // バーを COMFORT_BAR 以上に保てる中で最も詳しい説明を選ぶ。どれも入らない幅では
+    // バーを MIN_BAR まで縮めて説明を残し、それも無理ならバーと使用率だけを出す。
+    let chosen = needs
+        .iter()
+        .copied()
+        .filter(|&need| need > 0)
+        .find(|&need| budget >= need + COMFORT_BAR)
+        .or_else(|| needs.iter().copied().find(|&need| budget >= need + MIN_BAR));
+    Some(chosen.map_or_else(
+        || budget.clamp(1, MAX_BAR),
+        |need| (budget - need).min(MAX_BAR),
+    ))
+}
+
+/// 1 ボリュームの行。バーの後ろの説明は、`bar` の幅で収まる最も詳しいものを選ぶ。
 fn row_spans(
     row: &Row,
     name_width: usize,
     width: usize,
+    bar: usize,
     color: bool,
     now: Instant,
 ) -> Vec<Span<'static>> {
@@ -132,8 +187,8 @@ fn row_spans(
             Style::default()
         }
     };
-    let name = format!("{} ", pad_display(&row_name(row), name_width + 1));
-    let Some((volume, read_at)) = &row.last else {
+    let name = name_field(row, name_width);
+    let Some((volume, percent, details)) = texts(row, now) else {
         let status = if let Some(error) = &row.error {
             Span::styled(format!("unavailable: {error}"), paint(Color::Red))
         } else if row.overdue(now) {
@@ -143,27 +198,12 @@ fn row_spans(
         };
         return vec![Span::raw(name), status];
     };
-
-    // 直近の取得が失敗した、または戻らないときは、表示中の値がいつのものかを添える。
-    let stale = (row.error.is_some() || row.overdue(now))
-        .then(|| format!("{} ago", age(now.saturating_duration_since(*read_at))));
-    let percent = format!("  {}", percent_label(volume));
     let budget = width.saturating_sub(name.width() + percent.width());
-    let mut chosen = None;
-    for detail in details(volume) {
-        let text = match (&stale, detail.is_empty()) {
-            (Some(stale), true) => stale.clone(),
-            (Some(stale), false) => format!("{detail} · {stale}"),
-            (None, _) => detail,
-        };
-        let need = if text.is_empty() { 0 } else { 2 + text.width() };
-        if budget >= need + MIN_BAR {
-            chosen = Some((text, (budget - need).min(MAX_BAR)));
-            break;
-        }
-    }
-    // どの説明も入らない狭さでは、バーと使用率だけを出す。
-    let (detail, bar_width) = chosen.unwrap_or_else(|| (String::new(), budget.clamp(1, MAX_BAR)));
+    let bar_width = bar.min(budget).max(1);
+    let detail = details
+        .into_iter()
+        .find(|detail| budget >= detail_width(detail) + bar_width)
+        .unwrap_or_default();
 
     let [used, purgeable, free] = bar_cells(volume, bar_width);
     let bar = format!(
@@ -220,10 +260,12 @@ fn bar_cells(volume: &Volume, width: usize) -> [usize; 3] {
         cells[index] += 1;
         remainders[index] = 0;
     }
-    // 0 でない区分は、幅が足りる限り最低 1 セル見せる (数値は説明の方が正確)。
+    // 少しでも使っている・空いているディスクが、空・満杯に見えないよう、使用中と空きは
+    // 0 でなければ最低 1 セル見せる (数値は説明の方が正確)。パージ可能分は補助の情報なので、
+    // 1 セルに満たない量のために使用中のセルを削らない。
     if parts.iter().filter(|&&part| part > 0).count() <= width {
-        for (index, &part) in parts.iter().enumerate() {
-            if part > 0 && cells[index] == 0 {
+        for index in [0, 2] {
+            if parts[index] > 0 && cells[index] == 0 {
                 let donor = (0..3)
                     .max_by_key(|&other| cells[other])
                     .expect("three parts");
@@ -325,6 +367,18 @@ mod tests {
         spans.iter().map(|span| span.content.as_ref()).collect()
     }
 
+    /// 1 行だけを描くときと同じく、その行に最適なバーの幅で組む。
+    fn spans_for(
+        row: &Row,
+        names: usize,
+        width: usize,
+        color: bool,
+        now: Instant,
+    ) -> Vec<Span<'static>> {
+        let bar = preferred_bar(row, names, width, now).unwrap_or(MIN_BAR);
+        row_spans(row, names, width, bar, color, now)
+    }
+
     #[test]
     fn placement_keeps_room_for_the_accounts_list() {
         for (volumes, height, header, expected) in [
@@ -404,21 +458,31 @@ mod tests {
         let now = base();
         let row = sampled(startup(), now);
         let names = name_width(std::slice::from_ref(&row));
-        for (width, expected) in [
+        // 説明を足してもバーを 16 セル残せる範囲で最も詳しくし、狭い幅では 6 セルまで縮める。
+        for (width, expected, bar) in [
             (
                 118,
                 "70.8 GB available of 494.4 GB · 13.1 GB free · 57.7 GB purgeable",
+                32,
             ),
-            (78, "70.8 GB available of 494.4 GB · 57.7 GB purgeable"),
-            (58, "70.8 GB available of 494.4 GB"),
-            (46, "70.8 GB available"),
-            (26, ""),
+            (98, "70.8 GB available of 494.4 GB · 57.7 GB purgeable", 27),
+            (78, "70.8 GB available of 494.4 GB", 27),
+            (58, "70.8 GB available", 19),
+            (46, "70.8 GB available", 7),
+            (26, "", 6),
         ] {
-            let line = text(&row_spans(&row, names, width, false, now));
+            let line = text(&spans_for(&row, names, width, false, now));
             assert!(line.starts_with("Macintosh HD  █"), "{line:?}");
             assert!(line.contains("  86%"), "{line:?}");
             assert!(
                 line.ends_with(&format!("86%  {expected}").trim_end().to_string()),
+                "{width}: {line:?}"
+            );
+            assert_eq!(
+                line.chars()
+                    .filter(|c| matches!(c, '█' | '▒' | '░'))
+                    .count(),
+                bar,
                 "{width}: {line:?}"
             );
             assert!(line.width() <= width, "{width}: {line:?}");
@@ -431,34 +495,34 @@ mod tests {
         let names = 12;
         let mut row = Row::new(Target::Mount("/Volumes/Archive".into()), now);
         assert_eq!(
-            text(&row_spans(&row, names, 80, false, now)).trim_end(),
+            text(&spans_for(&row, names, 80, false, now)).trim_end(),
             "Archive       reading…"
         );
 
         row.started = Some(now - OVERDUE_FOR_TEST);
-        assert!(text(&row_spans(&row, names, 80, false, now)).ends_with("no response"));
+        assert!(text(&spans_for(&row, names, 80, false, now)).ends_with("no response"));
 
         row.started = None;
         row.error = Some(ReadError::NotMounted);
-        let spans = row_spans(&row, names, 80, true, now);
+        let spans = spans_for(&row, names, 80, true, now);
         assert!(text(&spans).ends_with("unavailable: not mounted"));
         assert_eq!(spans.last().unwrap().style.fg, Some(Color::Red));
 
         // 失敗しても前回の値は残し、いつの値かを添える。
         let mut stale = sampled(startup(), now - Duration::from_secs(180));
         stale.error = Some(ReadError::Failed("I/O error".into()));
-        let line = text(&row_spans(&stale, names, 118, false, now));
+        let line = text(&spans_for(&stale, names, 118, false, now));
         assert!(line.ends_with("57.7 GB purgeable · 3m ago"), "{line:?}");
         // 説明が入らない幅でも、経過時間だけは残す。
-        let narrow = text(&row_spans(&stale, names, 34, false, now));
+        let narrow = text(&spans_for(&stale, names, 34, false, now));
         assert!(narrow.ends_with("86%  3m ago"), "{narrow:?}");
 
         // 取得が戻らない間も同じ。成功した値だけなら経過時間は出さない。
         let mut waiting = sampled(startup(), now - Duration::from_secs(33));
         waiting.started = Some(now - Duration::from_secs(3));
-        assert!(text(&row_spans(&waiting, names, 80, false, now)).ends_with("· <1m ago"));
+        assert!(text(&spans_for(&waiting, names, 80, false, now)).ends_with("· <1m ago"));
         waiting.started = Some(now - Duration::from_secs(1));
-        assert!(!text(&row_spans(&waiting, names, 80, false, now)).contains("ago"));
+        assert!(!text(&spans_for(&waiting, names, 80, false, now)).contains("ago"));
     }
 
     const OVERDUE_FOR_TEST: Duration = crate::disk::OVERDUE;
@@ -478,9 +542,9 @@ mod tests {
         }
         let now = base();
         let row = sampled(startup(), now);
-        let colored = row_spans(&row, 12, 80, true, now);
+        let colored = spans_for(&row, 12, 80, true, now);
         assert_eq!(colored[1].style.fg, Some(Color::Yellow));
-        let plain = row_spans(&row, 12, 80, false, now);
+        let plain = spans_for(&row, 12, 80, false, now);
         assert!(plain.iter().all(|span| span.style.fg.is_none()));
         assert_eq!(text(&colored), text(&plain));
     }
@@ -493,8 +557,46 @@ mod tests {
         let row = sampled(volume, now);
         let names = name_width(std::slice::from_ref(&row));
         assert_eq!(names, MAX_NAME_WIDTH);
-        let line = text(&row_spans(&row, names, 80, false, now));
+        let line = text(&spans_for(&row, names, 80, false, now));
         let bar = line.find('█').unwrap();
         assert_eq!(line[..bar].width(), MAX_NAME_WIDTH + 2, "{line:?}");
+    }
+
+    #[test]
+    fn panel_rows_share_one_bar_width() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let now = base();
+        let mut archive = Row::new(Target::Mount("/Volumes/Archive".into()), now);
+        archive.last = Some((
+            Volume::new("Archive".into(), 1_000 * GB, 41 * GB, Some(41 * GB)).unwrap(),
+            now,
+        ));
+        let monitor = Monitor::from_rows(vec![sampled(startup(), now), archive]);
+        let mut terminal = Terminal::new(TestBackend::new(100, 4)).unwrap();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    frame.area(),
+                    &monitor,
+                    Placement::Panel(2),
+                    false,
+                    now,
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let bars: Vec<usize> = (1..3)
+            .map(|y| {
+                (0..100)
+                    .filter(|&x| matches!(buffer.cell((x, y)).unwrap().symbol(), "█" | "▒" | "░"))
+                    .count()
+            })
+            .collect();
+        // 説明の短い Archive の行も、起動ディスクの行と同じ幅のバーで描く。
+        assert_eq!(bars[0], bars[1], "{bars:?}");
+        assert!(bars[0] >= MIN_BAR, "{bars:?}");
     }
 }
