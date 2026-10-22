@@ -39,15 +39,6 @@ impl Paint {
     const fn bold(self) -> Self {
         Paint { bold: true, ..self }
     }
-
-    /// ANSI SGR のパラメータ部。太字は `1;` を前に置く (`1;38;5;196`)。
-    pub(super) fn sgr(self) -> String {
-        let fg = match self.fg {
-            Fg::Indexed(index) => format!("38;5;{index}"),
-            Fg::Rgb(r, g, b) => format!("38;2;{r};{g};{b}"),
-        };
-        if self.bold { format!("1;{fg}") } else { fg }
-    }
 }
 
 /// 枠のラベル、アカウント名、プラン、手動リセットの件数など、値に添える文字。
@@ -170,14 +161,18 @@ mod tests {
     }
 
     #[test]
-    fn sgr_keeps_the_statusline_byte_format() {
-        // statusline の出力をバイト単位で保つため、SGR の並び (太字が先) を固定する。
-        assert_eq!(LABEL.sgr(), "38;5;245");
-        assert_eq!(MUTED.sgr(), "38;5;242");
-        assert_eq!(ALERT.sgr(), "38;5;196");
-        assert_eq!(ACTIVE.sgr(), "1;38;5;196");
-        assert_eq!(marker(Provider::Codex).sgr(), "38;2;255;255;255");
-        assert_eq!(marker(Provider::Claude).sgr(), "38;2;217;119;87");
+    fn named_colors_keep_their_palette_numbers() {
+        // statusline の出力をバイト単位で保つため、番号と太字の有無を固定する。
+        assert_eq!(LABEL, Paint::indexed(245));
+        assert_eq!(MUTED, Paint::indexed(242));
+        assert_eq!(ALERT, Paint::indexed(196));
+        assert_eq!(
+            ACTIVE,
+            Paint {
+                fg: Fg::Indexed(196),
+                bold: true
+            }
+        );
     }
 
     #[test]

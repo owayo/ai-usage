@@ -55,16 +55,23 @@ struct App {
 }
 
 impl App {
-    fn rows(&self) -> Vec<&AccountOut> {
+    /// 描画する順の行。`--sort weekly-reset` は残り時間で並べるので、色と同じ時刻を渡す。
+    fn rows(&self, now: DateTime<Utc>) -> Vec<&AccountOut> {
         self.report
             .as_ref()
-            .map(|report| sorted_refs(&report.accounts, self.sort, Utc::now(), None))
+            .map(|report| sorted_refs(&report.accounts, self.sort, now, None))
             .unwrap_or_default()
     }
 
+    /// アカウントの数。並べ替えは数を変えないので、並べずに数える。
+    fn len(&self) -> usize {
+        self.report
+            .as_ref()
+            .map_or(0, |report| report.accounts.len())
+    }
+
     fn move_scroll(&mut self, delta: isize) {
-        let len = self.rows().len();
-        let last = len.saturating_sub(1);
+        let last = self.len().saturating_sub(1);
         self.scroll = self.scroll.min(last).saturating_add_signed(delta).min(last);
     }
 }
@@ -158,7 +165,7 @@ pub async fn run(
                     KeyCode::Up | KeyCode::Char('k') => app.move_scroll(-1),
                     KeyCode::Down | KeyCode::Char('j') => app.move_scroll(1),
                     KeyCode::Home => app.scroll = 0,
-                    KeyCode::End => app.scroll = app.rows().len().saturating_sub(1),
+                    KeyCode::End => app.scroll = app.len().saturating_sub(1),
                     KeyCode::PageUp => app.move_scroll(-10),
                     KeyCode::PageDown => app.move_scroll(10),
                     _ => {}
@@ -229,12 +236,12 @@ fn draw(frame: &mut Frame, app: &App) {
         chunks[0],
     );
 
-    let rows = app.rows();
+    // 期限の境界で並び順と行ごとの判定がずれないよう、現在時刻は 1 回の描画で 1 度だけ取る。
+    let now = Utc::now();
+    let rows = app.rows(now);
     // 更新で行数が減った場合も、リストと位置表示には同じ有効な位置を使う。
     let scroll = app.scroll.min(rows.len().saturating_sub(1));
     // List は表示領域より高い項目を丸ごと省くため、行へ展開して見える部分を描く。
-    // 期限の境界で行ごとに判定がずれないよう、現在時刻は 1 回の描画で 1 度だけ取る。
-    let now = Utc::now();
     let lines: Vec<_> = rows
         .iter()
         .skip(scroll)

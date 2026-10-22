@@ -58,9 +58,10 @@ fn sgr(style: Style) -> Option<String> {
 fn tui_segments(lines: &[Line<'static>]) -> Vec<Segment> {
     lines
         .iter()
-        .flat_map(|line| &line.spans)
-        .map(|span| Segment {
-            sgr: sgr(span.style),
+        .flat_map(|line| line.spans.iter().map(move |span| (line.style, span)))
+        .map(|(line_style, span)| Segment {
+            // 画面に出る装飾は、親の Line の装飾に Span の装飾を重ねたもの。
+            sgr: sgr(line_style.patch(span.style)),
             text: span.content.to_string(),
         })
         .collect()

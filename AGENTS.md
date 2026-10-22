@@ -184,8 +184,9 @@ layout at 9–24 rows (`render/tui/disk.rs`, `render/tui.rs`).
 
 Color coverage pins the shared scale with literal values: usage levels at 60/80/90%
 with bold percentages from 80%, exclusive reset-countdown thresholds, the seven-day
-manual-reset boundary, provider markers, and the exact SGR byte format
-(`render/palette.rs`). The TUI checks each span and the rendered `TestBackend` cells
+manual-reset boundary, and provider markers (`render/palette.rs`), plus the SGR byte
+format and golden lines for rows that cannot show a `--reset-at` date
+(`render/statusline.rs`). The TUI checks each span and the rendered `TestBackend` cells
 (bold only on high percentages, no style on parent lines, nothing under `--no-color`,
 redraws that leave no stale color or bold behind), the disk panel checks each bar
 segment's color, and `render/color_parity.rs` renders the same accounts through the
@@ -213,7 +214,7 @@ statusline and the TUI to confirm that shared text carries the same color.
 - statusline の出力はバイト単位で保つ。区間の区切りと末尾の `\x1b[0m` を変えず、同じ色の区間も結合しない。
 - TUI では親の `Line` / `Paragraph` に太字や色を置かず、Span ごとに付ける。親に置いた装飾は、色を付けない Span にも引き継がれる。`--no-color` / `NO_COLOR` / `TERM=dumb` では色も太字も付けない。
 - 手動リセットの期限の日時は、statusline と TUI のどちらも残り7日未満だけ赤にし、ちょうど7日は通常色のままにする。TUI は期限をすべて並べるため、日時ごとに判定する。
-- TUI は現在時刻を1回の描画につき1度だけ取り、全アカウントの残り時間と期限の色に同じ時刻を使う。行ごとに取り直すと、期限の境界で行によって判定が食い違う。
+- TUI は現在時刻を1回の描画につき1度だけ取り、並べ替え (`--sort weekly-reset`) と全アカウントの残り時間・期限の色に同じ時刻を使う。行ごとに取り直すと、期限の境界で行によって判定が食い違う。
 - TUI のディスク欄は、描画と切り離した `std::thread` の切り離しスレッドで読む。パージ可能な量の問い合わせは1回40〜120msかかり、戻らないこともある。`tokio::task::spawn_blocking` は終了時に作業の完了を待つため使わない。2秒を過ぎた取得は `no response` の表示に切り替えるだけで打ち切らず、同じボリュームの次の取得は前回が戻ってから30秒後に始める。
 - 追加ボリューム (`[tui] disk_mounts`) は、`getfsstat(MNT_NOWAIT)` のマウント表でマウントポイントかつローカルだと確かめてから問い合わせる。ネットワークボリュームには問い合わせない。抜いたディスクやネットワークボリュームは古い値を出さず `unavailable` にする。
 - ディスクの使用率は Finder と同じく `total − 重要な用途に使える容量` で数え、表示する%と使用中の部分の色に同じ値を使う。重要な用途の容量が0・欠落・総容量超えのときは通常の空きで代え、パージ可能な量は不明として扱う (0にしない)。

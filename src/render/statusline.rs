@@ -5,7 +5,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::manual_resets::format_resets_compact;
-use super::palette::{self, ACTIVE, ALERT, LABEL, Level, MUTED, Paint};
+use super::palette::{self, ACTIVE, ALERT, Fg, LABEL, Level, MUTED, Paint};
 use super::reset::{FIVE_H_TH, legacy_long_window_thresholds, window_thresholds};
 use super::sort::{sorted_refs, statusline_default_cmp};
 use super::{
@@ -351,10 +351,19 @@ fn window_seg(
 /// (使用率 0% の gauge は点灯部が空でも SGR を出す)。色を使わないときは何も足さない。
 fn paint(color: bool, p: Paint, s: &str) -> String {
     if color {
-        format!("\x1b[{}m{s}\x1b[0m", p.sgr())
+        format!("\x1b[{}m{s}\x1b[0m", sgr(p))
     } else {
         s.to_string()
     }
+}
+
+/// ANSI SGR のパラメータ部。太字は `1;` を前に置く (`1;38;5;196`)。
+fn sgr(p: Paint) -> String {
+    let fg = match p.fg {
+        Fg::Indexed(index) => format!("38;5;{index}"),
+        Fg::Rgb(r, g, b) => format!("38;2;{r};{g};{b}"),
+    };
+    if p.bold { format!("1;{fg}") } else { fg }
 }
 
 fn gauge(color: bool, pct: f64, width: usize) -> String {
@@ -935,6 +944,75 @@ mod tests {
                 "  \x1b[38;5;35m20d03h\x1b[0m",
             )
         );
+    }
+
+    #[test]
+    fn colored_rows_without_a_reset_date_match_golden_bytes() {
+        // `--reset-at` で日時を出せない行 (取得の失敗・短期枠だけ) も 14 桁を空け、
+        // 後ろの `R:` の列を揃える。期限が不明な手動リセットは `(?)` を LABEL で出す。
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let mut opts = plain_opts();
+        opts.color = true;
+        opts.compact = true;
+        opts.reset_at = true;
+        let pad = " ".repeat(RESET_AT_WIDTH);
+
+        let mut failed = manual_reset_account(None);
+        failed.ok = false;
+        failed.error = Some("fetch failed".into());
+        assert_eq!(
+            render_row(&failed, None, false, &opts, now),
+            format!(
+                concat!(
+                    "  \x1b[38;2;255;255;255mCodex  \x1b[0m",
+                    "\x1b[38;5;245mWork       \x1b[0m",
+                    "\x1b[38;5;245m5h \x1b[0m\x1b[38;5;242m░░░░░░░░\x1b[0m",
+                    " \x1b[38;5;242m  --\x1b[0m  \x1b[38;5;242m--    \x1b[0m",
+                    "   \x1b[38;5;245m1w \x1b[0m\x1b[38;5;242m░░░░░░░░\x1b[0m",
+                    " \x1b[38;5;242m  --\x1b[0m  \x1b[38;5;242m--    \x1b[0m{pad}",
+                ),
+                pad = pad,
+            )
+        );
+
+        let mut short_only = manual_reset_account(None);
+        short_only.short = Some(WindowOut {
+            kind: Some(WindowKind::FiveHour),
+            used_percent: Some(20.0),
+            resets_at: Some("2026-06-15T02:00:00Z".into()),
+            resets_in_seconds: None,
+        });
+        // 短期枠だけの行は 2 枠ぶんの幅 (2 * 8 + 19 = 35) の gauge にまとめる。
+        assert_eq!(
+            render_row(&short_only, None, false, &opts, now),
+            format!(
+                concat!(
+                    "  \x1b[38;2;255;255;255mCodex  \x1b[0m",
+                    "\x1b[38;5;245mWork       \x1b[0m",
+                    "\x1b[38;5;245m5h \x1b[0m",
+                    "\x1b[38;5;35m███████\x1b[0m\x1b[38;5;242m{free}\x1b[0m",
+                    " \x1b[38;5;35m 20%\x1b[0m",
+                    "  \x1b[38;5;178m2h00m \x1b[0m{pad}",
+                    "\x1b[38;5;245m  R:full 1\x1b[0m",
+                    "\x1b[38;5;245m (\x1b[0m",
+                    "\x1b[38;5;245m?\x1b[0m",
+                    "\x1b[38;5;245m)\x1b[0m",
+                ),
+                free = "░".repeat(28),
+                pad = pad,
+            )
+        );
+    }
+
+    #[test]
+    fn sgr_puts_bold_first_and_keeps_truecolor() {
+        // statusline の出力をバイト単位で保つため、SGR の並び (太字が先) を固定する。
+        assert_eq!(sgr(LABEL), "38;5;245");
+        assert_eq!(sgr(MUTED), "38;5;242");
+        assert_eq!(sgr(ALERT), "38;5;196");
+        assert_eq!(sgr(ACTIVE), "1;38;5;196");
+        assert_eq!(sgr(palette::marker(Provider::Codex)), "38;2;255;255;255");
+        assert_eq!(sgr(palette::marker(Provider::Claude)), "38;2;217;119;87");
     }
 
     /// 表示幅を東アジア文字幅で数える(テスト側の期待値を組み立てるための補助)。
