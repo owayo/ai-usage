@@ -4,6 +4,8 @@
 //! このファイルはレンダラー間で共有する行の解決(表示名・active 判定)と、
 //! 15 行で足りる JSON 出力を持つ。
 
+#[cfg(test)]
+mod color_parity;
 mod manual_resets;
 mod palette;
 mod reset;

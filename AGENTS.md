@@ -119,8 +119,8 @@ loading including explicit-path and invalid-file fallbacks, and
 malformed provider-email fallback (missing/empty/duplicate `@` separators)
 (`render.rs`), row sorting (`render/sort.rs`), table bar/humanize formatting
 (`render/table.rs`), statusline gauge/duration formatting including the
-"any non-zero usage lights at least one block" rule and the usage/reset colour
-thresholds, provider-aware
+"any non-zero usage lights at least one block" rule, golden colored lines pinned
+byte for byte, provider-aware
 monthly reset thresholds for legacy caches, and display-width name padding
 (over-long / exactly-fitting / full-width names) (`render/statusline.rs`),
 Antigravity quota parsing including nested/flat

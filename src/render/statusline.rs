@@ -5,7 +5,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::manual_resets::format_resets_compact;
-use super::palette::{self, brand_rgb};
+use super::palette::{self, ACTIVE, ALERT, LABEL, Level, MUTED, Paint};
 use super::reset::{FIVE_H_TH, legacy_long_window_thresholds, window_thresholds};
 use super::sort::{sorted_refs, statusline_default_cmp};
 use super::{
@@ -16,42 +16,17 @@ use crate::SortKey;
 use crate::model::Provider;
 use crate::report::{AccountOut, Report, WindowOut};
 
-// 256-color ANSI code(SGR wrapper なしの parameter 部分)。
-// Codex / Grok の marker 色。Codex の teal brand color は暗背景で沈み、Grok(xAI)は
-// 白黒基調ブランドのため、logo glyph・text label とも白で表示する。
-const WHITE_MARKER_COLOR: &str = "38;2;255;255;255";
 // BrandLogos font の PUA-B glyph。`--logos` で使う。
 const CLAUDE_LOGO: &str = "\u{100002}"; // Claude の太陽マーク。
 const CODEX_LOGO: &str = "\u{100000}"; // OpenAI のマーク。
 const ANTIGRAVITY_LOGO: &str = "\u{100003}"; // Antigravity のマーク。
 const GROK_LOGO: &str = "\u{100004}"; // Grok (xAI) のマーク。
 const PIXELLAB_LOGO: &str = "\u{100400}"; // PixelLab のドラゴン。
-const GRAY: &str = "38;5;245";
-const RED: &str = "38;5;196";
-const DIM: &str = "38;5;242";
-const GREEN: &str = "38;5;35";
 /// account 名 / model-group 名の欄幅(末尾の区切り 1 桁を含む)。最長の想定値
 /// "Claude&GPT"(10 桁)がちょうど収まり、その右に区切りが 1 桁残る。
 const NAME_FIELD_WIDTH: usize = 11;
 /// `--reset-at` が長期枠の後ろに付ける ` (MM/DD HH:MM)` の表示幅。
 const RESET_AT_WIDTH: usize = 14;
-
-/// brand color を ANSI SGR truecolor parameter として返す(statusline 用)。
-fn brand_sgr(p: Provider) -> String {
-    let (r, g, b) = brand_rgb(p);
-    format!("38;2;{r};{g};{b}")
-}
-
-/// provider marker(左端の logo glyph またはテキストラベル)に使う ANSI color。
-/// Codex は brand teal よりも白の方が明るいターミナル背景でも視認しやすく、
-/// Grok は xAI の白黒ブランドに合わせるため、logos モードと text モードの
-/// どちらでも `WHITE_MARKER_COLOR` を使う。
-fn marker_color(p: Provider) -> String {
-    match p {
-        Provider::Codex | Provider::Grok => WHITE_MARKER_COLOR.to_string(),
-        _ => brand_sgr(p),
-    }
-}
 
 /// statusline レンダリングの表示オプション。CLI flag 群を 1 つに束ね、
 /// レンダラー間の引数爆発(clippy::too_many_arguments)を避ける。
@@ -94,7 +69,7 @@ pub fn statusline(
     super::write_stdout(&lines.join("\n"))
 }
 
-fn render_row(
+pub(super) fn render_row(
     a: &AccountOut,
     row_email: Option<&str>,
     active: bool,
@@ -108,7 +83,7 @@ fn render_row(
     {
         rendered += &paint(
             opts.color,
-            RED,
+            ALERT,
             &format!("  24h LIMIT {} ({age} ago)", observation.model),
         );
     }
@@ -116,14 +91,15 @@ fn render_row(
         && let Some(resets) = &a.manual_resets
     {
         let resets = format_resets_compact(resets, now);
-        rendered += &paint(opts.color, GRAY, &format!("  R:{}", resets.counts));
+        rendered += &paint(opts.color, LABEL, &format!("  R:{}", resets.counts));
         if let Some(deadline) = resets.deadline {
-            let urgent = deadline
-                .expires_at
-                .is_some_and(|expiry| expiry > now && expiry - now < chrono::Duration::weeks(1));
-            rendered += &paint(opts.color, GRAY, " (");
-            rendered += &paint(opts.color, if urgent { RED } else { GRAY }, &deadline.text);
-            rendered += &paint(opts.color, GRAY, ")");
+            rendered += &paint(opts.color, LABEL, " (");
+            rendered += &paint(
+                opts.color,
+                palette::manual_reset_deadline(deadline.expires_at, now),
+                &deadline.text,
+            );
+            rendered += &paint(opts.color, LABEL, ")");
         }
     }
     rendered
@@ -151,9 +127,8 @@ fn render_identity(
     );
     let mut rendered = String::from("  ");
     // provider marker は `--logos` なら brand-logo glyph、そうでなければ text label。
-    // どちらのモードでも Codex は teal brand color より white の方が読みやすいので
-    // マーカー用の色は marker_color() に集約する。
-    let marker_color = marker_color(account.provider);
+    // 色はどちらのモードでも palette::marker が決める (Codex / Grok は白)。
+    let marker = palette::marker(account.provider);
     if opts.logos {
         let logo = match account.provider {
             Provider::Claude => CLAUDE_LOGO,
@@ -162,17 +137,16 @@ fn render_identity(
             Provider::PixelLab => PIXELLAB_LOGO,
             Provider::Grok => GROK_LOGO,
         };
-        rendered += &paint(opts.color, &marker_color, &format!("{logo}  "));
+        rendered += &paint(opts.color, marker, &format!("{logo}  "));
     } else {
-        rendered += &paint(opts.color, &marker_color, &format!("{provider_label:<6} "));
+        rendered += &paint(opts.color, marker, &format!("{provider_label:<6} "));
     }
     // Antigravity 行は単一 token で account name が冗長なため model-group を表示する。
     // それ以外は account name を表示する。"Claude&GPT" が入る幅で pad し、全行の gauge を揃える。
     let display = account.group_label.as_deref().unwrap_or(&name);
-    let active_code = palette::ACTIVE.sgr();
     rendered += &paint(
         opts.color,
-        if active { &active_code } else { GRAY },
+        if active { ACTIVE } else { LABEL },
         &pad_display(display, NAME_FIELD_WIDTH),
     );
     rendered
@@ -303,17 +277,17 @@ fn window_seg(
     show_reset_at: bool,
     gauge_width: usize,
 ) -> String {
-    let mut s = paint(opts.color, GRAY, &format!("{label} "));
+    let mut s = paint(opts.color, LABEL, &format!("{label} "));
     let mut reset_at_shown = false;
     match w {
         None => {
             // データ無し: 空 gauge + "--"(% なし) + "--"(残り時間)。
             // Some 分岐と同じ桁幅(gauge_width + 1 + 4 + 2 + 6)に揃える。
-            s += &paint(opts.color, DIM, &"░".repeat(gauge_width));
+            s += &paint(opts.color, MUTED, &"░".repeat(gauge_width));
             s += " ";
-            s += &paint(opts.color, DIM, &format!("{:>4}", "--"));
+            s += &paint(opts.color, MUTED, &format!("{:>4}", "--"));
             s += "  ";
-            s += &paint(opts.color, DIM, &format!("{:<6}", "--"));
+            s += &paint(opts.color, MUTED, &format!("{:<6}", "--"));
         }
         Some(w) => {
             match w.used_percent {
@@ -322,39 +296,43 @@ fn window_seg(
                     s += " ";
                     s += &paint(
                         opts.color,
-                        pct_code(percent),
+                        Level::usage(percent).text(),
                         &format!("{:>3}%", percent.round() as i64),
                     );
                 }
                 None => {
-                    s += &paint(opts.color, DIM, &"░".repeat(gauge_width));
+                    s += &paint(opts.color, MUTED, &"░".repeat(gauge_width));
                     s += " ";
-                    s += &paint(opts.color, DIM, " --%");
+                    s += &paint(opts.color, MUTED, " --%");
                 }
             }
             s += "  ";
             let reset = w.resets_at.as_deref().and_then(parse_utc);
             let rem = reset.map(|r| (r - now).num_seconds());
-            match rem {
-                Some(sec) if sec > 0 => {
-                    s += &paint(
-                        opts.color,
-                        &reset_code(sec, th),
-                        &format!("{:<6}", compact_dur(sec)),
-                    );
-                    // --reset-at: 1w 行の残り時間の後ろに (MM/DD HH:MM) を local 時刻で併記。
-                    // 5h 側は呼び出し元で show_reset_at=false 固定。
-                    if show_reset_at && let Some(r) = reset {
-                        s += &paint(
-                            opts.color,
-                            DIM,
-                            &format!(" ({})", r.with_timezone(&Local).format("%m/%d %H:%M")),
-                        );
-                        reset_at_shown = true;
-                    }
-                }
-                Some(_) => s += &paint(opts.color, GREEN, &format!("{:<6}", "now")),
-                None => s += &paint(opts.color, DIM, &format!("{:<6}", "--")),
+            let countdown = match rem {
+                Some(sec) if sec > 0 => compact_dur(sec),
+                Some(_) => "now".to_string(),
+                None => "--".to_string(),
+            };
+            // 残り時間・リセット済み ("now")・時刻不明 ("--") のどれも、色は残り秒数から
+            // palette::reset_countdown が決める。
+            s += &paint(
+                opts.color,
+                palette::reset_countdown(rem, th),
+                &format!("{countdown:<6}"),
+            );
+            // --reset-at: 長期枠の残り時間の後ろに (MM/DD HH:MM) を local 時刻で併記する。
+            // 短期枠は呼び出し元で show_reset_at=false 固定。リセット済みの枠には付けない。
+            if show_reset_at
+                && rem.is_some_and(|sec| sec > 0)
+                && let Some(r) = reset
+            {
+                s += &paint(
+                    opts.color,
+                    MUTED,
+                    &format!(" ({})", r.with_timezone(&Local).format("%m/%d %H:%M")),
+                );
+                reset_at_shown = true;
             }
         }
     }
@@ -366,9 +344,14 @@ fn window_seg(
     s
 }
 
-fn paint(color: bool, code: &str, s: &str) -> String {
-    if color && !code.is_empty() {
-        format!("\x1b[{code}m{s}\x1b[0m")
+/// `s` を `p` の SGR で囲む。色は palette が決め、ここでは ANSI に直すだけにする。
+///
+/// Claude Code は statusline をキャッシュから描き直すので、出力はバイト単位で保つ。
+/// 区間ごとに必ず `\x1b[0m` で閉じ、隣り合う同色の区間もまとめない。空文字列も囲む
+/// (使用率 0% の gauge は点灯部が空でも SGR を出す)。色を使わないときは何も足さない。
+fn paint(color: bool, p: Paint, s: &str) -> String {
+    if color {
+        format!("\x1b[{}m{s}\x1b[0m", p.sgr())
     } else {
         s.to_string()
     }
@@ -380,37 +363,9 @@ fn gauge(color: bool, pct: f64, width: usize) -> String {
         filled = 1;
     }
     let filled = filled.clamp(0, width as i64) as usize;
-    let mut s = paint(color, level_code(pct), &"█".repeat(filled));
-    s += &paint(color, DIM, &"░".repeat(width - filled));
+    let mut s = paint(color, Level::usage(pct).fill(), &"█".repeat(filled));
+    s += &paint(color, MUTED, &"░".repeat(width - filled));
     s
-}
-
-fn level_code(pct: f64) -> &'static str {
-    if pct >= 90.0 {
-        "38;5;196"
-    } else if pct >= 80.0 {
-        "38;5;208"
-    } else if pct >= 60.0 {
-        "38;5;178"
-    } else {
-        "38;5;35"
-    }
-}
-
-fn pct_code(pct: f64) -> &'static str {
-    if pct >= 90.0 {
-        "1;38;5;196"
-    } else if pct >= 80.0 {
-        "1;38;5;208"
-    } else if pct >= 60.0 {
-        "38;5;178"
-    } else {
-        "38;5;35"
-    }
-}
-
-fn reset_code(sec: i64, th: [i64; 3]) -> String {
-    palette::reset_countdown(Some(sec), th).sgr()
 }
 
 fn compact_dur(sec: i64) -> String {
@@ -437,7 +392,7 @@ mod tests {
     use super::super::reset::{MONTHLY_TH, WEEK_TH};
     use super::*;
     use crate::model::{ResetKind, WindowKind};
-    use crate::report::ManualResetOut;
+    use crate::report::{LimitObservationOut, ManualResetOut};
 
     fn fixed_utc(rfc3339: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(rfc3339)
@@ -647,31 +602,6 @@ mod tests {
     }
 
     #[test]
-    fn usage_colors_escalate_at_60_80_90_percent() {
-        // gauge とパーセント表示は同じ境界で段階的に警告色へ上げる。
-        for code in [level_code, pct_code] {
-            assert_eq!(code(0.0), code(59.9), "60% 未満は同じ色");
-            assert_ne!(code(60.0), code(59.9), "60% で 1 段上がる");
-            assert_ne!(code(80.0), code(79.9), "80% で 1 段上がる");
-            assert_ne!(code(90.0), code(89.9), "90% で 1 段上がる");
-        }
-    }
-
-    #[test]
-    fn reset_colors_use_exclusive_thresholds() {
-        // しきい値ちょうどは「まだ余裕がある側」に入る(`<` 判定)。境界がずれると
-        // リセット直前の赤が 1 段早く/遅く出る。
-        let th = WEEK_TH;
-        assert_eq!(reset_code(th[0] - 1, th), "38;5;196");
-        assert_eq!(reset_code(th[0], th), "38;5;208");
-        assert_eq!(reset_code(th[1], th), "38;5;178");
-        assert_eq!(reset_code(th[2], th), "38;5;35");
-        // 月次枠は同じ関数をより長いしきい値で使う(2 日後は月次なら危険域)。
-        assert_eq!(reset_code(2 * 86400, MONTHLY_TH), "38;5;196");
-        assert_eq!(reset_code(2 * 86400, WEEK_TH), "38;5;178");
-    }
-
-    #[test]
     fn window_seg_appends_reset_at_only_when_enabled() {
         // 未来のリセット時刻 + show_reset_at=true → 末尾に "(MM/DD HH:MM)" が付く。
         // ローカル TZ 依存の具体値は検証せず、括弧の有無で機能を確認。
@@ -811,6 +741,199 @@ mod tests {
         assert!(
             rendered.contains("\x1b[38;5;196m2d00h "),
             "月次しきい値の赤色になっていない: {rendered:?}"
+        );
+    }
+
+    // 以下の golden テストは色付きの行をバイト単位で固定する。Claude Code はキャッシュから
+    // statusline を描き直すので、TUI の都合で palette を変えて statusline の出力まで
+    // 変わったら、ここで気付けるようにする。期待値は palette の関数から組み立てず SGR を
+    // そのまま書く。日時だけは表示と同じく local 時刻で組み立てる。
+
+    #[test]
+    fn colored_claude_row_matches_golden_bytes() {
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let weekly_reset = fixed_utc("2026-06-17T05:00:00Z");
+        let reset_expiry = fixed_utc("2026-06-16T03:00:00Z");
+        let account = AccountOut {
+            profile: "Home".into(),
+            provider: Provider::Claude,
+            ok: true,
+            plan: Some("Max".into()),
+            email: None,
+            profile_email: None,
+            label: Some("home".into()),
+            group_label: None,
+            short: Some(WindowOut {
+                kind: Some(WindowKind::FiveHour),
+                used_percent: Some(62.0),
+                resets_at: Some("2026-06-15T04:40:00Z".into()),
+                resets_in_seconds: None,
+            }),
+            long: Some(WindowOut {
+                kind: Some(WindowKind::Weekly),
+                used_percent: Some(85.0),
+                resets_at: Some(weekly_reset.to_rfc3339()),
+                resets_in_seconds: None,
+            }),
+            manual_resets: Some(vec![
+                ManualResetOut {
+                    kind: ResetKind::Full,
+                    remaining: Some(1),
+                    expires_at: Some(reset_expiry.to_rfc3339()),
+                    paused: false,
+                },
+                ManualResetOut {
+                    kind: ResetKind::FiveHour,
+                    remaining: Some(0),
+                    expires_at: None,
+                    paused: false,
+                },
+            ]),
+            // 経過時間は now から数えるので、now を固定すれば "3h ago" で決まる。
+            limit_observation: Some(LimitObservationOut {
+                model: "test-model".into(),
+                observed_at: "2026-06-14T20:50:00Z".into(),
+                used_tokens: 120,
+                limit_tokens: 100,
+            }),
+            error: None,
+        };
+        let mut opts = plain_opts();
+        opts.color = true;
+        opts.reset_at = true;
+        let local =
+            |time: DateTime<Utc>| time.with_timezone(&Local).format("%m/%d %H:%M").to_string();
+        let expected = format!(
+            concat!(
+                "  \x1b[38;2;217;119;87mClaude \x1b[0m",
+                "\x1b[38;5;245mhome       \x1b[0m",
+                // 5h: 62% は gauge も数字も黄。残り 4h40m は緑。
+                "\x1b[38;5;245m5h \x1b[0m",
+                "\x1b[38;5;178m██████████\x1b[0m\x1b[38;5;242m░░░░░░\x1b[0m",
+                " \x1b[38;5;178m 62%\x1b[0m",
+                "  \x1b[38;5;35m4h40m \x1b[0m",
+                // 1w: 85% は数字だけ太字。残り 2d05h は黄、--reset-at の日時は MUTED。
+                "   \x1b[38;5;245m1w \x1b[0m",
+                "\x1b[38;5;208m██████████████\x1b[0m\x1b[38;5;242m░░\x1b[0m",
+                " \x1b[1;38;5;208m 85%\x1b[0m",
+                "  \x1b[38;5;178m2d05h \x1b[0m",
+                "\x1b[38;5;242m ({weekly_reset})\x1b[0m",
+                "\x1b[38;5;196m  24h LIMIT test-model (3h ago)\x1b[0m",
+                // 手動リセット: 件数と括弧は LABEL、7 日未満で切れる期限だけ赤。
+                "\x1b[38;5;245m  R:full 1; 5h 0\x1b[0m",
+                "\x1b[38;5;245m (\x1b[0m",
+                "\x1b[38;5;196m{reset_expiry}\x1b[0m",
+                "\x1b[38;5;245m)\x1b[0m",
+            ),
+            weekly_reset = local(weekly_reset),
+            reset_expiry = local(reset_expiry),
+        );
+        assert_eq!(render_row(&account, None, false, &opts, now), expected);
+    }
+
+    #[test]
+    fn colored_active_codex_row_matches_golden_bytes() {
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let reset_expiry = fixed_utc("2026-06-25T00:00:00Z");
+        let mut account = manual_reset_account(Some(reset_expiry));
+        // リセット時刻を過ぎた 100% の短期枠と、リセット時刻の無い 0% の長期枠。
+        account.short = Some(WindowOut {
+            kind: Some(WindowKind::FiveHour),
+            used_percent: Some(100.0),
+            resets_at: Some("2026-06-14T23:00:00Z".into()),
+            resets_in_seconds: Some(0),
+        });
+        account.long = Some(WindowOut {
+            kind: Some(WindowKind::Weekly),
+            used_percent: Some(0.0),
+            resets_at: None,
+            resets_in_seconds: None,
+        });
+        let mut opts = plain_opts();
+        opts.color = true;
+        opts.logos = true;
+        opts.compact = true;
+        let expected = format!(
+            concat!(
+                // Codex の印は白、このセッションのアカウント名は太字の赤。
+                "  \x1b[38;2;255;255;255m\u{100000}  \x1b[0m",
+                "\x1b[1;38;5;196mWork       \x1b[0m",
+                // 100% は消灯部が空でも SGR で囲む。リセット済みの now は緑。
+                "\x1b[38;5;245m5h \x1b[0m",
+                "\x1b[38;5;196m████████\x1b[0m\x1b[38;5;242m\x1b[0m",
+                " \x1b[1;38;5;196m100%\x1b[0m",
+                "  \x1b[38;5;35mnow   \x1b[0m",
+                // 0% は点灯部が空でも SGR で囲む。時刻不明の -- は MUTED。
+                "   \x1b[38;5;245m1w \x1b[0m",
+                "\x1b[38;5;35m\x1b[0m\x1b[38;5;242m░░░░░░░░\x1b[0m",
+                " \x1b[38;5;35m  0%\x1b[0m",
+                "  \x1b[38;5;242m--    \x1b[0m",
+                // 7 日以上先の期限は LABEL のまま。同じ色が続いても区間ごとに閉じる。
+                "\x1b[38;5;245m  R:full 1\x1b[0m",
+                "\x1b[38;5;245m (\x1b[0m",
+                "\x1b[38;5;245m{reset_expiry}\x1b[0m",
+                "\x1b[38;5;245m)\x1b[0m",
+            ),
+            reset_expiry = reset_expiry.with_timezone(&Local).format("%m/%d %H:%M"),
+        );
+        assert_eq!(render_row(&account, None, true, &opts, now), expected);
+    }
+
+    #[test]
+    fn colored_placeholders_match_golden_bytes() {
+        // 取得に失敗した行と使用率が不明な枠は、値の無いところを MUTED で描く。
+        let now = fixed_utc("2026-06-15T00:00:00Z");
+        let mut opts = plain_opts();
+        opts.color = true;
+        opts.compact = true;
+
+        let mut failed = manual_reset_account(None);
+        failed.profile = "Broken".into();
+        failed.ok = false;
+        failed.error = Some("fetch failed".into());
+        assert_eq!(
+            render_row(&failed, None, false, &opts, now),
+            concat!(
+                "  \x1b[38;2;255;255;255mCodex  \x1b[0m",
+                "\x1b[38;5;245mBroken     \x1b[0m",
+                "\x1b[38;5;245m5h \x1b[0m\x1b[38;5;242m░░░░░░░░\x1b[0m",
+                " \x1b[38;5;242m  --\x1b[0m  \x1b[38;5;242m--    \x1b[0m",
+                "   \x1b[38;5;245m1w \x1b[0m\x1b[38;5;242m░░░░░░░░\x1b[0m",
+                " \x1b[38;5;242m  --\x1b[0m  \x1b[38;5;242m--    \x1b[0m",
+            )
+        );
+
+        let unknown = AccountOut {
+            profile: "Grok".into(),
+            provider: Provider::Grok,
+            ok: true,
+            plan: Some("Free".into()),
+            email: None,
+            profile_email: None,
+            label: None,
+            group_label: None,
+            short: None,
+            long: Some(WindowOut {
+                kind: Some(WindowKind::Monthly),
+                used_percent: None,
+                resets_at: Some("2026-07-05T03:00:00Z".into()),
+                resets_in_seconds: None,
+            }),
+            manual_resets: None,
+            limit_observation: None,
+            error: None,
+        };
+        // 長期枠だけの行は 2 枠ぶんの幅 (2 * 8 + 19 = 35) の gauge にまとめる。
+        assert_eq!(
+            render_row(&unknown, None, false, &opts, now),
+            concat!(
+                "  \x1b[38;2;255;255;255mGrok   \x1b[0m",
+                "\x1b[38;5;245mGrok       \x1b[0m",
+                "\x1b[38;5;245m1m \x1b[0m",
+                "\x1b[38;5;242m░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\x1b[0m",
+                " \x1b[38;5;242m --%\x1b[0m",
+                "  \x1b[38;5;35m20d03h\x1b[0m",
+            )
         );
     }
 
