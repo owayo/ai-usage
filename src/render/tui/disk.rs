@@ -1,6 +1,8 @@
 //! TUI の最下部 (キー操作の説明の上) に置くディスク欄。
+//!
+//! 1 行の中身 (バーのセル数・使用率・内訳・状態の文言と色) は `render/disk.rs` が組み立てる。
+//! ここでは欄の置き方と、端末の幅に合わせてバーの幅と説明の詳しさを選ぶことを受け持つ。
 
-use std::cmp::Reverse;
 use std::time::{Duration, Instant};
 
 use ratatui::Frame;
@@ -9,23 +11,21 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use super::super::palette::{ALERT, LABEL, Level, MUTED, Paint};
-use super::super::statusline::pad_display;
+use super::super::disk::{
+    Segment, bar_segments, breakdown_segment, breakdowns, name_segment, name_width,
+    no_response_segment, percent_segment, unavailable_segment,
+};
+use super::super::palette::MUTED;
 use super::style;
 use crate::disk::{Monitor, Row, Volume};
 
 /// ディスク欄を出しても、アカウント一覧に残す行数 (枠を含む)。見出しと 2 つの利用枠が収まる。
 const MIN_ACCOUNT_ROWS: u16 = 6;
-/// ボリューム名の欄の最大幅。
-const MAX_NAME_WIDTH: usize = 16;
 const MIN_BAR: usize = 6;
 /// 説明を足すために、これより短くはしないバーの幅。狭い端末では `MIN_BAR` まで縮める。
 const COMFORT_BAR: usize = 16;
 const MAX_BAR: usize = 40;
 const LEGEND: &str = "Disk · █ used ▒ purgeable ░ free";
-/// 使用率 (%) の段階の境界。ディスクは利用枠より満杯に近い状態で使われるため、
-/// 利用枠の境界 (`USAGE_LEVELS`) より高めに置く。
-const DISK_LEVELS: [f64; 3] = [80.0, 90.0, 95.0];
 
 /// ディスク欄の置き方。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,7 +76,7 @@ pub(super) fn render(
         Placement::Line => {
             let prefix = "Disk  ";
             let width = usize::from(area.width).saturating_sub(prefix.len());
-            let names = name_width(&rows[..1]);
+            let names = rows_name_width(&rows[..1]);
             let bar = preferred_bar(&rows[0], names, width, now).unwrap_or(MIN_BAR);
             let mut spans = vec![Span::raw(prefix)];
             spans.extend(row_spans(&rows[0], names, width, bar, color, now));
@@ -91,7 +91,7 @@ pub(super) fn render(
                 format!(" {LEGEND} ")
             };
             let width = usize::from(area.width.saturating_sub(2));
-            let names = name_width(shown);
+            let names = rows_name_width(shown);
             // 行どうしを比べられるよう、バーの幅は最も説明の長い行に合わせて揃える。
             let bar = shown
                 .iter()
@@ -117,17 +117,8 @@ fn row_name(row: &Row) -> String {
 }
 
 /// 並べたボリュームのバーの位置を揃えるため、最も長い名前に合わせる。
-fn name_width(rows: &[Row]) -> usize {
-    rows.iter()
-        .map(|row| row_name(row).width())
-        .max()
-        .unwrap_or(0)
-        .min(MAX_NAME_WIDTH)
-}
-
-/// 名前の欄 (末尾の区切りを含む)。
-fn name_field(row: &Row, name_width: usize) -> String {
-    format!("{} ", pad_display(&row_name(row), name_width + 1))
+fn rows_name_width(rows: &[Row]) -> usize {
+    name_width(rows.iter().map(row_name))
 }
 
 /// バーの後ろに置く説明。内訳と経過時間は色を分けるため、別々に持つ。
@@ -142,10 +133,10 @@ struct Detail {
 impl Detail {
     /// 説明の前に空ける 2 桁を含めた区間と色。内訳と経過時間の両方があれば ` · ` でつなぐ。
     /// 幅の計算と描画の両方がこれを使うので、測った幅と描いた幅はずれない。
-    fn parts(&self) -> Vec<(String, Paint)> {
+    fn parts(&self) -> Vec<Segment> {
         let mut parts = Vec::new();
         if !self.breakdown.is_empty() {
-            parts.push((format!("  {}", self.breakdown), LABEL));
+            parts.push(breakdown_segment(&self.breakdown));
         }
         if let Some(stale) = &self.stale {
             let separator = if parts.is_empty() { "  " } else { " · " };
@@ -161,7 +152,7 @@ impl Detail {
 }
 
 /// 値のある行の使用率と、バーの後ろに置ける説明 (詳しい順。最後は内訳なし)。
-fn texts(row: &Row, now: Instant) -> Option<(&Volume, String, Vec<Detail>)> {
+fn texts(row: &Row, now: Instant) -> Option<(&Volume, Segment, Vec<Detail>)> {
     let (volume, read_at) = row.last.as_ref()?;
     // 直近の取得が失敗した、または戻らないときは、表示中の値がいつのものかを添える。
     // 内訳を出せない幅でも経過時間だけは残るよう、どの候補にも付ける。
@@ -174,13 +165,14 @@ fn texts(row: &Row, now: Instant) -> Option<(&Volume, String, Vec<Detail>)> {
             stale: stale.clone(),
         })
         .collect();
-    Some((volume, format!("  {}", percent_label(volume)), details))
+    Some((volume, percent_segment(volume), details))
 }
 
 /// 最も詳しい説明を出せるバーの幅。値のない行は None。
 fn preferred_bar(row: &Row, name_width: usize, width: usize, now: Instant) -> Option<usize> {
-    let (_, percent, details) = texts(row, now)?;
-    let budget = width.saturating_sub(name_field(row, name_width).width() + percent.width());
+    let (_, (percent, _), details) = texts(row, now)?;
+    let (name, _) = name_segment(&row_name(row), name_width);
+    let budget = width.saturating_sub(name.width() + percent.width());
     let needs: Vec<usize> = details.iter().map(Detail::width).collect();
     // バーを COMFORT_BAR 以上に保てる中で最も詳しい説明を選ぶ。どれも入らない幅では
     // バーを MIN_BAR まで縮めて説明を残し、それも無理ならバーと使用率だけを出す。
@@ -205,134 +197,37 @@ fn row_spans(
     color: bool,
     now: Instant,
 ) -> Vec<Span<'static>> {
-    let name = name_field(row, name_width);
+    let name = name_segment(&row_name(row), name_width);
     let Some((volume, percent, details)) = texts(row, now) else {
-        let (status, paint) = if let Some(error) = &row.error {
-            (format!("unavailable: {error}"), ALERT)
+        let status = if let Some(error) = &row.error {
+            unavailable_segment(error)
         } else if row.overdue(now) {
-            ("no response".into(), Level::Caution.fill())
+            no_response_segment()
         } else {
             ("reading…".into(), MUTED)
         };
-        return vec![
-            Span::styled(name, style(color, LABEL)),
-            Span::styled(status, style(color, paint)),
-        ];
+        return spans([name, status], color);
     };
-    let budget = width.saturating_sub(name.width() + percent.width());
+    let budget = width.saturating_sub(name.0.width() + percent.0.width());
     let bar_width = bar.min(budget).max(1);
     let detail = details
         .into_iter()
         .find(|detail| budget >= detail.width() + bar_width)
         .unwrap_or_default();
 
-    // 使用中の区分と使用率の数字は使用率の段階の色にし、パージ可能分と空きは段階によらず
-    // 灰色にする。0 セルの区分は出さない。
-    let level = Level::of(volume.used_percent(), DISK_LEVELS);
-    let [used, purgeable, free] = bar_cells(volume, bar_width);
-    let mut spans = vec![Span::styled(name, style(color, LABEL))];
-    for (cells, symbol, paint) in [
-        (used, "█", level.fill()),
-        (purgeable, "▒", LABEL),
-        (free, "░", MUTED),
-    ] {
-        if cells > 0 {
-            spans.push(Span::styled(symbol.repeat(cells), style(color, paint)));
-        }
-    }
-    spans.push(Span::styled(percent, style(color, level.text())));
-    spans.extend(
-        detail
-            .parts()
-            .into_iter()
-            .map(|(text, paint)| Span::styled(text, style(color, paint))),
-    );
-    spans
+    let mut segments = vec![name];
+    segments.extend(bar_segments(volume, bar_width));
+    segments.push(percent);
+    segments.extend(detail.parts());
+    spans(segments, color)
 }
 
-/// バーの後ろに置く容量の内訳を、詳しいものから順に並べる。最後は内訳なし。
-fn breakdowns(volume: &Volume) -> Vec<String> {
-    let available = format_bytes(volume.available);
-    let total = format_bytes(volume.total);
-    let mut breakdowns = Vec::new();
-    if let Some(purgeable) = volume.purgeable.filter(|&purgeable| purgeable > 0) {
-        let purgeable = format_bytes(purgeable);
-        breakdowns.push(format!(
-            "{available} available of {total} · {} free · {purgeable} purgeable",
-            format_bytes(volume.free)
-        ));
-        breakdowns.push(format!(
-            "{available} available of {total} · {purgeable} purgeable"
-        ));
-    }
-    breakdowns.push(format!("{available} available of {total}"));
-    breakdowns.push(format!("{available} available"));
-    breakdowns.push(String::new());
-    breakdowns
-}
-
-/// 使用・パージ可能・空きのセル数。合計は必ず `width` になる。
-fn bar_cells(volume: &Volume, width: usize) -> [usize; 3] {
-    // purgeable が不明なボリュームは available == free なので、3 区分の合計は常に総容量。
-    let parts = [volume.used(), volume.purgeable.unwrap_or(0), volume.free];
-    let total: u128 = parts.iter().map(|&part| u128::from(part)).sum();
-    let width_wide = width as u128;
-    let mut cells = parts.map(|part| (u128::from(part) * width_wide / total) as usize);
-    let mut remainders = parts.map(|part| u128::from(part) * width_wide % total);
-    // 切り捨てで余ったセルを、端数の大きい区分から 1 つずつ配る。
-    for _ in cells.iter().sum::<usize>()..width {
-        let index = (0..3)
-            .max_by_key(|&index| (remainders[index], Reverse(index)))
-            .expect("three parts");
-        cells[index] += 1;
-        remainders[index] = 0;
-    }
-    // 少しでも使っている・空いているディスクが、空・満杯に見えないよう、使用中と空きは
-    // 0 でなければ最低 1 セル見せる (数値は説明の方が正確)。パージ可能分は補助の情報なので、
-    // 1 セルに満たない量のために使用中のセルを削らない。
-    if parts.iter().filter(|&&part| part > 0).count() <= width {
-        for index in [0, 2] {
-            if parts[index] > 0 && cells[index] == 0 {
-                let donor = (0..3)
-                    .max_by_key(|&other| cells[other])
-                    .expect("three parts");
-                if cells[donor] > 1 {
-                    cells[donor] -= 1;
-                    cells[index] += 1;
-                }
-            }
-        }
-    }
-    cells
-}
-
-/// 使用率。丸めで空きや使用が消えて見えないよう、0% と 100% は本当に空・満杯のときだけ出す。
-fn percent_label(volume: &Volume) -> String {
-    let used = volume.used();
-    let mut shown = volume.used_percent().round() as u64;
-    if used > 0 {
-        shown = shown.max(1);
-    }
-    if used < volume.total {
-        shown = shown.min(99);
-    }
-    format!("{shown:>3}%")
-}
-
-/// Finder と同じ 10 進の単位 (1 GB = 1,000,000,000 バイト)。
-fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["KB", "MB", "GB", "TB", "PB", "EB"];
-    if bytes < 1000 {
-        return format!("{bytes} B");
-    }
-    let mut value = bytes as f64 / 1000.0;
-    let mut unit = 0;
-    // 小数 1 桁で 1000.0 と表示される値は、次の単位に上げる。
-    while value >= 999.95 && unit + 1 < UNITS.len() {
-        value /= 1000.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
+/// 区間を、palette の色を付けた Span にする。
+fn spans(segments: impl IntoIterator<Item = Segment>, color: bool) -> Vec<Span<'static>> {
+    segments
+        .into_iter()
+        .map(|(text, paint)| Span::styled(text, style(color, paint)))
+        .collect()
 }
 
 fn age(elapsed: Duration) -> String {
@@ -443,59 +338,10 @@ mod tests {
     }
 
     #[test]
-    fn bar_cells_fill_the_width_and_keep_small_parts_visible() {
-        let volume = startup();
-        for width in 1..=40 {
-            assert_eq!(bar_cells(&volume, width).iter().sum::<usize>(), width);
-        }
-        // 端数の大きいパージ可能分に余りを配り、0 セルの空きには使用中から 1 セル回す。
-        assert_eq!(bar_cells(&volume, 12), [9, 2, 1]);
-        // 1 セルしかなければ、最大の区分だけを出す。
-        assert_eq!(bar_cells(&volume, 1), [1, 0, 0]);
-        let full = Volume::new("Full".into(), 500 * GB, 0, Some(0)).unwrap();
-        assert_eq!(bar_cells(&full, 12), [12, 0, 0]);
-        let empty = Volume::new("Empty".into(), 500 * GB, 500 * GB, Some(500 * GB)).unwrap();
-        assert_eq!(bar_cells(&empty, 12), [0, 0, 12]);
-        // 重要な用途の容量が不明なら、パージ可能分のセルは出さない。
-        let huge = Volume::new("Huge".into(), 10_000 * GB, GB, None).unwrap();
-        assert_eq!(bar_cells(&huge, 12), [11, 0, 1]);
-    }
-
-    #[test]
-    fn percent_label_reserves_0_and_100_for_exact_extremes() {
-        let volume = |available: u64| Volume::new("V".into(), 1_000 * GB, 0, Some(available));
-        assert_eq!(percent_label(&startup()), " 86%");
-        // 1GB でも空いていれば 100% にせず、1GB でも使っていれば 0% にしない。
-        assert_eq!(percent_label(&volume(GB).unwrap()), " 99%");
-        assert_eq!(percent_label(&volume(999 * GB).unwrap()), "  1%");
-        let full = Volume::new("Full".into(), 1_000 * GB, 0, Some(0)).unwrap();
-        assert_eq!(percent_label(&full), "100%");
-        let empty = Volume::new("Empty".into(), 1_000 * GB, 1_000 * GB, None).unwrap();
-        assert_eq!(percent_label(&empty), "  0%");
-    }
-
-    #[test]
-    fn format_bytes_uses_decimal_units_like_finder() {
-        for (bytes, expected) in [
-            (0, "0 B"),
-            (999, "999 B"),
-            (1_000, "1.0 KB"),
-            (13_080_645_632, "13.1 GB"),
-            (70_754_759_808, "70.8 GB"),
-            (494_384_795_648, "494.4 GB"),
-            (999_940_000_000, "999.9 GB"),
-            (999_950_000_000, "1.0 TB"),
-            (1_000_203_071_488, "1.0 TB"),
-        ] {
-            assert_eq!(format_bytes(bytes), expected, "{bytes}");
-        }
-    }
-
-    #[test]
     fn row_detail_shortens_with_the_width_and_keeps_the_bar() {
         let now = base();
         let row = sampled(startup(), now);
-        let names = name_width(std::slice::from_ref(&row));
+        let names = rows_name_width(std::slice::from_ref(&row));
         // 説明を足してもバーを 16 セル残せる範囲で最も詳しくし、狭い幅では 6 セルまで縮める。
         for (width, expected, bar) in [
             (
@@ -596,19 +442,7 @@ mod tests {
 
     #[test]
     fn bar_color_follows_the_used_share_and_respects_no_color() {
-        // ディスクの段階の境界は 80% / 90% / 95%。境界ちょうどは上の段階に入る。
-        for (percent, expected) in [
-            (0.0, Level::Normal),
-            (79.9, Level::Normal),
-            (80.0, Level::Caution),
-            (89.9, Level::Caution),
-            (90.0, Level::Warning),
-            (95.0, Level::Critical),
-            (100.0, Level::Critical),
-        ] {
-            assert_eq!(Level::of(percent, DISK_LEVELS), expected, "{percent}");
-        }
-
+        // 段階の境界 (80% / 90% / 95%) そのものは render/disk.rs のテストで確かめる。
         let now = base();
         // 起動ディスク (86%): 使用中の区分と使用率は 2 段目の色。パージ可能分と空きは灰色。
         let spans = spans_for(&sampled(startup(), now), 12, 80, true, now);
@@ -672,11 +506,13 @@ mod tests {
 
     #[test]
     fn long_names_are_cut_at_the_name_column() {
+        use super::super::super::disk::MAX_NAME_WIDTH;
+
         let now = base();
         let mut volume = startup();
         volume.name = "とても長いボリュームの名前です".into();
         let row = sampled(volume, now);
-        let names = name_width(std::slice::from_ref(&row));
+        let names = rows_name_width(std::slice::from_ref(&row));
         assert_eq!(names, MAX_NAME_WIDTH);
         let line = text(&spans_for(&row, names, 80, false, now));
         let bar = line.find('█').unwrap();

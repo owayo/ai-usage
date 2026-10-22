@@ -6,6 +6,7 @@
 
 #[cfg(test)]
 mod color_parity;
+mod disk;
 mod manual_resets;
 mod palette;
 mod reset;
