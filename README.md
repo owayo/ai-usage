@@ -42,6 +42,7 @@ It reads each Chrome profile's session straight from the browser, so it can repo
 - **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
 - **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars. Labels are padded by display width and truncated at grapheme boundaries, preserving emoji and combining characters
 - **Interactive Dashboard**: `--tui` groups quotas and manual resets by account, with a disk panel at the bottom showing the startup disk's used, purgeable, and free space. Short terminals show the visible part of each account; reset countdowns of 1–59 seconds show `1m`
+- **Disk Output**: `--disk` prints the same disk rows on their own, one volume per line, and `--disk --json` gives the values in bytes for scripts. It never touches Chrome, Keychain, the network, or the usage cache
 - **JSON Output**: Machine-readable output for scripting and dashboards
 - **Zero Config**: Auto-discovers all signed-in profiles by default; optional `~/.config/ai-usage/config.toml` for pinning
 - **Sort Options**: Rank rows by long-window utilization or reset time (`weekly-*` option names are retained for compatibility)
@@ -152,6 +153,11 @@ ai-usage --statusline
 ai-usage --statusline --logos --compact --reset-at
 ai-usage --statusline --input usage.json --only codex
 
+# Disk usage only (no usage fetch)
+ai-usage --disk
+ai-usage --disk --json
+ai-usage --disk --mount / --mount /Volumes/Archive
+
 # Sort by urgency
 ai-usage --sort weekly-usage      # closest to the cap first
 ai-usage --sort weekly-reset      # soonest reset first
@@ -162,6 +168,15 @@ The TUI groups quota bars under each account heading, with each window labeled `
 The TUI also shows each quota window's absolute reset date and time. If a refresh returns fewer accounts, the displayed scroll position stays within the new list. Fetch warnings appear in the dashboard header.
 
 Below the accounts, a disk panel shows the startup disk (for example `Macintosh HD`) followed by any volumes listed in `[tui].disk_mounts`. Each bar splits used (`█`), purgeable (`▒`), and free (`░`) space; available space and the decimal units match Finder. Each volume is reread in the background 30 seconds after its previous read. With `--input`, disk values are still read live from this Mac. Hide the panel with `--no-disk` or by setting `[tui].disk` to `false`. See [Disk usage](docs/architecture.md#disk-usage) for how the values are measured and displayed.
+
+`ai-usage --disk` prints the same rows without the dashboard and exits. It reads the startup disk and `[tui].disk_mounts`, or only the volumes given with `--mount`:
+
+```text
+Macintosh HD  █████████████████▒▒░   86%  70.8 GB available of 494.4 GB · 13.1 GB free · 57.7 GB purgeable
+Archive       unavailable: not mounted
+```
+
+The command waits at most 2 seconds; a volume that has not answered by then shows `no response`. A volume that cannot be read does not change the exit status. `--disk --json` reports the values in bytes. The JSON fields and the options that `--disk` ignores: [Disk usage output](docs/cli-reference.md#disk-usage-output).
 
 If PixelLab supplies a generation limit but omits the generation count, its monthly window and reset time remain visible with an unknown percentage (`--%`). An explicit zero count still displays `0%`.
 

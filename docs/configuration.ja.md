@@ -52,8 +52,9 @@ label = "grok"                      # 任意: 行に表示するラベル
 [providers]
 exclude = ["antigravity"]           # claude / codex / antigravity / pixellab / grok
 
-# --tui のディスク欄。起動ディスクは常に先頭の行に表示します。disk_mounts には
-# 追加するローカルボリュームのマウントポイントを正確に書き、書いた順に表示します。
+# --tui のディスク欄と、`ai-usage --disk` が既定で読むボリューム。起動ディスクは常に
+# 先頭です。disk_mounts には追加するローカルボリュームのマウントポイントを正確に書き、
+# 書いた順に表示します。
 [tui]
 # disk = true                       # false ならディスク欄を非表示 (--no-disk と同じ)
 disk_mounts = ["/Volumes/Archive"]  # 起動ディスクの後に表示するローカルボリューム
@@ -76,8 +77,8 @@ disk_mounts = ["/Volumes/Archive"]  # 起動ディスクの後に表示するロ
 | `[grok].auth_path` | 非既定の `auth.json` パス | `~/.grok/auth.json` |
 | `[providers].exclude` | 全表示モードから除外し、取得も省くプロバイダ | `[]` |
 | `[statusline].hide` | `--statusline` で非表示にするプロバイダ (`--json` / table には表示) | `[]` |
-| `[tui].disk` | `--tui` の画面下部にディスク使用量の欄を表示 (`--no-disk` が優先) | `true` |
-| `[tui].disk_mounts` | 起動ディスクの後に表示する、追加のローカルボリュームのマウントポイント | `[]` |
+| `[tui].disk` | `--tui` の画面下部にディスク使用量の欄を表示 (`--no-disk` が優先)。`--disk` には影響しない | `true` |
+| `[tui].disk_mounts` | 起動ディスクの後に表示する、追加のローカルボリュームのマウントポイント。`--tui` の欄と、`--mount` なしの `--disk` で使う | `[]` |
 
 優先順位は **CLI フラグ > 設定ファイル > 自動検出** です。
 
@@ -88,3 +89,5 @@ disk_mounts = ["/Volumes/Archive"]  # 起動ディスクの後に表示するロ
 `--profile` と `--only` を付けても、プロバイダ別の設定行は保たれます。`--profile` は、指定なしで実行したときと同じ設定行 (ラベル) で選んだプロファイルを表示します。`--only codex` は、`codex` を挙げた設定行のラベルで Codex の行を表示します。`--only` は `providers` より優先するため、そのディレクトリのどの設定行にも挙げていないプロバイダも、そのディレクトリの最初の設定行で表示します。設定に無いプロファイルを `--profile` で選んだ場合は既定値で表示します。
 
 `[tui].disk_mounts` に書いたローカルボリュームは、`--tui` のディスク欄で起動ディスクの後に、書いた順で表示します。各項目には `/Volumes/Archive` のようにマウントポイントを正確に書きます (先頭の `~/` はホームディレクトリに展開)。各項目は、容量を問い合わせる前にシステムのマウント表と照合します。現在マウントポイントでないパスは、取り外したディスクも含め、古い値を残さず `unavailable: not mounted` と表示します。ネットワークボリュームは `unavailable: not a local volume` と表示して一度も問い合わせないため、応答しないネットワーク共有で TUI が止まることはありません。重複した項目と `/` (常に先頭に表示する起動ディスク) は無視します。`--no-disk` を付けると、`[tui].disk` が `true` でも欄を隠します。値の測り方は [ディスク使用量](architecture.ja.md#ディスク使用量) を参照してください。
+
+`ai-usage --disk` も同じボリュームを読みます。起動ディスクに `[tui].disk_mounts` が続きます。`--mount` を付けると、その実行に限ってこの一覧の代わりに指定したボリュームを読み、設定ファイルは読みません。`[tui].disk = false` と `--no-disk` は TUI の欄を隠すだけで、`--disk` が読むボリュームは変えません。詳しくは [ディスク容量の出力](cli-reference.ja.md#ディスク容量の出力) を参照してください。

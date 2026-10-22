@@ -52,8 +52,9 @@ label = "grok"                      # optional row label
 [providers]
 exclude = ["antigravity"]           # subset of: claude / codex / antigravity / pixellab / grok
 
-# --tui disk panel. The startup disk is always the first row; disk_mounts adds
-# other local volumes by their exact mount point, in this order.
+# --tui disk panel, and the volumes `ai-usage --disk` reads by default. The startup
+# disk is always first; disk_mounts adds other local volumes by their exact mount
+# point, in this order.
 [tui]
 # disk = true                       # false hides the disk panel (same as --no-disk)
 disk_mounts = ["/Volumes/Archive"]  # extra local volumes after the startup disk
@@ -76,8 +77,8 @@ disk_mounts = ["/Volumes/Archive"]  # extra local volumes after the startup disk
 | `[grok].auth_path` | Non-default `auth.json` path | `~/.grok/auth.json` |
 | `[providers].exclude` | Providers to omit from every output and skip during fetching | `[]` |
 | `[statusline].hide` | Providers to omit from `--statusline` (still in `--json` / table) | `[]` |
-| `[tui].disk` | Show the disk usage panel at the bottom of `--tui` (`--no-disk` takes precedence) | `true` |
-| `[tui].disk_mounts` | Mount points of extra local volumes to show after the startup disk | `[]` |
+| `[tui].disk` | Show the disk usage panel at the bottom of `--tui` (`--no-disk` takes precedence). Does not affect `--disk` | `true` |
+| `[tui].disk_mounts` | Mount points of extra local volumes to show after the startup disk, in the `--tui` panel and in `--disk` without `--mount` | `[]` |
 
 Precedence: **CLI flags > config file > auto-detection**.
 
@@ -88,3 +89,5 @@ Profile matching is case-insensitive, with directory names taking precedence ove
 `--profile` and `--only` keep these per-provider entries: `--profile` shows the selected profiles with the same entries (and labels) as a run without it, and `--only codex` shows the Codex row under the entry that lists `codex`. Because `--only` takes precedence over `providers`, a provider that no entry lists for that directory still appears, under the directory's first entry. A profile selected with `--profile` but missing from the config uses the defaults.
 
 `[tui].disk_mounts` adds local volumes to the `--tui` disk panel, after the startup disk and in the listed order. Each entry must be the exact mount point, such as `/Volumes/Archive`; a leading `~/` is expanded. Entries are checked against the system mount table before any disk query. A path that is not currently a mount point, including an unplugged disk, shows `unavailable: not mounted` instead of stale values. A network volume shows `unavailable: not a local volume` and is never queried, so an unreachable share cannot stall the TUI. Duplicate entries and `/` (the startup disk, always shown first) are ignored. `--no-disk` hides the panel even when `[tui].disk` is `true`. How the values are measured: [Disk usage](architecture.md#disk-usage).
+
+`ai-usage --disk` reads the same volumes: the startup disk followed by `[tui].disk_mounts`. `--mount` replaces that list for one run, and the config file is then not read. `[tui].disk = false` and `--no-disk` only hide the TUI panel; they do not change what `--disk` reads. See [Disk usage output](cli-reference.md#disk-usage-output).

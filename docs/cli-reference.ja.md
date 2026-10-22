@@ -7,6 +7,7 @@
 | コマンド | 説明 |
 |---------|------|
 | `ai-usage` | サインイン済みの全プロファイル・プロバイダの使用量を表示 |
+| `ai-usage --disk` | この Mac のディスク容量を、使用量を取得せずに1ボリューム1行で表示。[ディスク容量の出力](#ディスク容量の出力) を参照 |
 | `ai-usage --init-config` | 現在サインイン済みのプロファイルから設定ファイルの雛形を生成。`--config <PATH>` で出力先を指定 |
 | `ai-usage --list-profiles` | 検出した Chrome プロファイル一覧を表示 |
 
@@ -35,6 +36,14 @@
 | `--sort weekly-reset` | 長期枠のリセット時刻が近い順 (リセット待ちが短いアカウントを上に) |
 | `--no-color` | ANSI カラーを無効化 (`NO_COLOR` 環境変数に空でない値が入っている場合 ([no-color.org](https://no-color.org/) の仕様) または `TERM=dumb` でも無効になります) |
 | `--input <PATH>` | `--statusline` または `--tui` と併用し、キャッシュ済み `--json` ファイルから描画。TUIでは1分ごとに読み直す。Chrome・Keychain・ネットワークには触れない。TUI のディスク欄だけは、この Mac のボリュームを直接読む |
+
+### ディスク容量
+
+| オプション | 説明 |
+|-----------|------|
+| `--disk` | 起動ディスクと `[tui].disk_mounts` のボリュームの容量を表示して終了。`--tui` / `--statusline` / `--input` / `--list-profiles` / `--init-config` との併用不可 |
+| `--disk --json` | 同じ値をバイト単位の JSON で出力。項目は [ディスク容量の出力](#ディスク容量の出力) を参照 |
+| `--mount <PATH>` | `--disk` と併用し、起動ディスクと `[tui].disk_mounts` の代わりに、指定したボリュームだけを指定した順に読む。繰り返し指定でき、`/` は起動ディスク。`--disk` なしでは使えない |
 
 ### 共有キャッシュ
 
@@ -87,3 +96,78 @@ Claude と Codex の行には、手動リセットの残回数と有効期限も
 `--reset-at` を付けると、長期枠のリセット日時を出せない行 (時刻不明・リセット済み・長期枠なし) も日時と同じ幅を空けるため、`R:` はすべての行で同じ列から始まります。
 
 JSON の各アカウントには、省略可能な `manual_resets` 配列を追加しています。各要素は `kind`、`remaining` (整数、不明なら `null`)、`expires_at` (RFC 3339、取得できなければ `null`)、`paused` (省略時は `false`) を持ちます。この項目がない旧キャッシュは、リセット表示なしで引き続き描画できます。
+
+## ディスク容量の出力
+
+`ai-usage --disk` は、この Mac のディスク容量だけを表示して終了します。起動ディスクを先頭に、`[tui].disk_mounts` に書いたボリュームを続けて読みます。`--mount` を付けると、指定したボリュームだけを指定した順に読み、設定ファイルは読みません。先頭の `~/`、末尾の `/`、重複した区切りは設定と同じく正規化し、同じボリュームを2回指定しても読むのは1回です。`/` は起動ディスクを表します。
+
+各行の形は `--tui` のディスク欄の行と同じです。バーは20セルに固定し、その後に使用率と、最も詳しい内訳を続けます。
+
+```text
+Macintosh HD  █████████████████▒▒░   86%  70.8 GB available of 494.4 GB · 13.1 GB free · 57.7 GB purgeable
+External      ████████░░░░░░░░░░░░   40%  1.2 TB available of 2.0 TB
+Archive       unavailable: not mounted
+Backup        no response
+```
+
+色もディスク欄と同じです ([ディスク使用量](architecture.ja.md#ディスク使用量))。`--no-color`、空でない `NO_COLOR`、`TERM=dumb` のいずれかがあれば色を付けません。
+
+各ボリュームは並行して1回ずつ読み、全体で最大2秒待ちます。全ボリュームの結果がそろえば、その時点で表示します。2秒たっても結果が返らないボリュームは `no response` (JSON では `"status": "timeout"`) と表示し、その読み取りの終了を待たずに終了します。
+
+`--disk` は Chrome・Keychain・ネットワーク・共有キャッシュに触れません。使用量の表示だけに効くオプション (`--profile`・`--only`・`--sort`・`--cache-ttl`・`--refresh`・statusline 用のオプションなど) は、受け付けたうえで無視します。そのため、既存の `ai-usage` のコマンド列に `--disk` を足して呼べます。`--no-disk` と `[tui].disk = false` は TUI の欄を隠すだけで、`--disk` が読むボリュームは変えません。
+
+出力を書けたら、読めないボリュームがあっても終了コードは0です。各ボリュームで何が起きたかは `status` で分かります。引数の誤りは終了コード2で終わります。`--disk` なしの `--mount`、空の `--mount`、`--tui` など別のモードとの併用が該当します。出力を書けなかった場合は0以外で終わります。ただし、`ai-usage --disk | head -n 1` のように読み手が stdout を先に閉じた場合は0で終わります。
+
+`--disk --json` は、同じ値をバイト単位で出力します。
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-22T13:19:01.175468+00:00",
+  "volumes": [
+    {
+      "target": "/",
+      "status": "ok",
+      "name": "Macintosh HD",
+      "total_bytes": 494384795648,
+      "free_bytes": 13080645632,
+      "available_bytes": 70754759808,
+      "purgeable_bytes": 57674114176,
+      "used_percent": 85.68832204573356,
+      "capacity_basis": "important_usage",
+      "error": null
+    },
+    {
+      "target": "/Volumes/Archive",
+      "status": "not_mounted",
+      "name": null,
+      "total_bytes": null,
+      "free_bytes": null,
+      "available_bytes": null,
+      "purgeable_bytes": null,
+      "used_percent": null,
+      "capacity_basis": null,
+      "error": null
+    }
+  ]
+}
+```
+
+どのボリュームの要素にも、すべてのキーがあります。分からない値は `null` です。要素は読んだ順に並びます。
+
+| 項目 | 意味 |
+|------|------|
+| `schema_version` | `1`。項目を削除したり意味を変えたりしたときに上げる |
+| `generated_at` | 出力を組み立てた時刻 (RFC 3339、UTC) |
+| `target` | 起動ディスクは `/`、それ以外は正規化したマウントポイント |
+| `status` | `ok`、`not_mounted` (取り外したディスクなど、現在マウントポイントでない)、`not_local` (ネットワークボリューム。問い合わせない)、`timeout` (2秒以内に結果が返らない)、`error` (問い合わせに失敗) のいずれか |
+| `name` | macOS が返すボリューム名 (例: `Macintosh HD`) |
+| `total_bytes` | 総容量 |
+| `free_bytes` | 今この時点で空いている領域 |
+| `available_bytes` | 重要な用途に使える容量。Finder が「利用可能」と表示する値で、パージ可能な領域を含む |
+| `purgeable_bytes` | `available_bytes − free_bytes` の推定値。重要な用途の容量を返さないボリュームでは `null`。`0` は測った値 |
+| `used_percent` | `(total_bytes − available_bytes) / total_bytes × 100`。丸めない |
+| `capacity_basis` | `available_bytes` が重要な用途の容量なら `important_usage`。それを返さないボリュームで、`available_bytes` を `free_bytes` と同じ値にしたなら `free_space` |
+| `error` | `status` が `error` のときの失敗の内容。それ以外は `null` |
+
+`status` が `ok` でない要素は、`target` と `status` (`error` の状態では `error` も) のほかがすべて `null` です。バイト数は正確な値で、10進の単位に丸めません。使用量の `--json`・テーブル・`--statusline`・共有キャッシュには、ディスク容量を含めません。

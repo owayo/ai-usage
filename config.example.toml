@@ -51,6 +51,8 @@ exclude = ["antigravity"] # claude / codex / antigravity / pixellab / grok
 # disk_mounts には mount point をそのまま書きます (先頭の ~/ は展開)。mount されていない
 # path は unavailable: not mounted、network volume は問い合わせずに
 # unavailable: not a local volume と表示します。
+# ai-usage --disk も、--mount を付けなければ起動ディスクと disk_mounts を読みます。
+# disk = false は TUI の欄を隠すだけで、--disk には効きません。
 # [tui]
 # disk = true                        # false ならディスク欄を非表示 (--no-disk と同じ)
 # disk_mounts = ["/Volumes/Archive"] # 起動ディスクの後にこの順で表示

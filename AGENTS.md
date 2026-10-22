@@ -10,7 +10,7 @@ typed 5-hour / daily / weekly / monthly windows plus reset times — for every
 signed-in profile. Claude and Codex rows also carry the remaining manual usage
 resets and their expiry times. Antigravity (Google's `agy`) and Grok (xAI's
 `grok` CLI) are fetched via OAuth alongside them. The `--tui` dashboard also
-shows this Mac's disk usage at the bottom.
+shows this Mac's disk usage at the bottom, and `--disk` prints it on its own.
 
 ## Source map
 
@@ -27,13 +27,14 @@ shows this Mac's disk usage at the bottom.
 | `src/report.rs`   | JSON DTO (shared by `--json` output and `--input` cache). |
 | `src/cache.rs` | Per-source usage cache (120 s by default), credential fingerprints, process locks, and atomic writes. |
 | `src/diagnostics.rs` | Warning delivery: stderr for normal commands, a shared queue while the TUI draws. |
-| `src/disk.rs` / `src/disk/macos.rs` | TUI disk panel data: Finder-style capacity (`Volume`), target list, and the detached-thread `Monitor`. `macos.rs` holds the only `unsafe` code (mount table via `getfsstat`, NSURL key constants). |
+| `src/disk.rs` / `src/disk/macos.rs` | Disk data for the TUI panel and `--disk`: Finder-style capacity (`Volume`), target lists (`targets` for the TUI and the default `--disk` list, `listed_targets` for `--mount`), detached reader threads (`spawn_reader`, which reports a reader panic as a failed read), the TUI `Monitor`, and the one-shot `snapshot` that `--disk` waits on for at most `OVERDUE`. `macos.rs` holds the only `unsafe` code (mount table via `getfsstat`, NSURL key constants). |
 | `src/render.rs`   | Shared row resolution (display name, active highlight), JSON output, and `write_stdout`; re-exports the renderers. |
+| `src/render/disk.rs` | Disk rows shared by the TUI panel and `--disk`: bar cells, percentage, size breakdowns, and status text as `(text, Paint)` segments; the `--disk` text output and `--disk --json` (schema version 1). |
 | `src/render/sort.rs` / `src/render/table.rs` / `src/render/statusline.rs` | Row sorting (`SortableRow`), human table, compact statusline. |
 | `src/render/manual_resets.rs` | Manual-reset summaries shared by the table column, the statusline `R:` suffix, and the TUI lines (`TuiResetLine` keeps each expiry apart so the TUI can color its date). |
-| `src/render/palette.rs` | Colors shared by the statusline and the TUI: `Paint` (foreground + bold), the four-step `Level` scale, `LABEL` / `MUTED` / `ALERT`, the provider marker and brand RGB (also used by the table), and the reset-countdown and manual-reset-deadline colors. The statusline converts a `Paint` to ANSI SGR, the TUI to a ratatui `Style`. |
-| `src/render/tui.rs` / `src/render/tui/disk.rs` | TUI event loop and layout; the disk panel's placement, bar, and text. |
-| `src/main.rs`     | CLI, config-row binding and provider resolution, concurrent fetch. |
+| `src/render/palette.rs` | Colors shared by the statusline and the TUI: `Paint` (foreground + bold), the four-step `Level` scale, `LABEL` / `MUTED` / `ALERT`, the provider marker and brand RGB (also used by the table), and the reset-countdown and manual-reset-deadline colors. The statusline converts a `Paint` to ANSI SGR (`--disk` reuses that conversion), the TUI to a ratatui `Style`. |
+| `src/render/tui.rs` / `src/render/tui/disk.rs` | TUI event loop and layout; the disk panel's placement and the bar width and text detail chosen for the terminal width. |
+| `src/main.rs`     | CLI, config-row binding and provider resolution, concurrent fetch, and the `--disk` branch with its target resolution. |
 
 ## Transient failures vs auth failures
 
@@ -175,12 +176,30 @@ or above the total falls back to plain free space with an unknown purgeable size
 skewed reading below free is raised to free), target lists (startup disk first,
 duplicates and `/` dropped), the `Monitor` (one reader per volume while a read hangs,
 the next read only `INTERVAL` after completion, stale values kept on failure but dropped
-for unmounted or network volumes), the real mount table and startup-disk query
-(`disk.rs` / `disk/macos.rs`), and rendering: placement thresholds, bar cells that always
-fill the width and keep small non-zero used / free parts visible, `0%` / `100%` only at
-exact extremes, decimal units, width-dependent detail text and bar widths, one shared
-bar width per panel, stale / `no response` / `unavailable` rows, colors, and the TUI
-layout at 9–24 rows (`render/tui/disk.rs`, `render/tui.rs`).
+for unmounted or network volumes, a panicking reader reported as a failed read and
+retried), the real mount table and startup-disk query (`disk.rs` / `disk/macos.rs`), the
+shared row pieces: bar cells that always fill the width and keep small non-zero used /
+free parts visible, `0%` / `100%` only at exact extremes, decimal units, the 80/90/95%
+levels, and capped name widths (`render/disk.rs`), and the panel: placement thresholds,
+width-dependent detail text and bar widths, one shared bar width per panel, stale /
+`no response` / `unavailable` rows, colors, and the TUI layout at 9–24 rows
+(`render/tui/disk.rs`, `render/tui.rs`).
+
+`--disk` adds `--mount` target lists (given order, `/` as the startup disk anywhere in the
+list, duplicates after normalization dropped) and `snapshot` (one deadline shared by all
+volumes even with several stuck reads, results kept in target order, a reader panic
+reported as a failure, an immediate return when every volume has answered or there is
+nothing to read) in `disk.rs`; golden text with and without color, control characters
+replaced by spaces, and the JSON shape (every key in every state, exact bytes, an
+unrounded `used_percent`, `null` versus a measured `0` for purgeable space) in
+`render/disk.rs`; a TUI row drawn with a 20-cell bar that must equal the `--disk` line
+byte for byte, colors included (`render/tui/disk.rs`); and the clap rules (conflicting
+modes, `--mount` requiring `--disk`, empty `--mount`, usage-only options accepted) plus
+target resolution that never reads the config with `--mount` (`main.rs`).
+`tests/disk.rs` runs the real CLI on macOS: `--disk --json --mount / --mount <missing>`
+next to usage-only options (no stderr, no cache directory created), targets from
+`[tui].disk_mounts` with `[tui].disk = false`, `--no-color` / `NO_COLOR` / default
+colors, usage errors with status 2, and a closed stdout pipe.
 
 Color coverage pins the shared scale with literal values: usage levels at 60/80/90%
 with bold percentages from 80%, exclusive reset-countdown thresholds, the seven-day
@@ -190,7 +209,8 @@ format and golden lines for rows that cannot show a `--reset-at` date
 (bold only on high percentages, no style on parent lines, nothing under `--no-color`,
 redraws that leave no stale color or bold behind), the disk panel checks each bar
 segment's color, and `render/color_parity.rs` renders the same accounts through the
-statusline and the TUI to confirm that shared text carries the same color.
+statusline and the TUI to confirm that shared text carries the same color. The disk rows
+get the same check against `--disk` in `render/tui/disk.rs`.
 
 ## 保守時に維持する動作
 
@@ -221,6 +241,11 @@ statusline and the TUI to confirm that shared text carries the same color.
 - ディスク欄で段階色を付けるのは、バーの使用中の部分と % だけにする (しきい値の 80/90/95% は変えない)。パージ可能の部分は灰色、空きの部分は暗い灰色にする。
 - ディスク欄はアカウント一覧に6行を残せる高さのときだけ枠付きで出し、足りなければ枠なしの1行、それも足りなければ出さない。
 - ディスク欄の行どうしでバーの幅を揃える (説明の最も長い行に合わせる)。説明はバーを16セル残せる範囲で最も詳しいものを選び、狭い端末でだけバーを6セルまで縮める。バーの3区分の合計は常にバーの幅に一致させ、最低1セルの補正は使用中と空きにだけ掛ける。1セルに満たないパージ可能分のために使用中のセルを削らない。
+- ディスクの行のバー・使用率・内訳・状態の文言と色は、`render/disk.rs` の区間で決める。TUI と `--disk` は、その区間を自分の形式に変換するだけにする。
+- `--disk` は `run` の先頭で、設定の読み込みより前に分岐する。Chrome・Keychain・ネットワーク・共有キャッシュには触れず、`--mount` を付けたときは設定ファイルも読まない。
+- `--disk` と併用を拒否するのは `--tui` / `--statusline` / `--input` / `--list-profiles` / `--init-config` だけにする。使用量向けの指定 (`--profile` / `--only` / `--sort` / `--cache-ttl` / `--refresh` など) と `--no-disk` / `[tui].disk` は無視し、エラーにしない。ほかのツールが、利用者の設定したコマンド列に `--disk` を足して呼ぶため。
+- `--disk` は各ボリュームを切り離しスレッドで1回ずつ読み、全ボリュームで1つの期限 (`disk::OVERDUE`、2秒) まで待つ。期限までに戻らないボリュームは `timeout` (人向けの表示は `no response`) とし、そのスレッドは join しない。全部そろえば期限を待たずに出力する。
+- `--disk --json` は、どの状態でも全キーを出す (不明は `null`)。値はバイトのまま出し、`used_percent` も丸めない。キーを消したり意味を変えたりするときは `schema_version` を上げる。個々のボリュームの失敗は `status` で表し、終了コードは0のままにする。
 
 再現条件と修正根拠は [保守レビュー記録](docs/maintenance.ja.md) を参照。
 

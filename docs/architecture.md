@@ -73,7 +73,7 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
 
 ## Disk usage
 
-The `--tui` disk panel reads each volume's capacity locally through Foundation's `NSURL` volume resource values. Nothing is sent over the network, and disk usage is not part of `--json`, the table, `--statusline`, or the shared usage cache.
+The `--tui` disk panel and `ai-usage --disk` read each volume's capacity locally through Foundation's `NSURL` volume resource values. Nothing is sent over the network. Disk usage is not part of the usage `--json`, the table, `--statusline`, or the shared usage cache; `--disk` prints it separately ([Disk usage output](cli-reference.md#disk-usage-output)).
 
 - **Total**: the volume's total capacity.
 - **Available**: the capacity available for important usage. This is the figure Finder reports as available, and it includes purgeable space.
@@ -86,7 +86,9 @@ The startup disk (the volume mounted at `/`) is always the first row, labeled wi
 
 Reads run on a background thread, so drawing and key handling never wait for them. The first read starts when the TUI opens, and each volume is read again 30 seconds after its previous read finishes, independently of the one-minute usage refresh. At most one read per volume runs at a time. If a read takes longer than 2 seconds, the row shows `no response`, or keeps the last values with their age (for example `· 3m ago`). Quitting never waits for a stuck read. A failed read also keeps the last values with their age. With `--tui --input`, account usage comes from the saved file, but disk values are always read live from this Mac.
 
-`[tui].disk_mounts` entries are checked against the system mount table before any query, and network volumes are never queried, so an unreachable share cannot stall the TUI. See [Configuration](configuration.md#configuration-options) for what an unmounted or network entry shows.
+`ai-usage --disk` prints the same rows without the dashboard. The bar, percentage, size text, and colors come from the same code as the panel, so the two cannot disagree. Because the terminal width is unknown, `--disk` always uses a 20-cell bar and the most detailed text. It reads each volume once, each on its own background thread, and waits at most 2 seconds for all of them together. A volume that has not answered by then is reported as `no response`, and the process exits without waiting for that read. If reading a volume fails unexpectedly (the reader panics), both the panel and `--disk` report it as a failed read rather than as a read that never returns.
+
+`[tui].disk_mounts` and `--mount` entries are checked against the system mount table before any query, and network volumes are never queried, so an unreachable share cannot stall the TUI or `--disk`. See [Configuration](configuration.md#configuration-options) for what an unmounted or network entry shows.
 
 ## Privacy
 
