@@ -349,7 +349,8 @@ fn window_seg(
 /// Claude Code は statusline をキャッシュから描き直すので、出力はバイト単位で保つ。
 /// 区間ごとに必ず `\x1b[0m` で閉じ、隣り合う同色の区間もまとめない。空文字列も囲む
 /// (使用率 0% の gauge は点灯部が空でも SGR を出す)。色を使わないときは何も足さない。
-fn paint(color: bool, p: Paint, s: &str) -> String {
+/// `--disk` の人向け出力も、同じ変換で色を付ける。
+pub(super) fn paint(color: bool, p: Paint, s: &str) -> String {
     if color {
         format!("\x1b[{}m{s}\x1b[0m", sgr(p))
     } else {

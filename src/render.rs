@@ -1,6 +1,7 @@
 //! human table、JSON、compact colored statusline の rendering。
 //!
 //! table / statusline / 行ソートはサブモジュールに分かれ、色は `palette` に集める。
+//! ディスク容量の行 (TUI のディスク欄と `--disk`) は `disk` が組み立てる。
 //! このファイルはレンダラー間で共有する行の解決(表示名・active 判定)と、
 //! 15 行で足りる JSON 出力を持つ。
 
@@ -15,6 +16,7 @@ mod statusline;
 mod table;
 mod tui;
 
+pub use disk::{disk_json, disk_text};
 pub use statusline::{StatuslineOpts, statusline};
 pub use table::table;
 pub use tui::{Fetch as TuiFetch, run as tui};

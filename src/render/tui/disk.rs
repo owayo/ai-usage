@@ -520,6 +520,79 @@ mod tests {
     }
 
     #[test]
+    fn rows_match_the_disk_command_output() {
+        use crate::disk::Reading;
+
+        /// statusline と同じ書式の SGR に直す (色を付けない区間はそのまま)。
+        fn ansi(spans: &[Span]) -> String {
+            spans
+                .iter()
+                .map(|span| match span.style.fg {
+                    Some(Color::Indexed(index)) => {
+                        let bold = if span.style.add_modifier.contains(Modifier::BOLD) {
+                            "1;"
+                        } else {
+                            ""
+                        };
+                        format!("\x1b[{bold}38;5;{index}m{}\x1b[0m", span.content)
+                    }
+                    _ => span.content.to_string(),
+                })
+                .collect()
+        }
+
+        // `--disk` の行は、十分に広い端末の行を幅 20 のバーで描いたものと同じになる。
+        let now = base();
+        let external = Volume::new("External".into(), 2_000 * GB, 1_200 * GB, None).unwrap();
+        let full = Volume::new("Full".into(), 1_000 * GB, 30 * GB, Some(30 * GB)).unwrap();
+        let mut unplugged = Row::new(Target::Mount("/Volumes/Archive".into()), now);
+        unplugged.error = Some(ReadError::NotMounted);
+        let mut silent = Row::new(Target::Mount("/Volumes/Backup".into()), now);
+        silent.started = Some(now - OVERDUE_FOR_TEST);
+        let rows = [
+            sampled(startup(), now),
+            sampled(external.clone(), now),
+            sampled(full.clone(), now),
+            unplugged,
+            silent,
+        ];
+        let readings = [
+            Reading {
+                target: Target::Startup,
+                result: Some(Ok(startup())),
+            },
+            Reading {
+                target: Target::Mount("/Volumes/External".into()),
+                result: Some(Ok(external)),
+            },
+            Reading {
+                target: Target::Mount("/Volumes/Full".into()),
+                result: Some(Ok(full)),
+            },
+            Reading {
+                target: Target::Mount("/Volumes/Archive".into()),
+                result: Some(Err(ReadError::NotMounted)),
+            },
+            Reading {
+                target: Target::Mount("/Volumes/Backup".into()),
+                result: None,
+            },
+        ];
+        let names = rows_name_width(&rows);
+        for color in [false, true] {
+            let tui: Vec<String> = rows
+                .iter()
+                .map(|row| format!("{}\n", ansi(&row_spans(row, names, 200, 20, color, now))))
+                .collect();
+            assert_eq!(
+                super::super::super::disk::text(&readings, color),
+                tui.concat(),
+                "color={color}"
+            );
+        }
+    }
+
+    #[test]
     fn panel_rows_share_one_bar_width() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;

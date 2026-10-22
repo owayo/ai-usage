@@ -62,6 +62,25 @@ struct Cli {
     #[arg(long)]
     no_disk: bool,
 
+    /// この Mac のディスク容量を、利用枠とは別に出力して終了する。
+    /// 1 ボリューム 1 行で、`--json` なら JSON。
+    /// Chrome・Keychain・ネットワーク・共有キャッシュには触れず、使用量向けの指定は無視する。
+    #[arg(
+        long,
+        conflicts_with_all = ["tui", "statusline", "input", "list_profiles", "init_config"]
+    )]
+    disk: bool,
+
+    /// `--disk` で読むボリュームのマウントポイント。繰り返し指定でき、`/` は起動ディスク。
+    /// 指定すると config の `[tui] disk_mounts` は読まず、指定したものだけを指定した順に出す。
+    #[arg(
+        long,
+        value_name = "PATH",
+        requires = "disk",
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
+    mount: Vec<String>,
+
     /// compact な colored statusline を出力する(1 account 1 行)
     #[arg(long)]
     statusline: bool,
@@ -1013,6 +1032,34 @@ fn disk_targets(cli: &Cli, cfg: &config::Config) -> Vec<disk::Target> {
     disk::targets(tui.map_or(&[], |tui| tui.disk_mounts.as_slice()))
 }
 
+/// `--disk` で読むボリューム。`--mount` があれば config を読まずにその一覧だけを使い、
+/// 無ければ起動ディスクと `[tui] disk_mounts` を読む。`[tui] disk` と `--no-disk` は
+/// TUI の欄の表示設定なので見ない。
+fn disk_mode_targets(cli: &Cli, load_config: impl FnOnce() -> config::Config) -> Vec<disk::Target> {
+    if !cli.mount.is_empty() {
+        return disk::listed_targets(&cli.mount);
+    }
+    let cfg = load_config();
+    disk::targets(
+        cfg.tui
+            .as_ref()
+            .map_or(&[], |tui| tui.disk_mounts.as_slice()),
+    )
+}
+
+/// `--disk`: ボリュームを並行して 1 回ずつ読み、`disk::OVERDUE` までに戻らなかったものは
+/// 応答なしとして出力する。個々のボリュームの失敗は出力の中で示し、終了コードには反映しない。
+fn print_disk(cli: &Cli) -> Result<()> {
+    let targets = disk_mode_targets(cli, || config::load(cli.config.as_deref()));
+    let readings = disk::snapshot(targets, disk::OVERDUE);
+    if cli.json {
+        render::disk_json(&readings)?;
+    } else {
+        render::disk_text(&readings, color_enabled(cli.no_color))?;
+    }
+    Ok(())
+}
+
 /// `[providers] exclude` を全表示モード共通の除外対象に解決する。
 /// 明示的な `--only` は設定より優先し、その provider だけは表示する。
 fn excluded_providers(cli: &Cli, cfg: &config::Config) -> Vec<model::Provider> {
@@ -1156,6 +1203,11 @@ fn needs_profile_discovery(cli: &Cli, excluded: &[model::Provider]) -> bool {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    // ディスク容量は利用枠と独立したモード。設定より前に分岐し、`--mount` があれば設定も
+    // 読まない。Chrome・Keychain・ネットワーク・共有キャッシュにも触れない。
+    if cli.disk {
+        return print_disk(&cli);
+    }
     if cli.tui
         && !cli.list_profiles
         && !cli.init_config
@@ -1862,6 +1914,121 @@ mod tests {
         // `--no-disk` は設定で有効にしていても優先する。
         let no_disk = Cli::parse_from(["ai-usage", "--tui", "--no-disk"]);
         assert!(disk_targets(&no_disk, &tui(Some(true))).is_empty());
+    }
+
+    #[test]
+    fn disk_mode_rejects_other_modes_and_requires_disk_for_mount() {
+        use clap::error::ErrorKind;
+
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once("ai-usage").chain(args.iter().copied()))
+        };
+        for other in [
+            &["--tui"][..],
+            &["--statusline"],
+            &["--input", "/tmp/ai-usage-cache.json"],
+            &["--list-profiles"],
+            &["--init-config"],
+        ] {
+            let args: Vec<&str> = std::iter::once("--disk")
+                .chain(other.iter().copied())
+                .collect();
+            let error = parse(&args).err().expect("併用できないモード");
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{other:?}");
+        }
+        let error = parse(&["--mount", "/"])
+            .err()
+            .expect("--mount は --disk 専用");
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+        // 空のマウントポイントを黙って捨てて既定の対象に戻すと、指定した一覧だけを読むという
+        // 意味が崩れるため、引数の誤りにする。
+        let error = parse(&["--disk", "--mount", ""])
+            .err()
+            .expect("空のマウントポイント");
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+
+        // 利用者が設定したコマンド列に --disk を足して呼ばれても動くよう、使用量向けの指定と
+        // TUI の表示設定は併用できる (--disk では使わない)。
+        let cli = parse(&[
+            "--json",
+            "--profile",
+            "Work",
+            "--only",
+            "codex",
+            "--sort",
+            "weekly-usage",
+            "--cache-ttl",
+            "0",
+            "--refresh",
+            "--no-disk",
+            "--logos",
+            "--compact",
+            "--reset-at",
+            "--statusline-hide",
+            "grok",
+            "--active-profile",
+            "Work",
+            "--debug",
+            "--disk",
+            "--mount",
+            "/",
+            "--mount",
+            "/Volumes/Archive",
+        ])
+        .unwrap();
+        assert!(cli.disk && cli.json);
+        assert_eq!(cli.mount, ["/", "/Volumes/Archive"]);
+    }
+
+    #[test]
+    fn disk_mode_targets_use_mounts_or_tui_config_but_not_display_switches() {
+        let cfg = || config::Config {
+            tui: Some(config::TuiCfg {
+                disk: Some(false),
+                disk_mounts: vec!["/Volumes/Archive".to_string()],
+            }),
+            ..Default::default()
+        };
+        // --mount があれば config を読まず、指定した順に並べる。
+        let cli = Cli::parse_from([
+            "ai-usage",
+            "--disk",
+            "--mount",
+            "/Volumes/Photos/",
+            "--mount",
+            "/",
+            "--mount",
+            "/Volumes//Photos",
+        ]);
+        assert_eq!(
+            disk_mode_targets(&cli, || panic!("--mount では config を読まない")),
+            [
+                disk::Target::Mount("/Volumes/Photos".into()),
+                disk::Target::Startup
+            ]
+        );
+        // 無ければ起動ディスクと [tui] disk_mounts。[tui] disk = false と --no-disk は
+        // TUI の欄の表示設定なので、--disk には効かない。
+        for args in [
+            &["ai-usage", "--disk"][..],
+            &["ai-usage", "--disk", "--no-disk"],
+        ] {
+            assert_eq!(
+                disk_mode_targets(&Cli::parse_from(args), cfg),
+                [
+                    disk::Target::Startup,
+                    disk::Target::Mount("/Volumes/Archive".into())
+                ],
+                "{args:?}"
+            );
+        }
+        assert_eq!(
+            disk_mode_targets(
+                &Cli::parse_from(["ai-usage", "--disk"]),
+                config::Config::default
+            ),
+            [disk::Target::Startup]
+        );
     }
 
     #[test]

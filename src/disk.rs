@@ -21,7 +21,8 @@ use std::time::{Duration, Instant};
 
 /// 取得が終わってから、同じボリュームの次の取得を始めるまでの間隔。
 pub const INTERVAL: Duration = Duration::from_secs(30);
-/// これより長く戻らない取得は、表示上「応答なし」とする。取得自体は待ち続ける。
+/// これより長く戻らない取得は「応答なし」とする。TUI は表示を切り替えるだけで取得を
+/// 待ち続け、`--disk` はこの時間で待つのをやめて出力する。
 pub const OVERDUE: Duration = Duration::from_secs(2);
 
 /// 表示するボリューム。
@@ -52,17 +53,34 @@ impl Target {
 /// は除く。
 pub fn targets(mounts: &[String]) -> Vec<Target> {
     let mut targets = vec![Target::Startup];
+    push_mounts(&mut targets, mounts);
+    targets
+}
+
+/// `--disk --mount` で指定したボリュームだけを、指定した順に並べる。`/` は起動ディスクとし、
+/// 正規化した後で重複するものは最初の 1 つだけを残す。
+pub fn listed_targets(mounts: &[String]) -> Vec<Target> {
+    let mut targets = Vec::new();
+    push_mounts(&mut targets, mounts);
+    targets
+}
+
+/// マウントポイントを `targets` に加える。先頭の `~/` を展開し、末尾の `/` や重複した区切りを
+/// 取り除いて比べる。`/` は起動ディスク、空のパスは無視し、既にある対象は加えない。
+fn push_mounts(targets: &mut Vec<Target>, mounts: &[String]) {
     for mount in mounts {
         let path: PathBuf = crate::config::expand_home(mount).components().collect();
-        if path.as_os_str().is_empty() || path == Path::new("/") {
+        let target = if path == Path::new("/") {
+            Target::Startup
+        } else if path.as_os_str().is_empty() {
             continue;
-        }
-        let target = Target::Mount(path);
+        } else {
+            Target::Mount(path)
+        };
         if !targets.contains(&target) {
             targets.push(target);
         }
     }
-    targets
 }
 
 /// 1 ボリュームの容量。値はバイト。
@@ -297,6 +315,71 @@ impl Monitor {
     }
 }
 
+/// `snapshot` で 1 回読んだ結果。
+#[derive(Debug)]
+pub struct Reading {
+    pub target: Target,
+    /// 読めた容量か、読めなかった理由。期限までに結果が届かなければ None。
+    pub result: Option<Result<Volume, ReadError>>,
+}
+
+impl Reading {
+    /// 表示名。容量を読めたらボリューム名、読めなければ対象の名前。
+    pub fn name(&self) -> String {
+        match &self.result {
+            Some(Ok(volume)) => volume.name.clone(),
+            _ => self.target.label(),
+        }
+    }
+}
+
+/// 各ボリュームを切り離しスレッドで並行して 1 回ずつ読み、`wait` の間だけ結果を待つ。
+///
+/// 期限までに戻らなかったボリュームは `result` が None のまま返す。そのスレッドは待たないので、
+/// 戻らない I/O があってもプロセスは終われる。全部そろえば期限を待たずに返す。結果は
+/// `targets` と同じ順に並べる。
+pub fn snapshot(targets: Vec<Target>, wait: Duration) -> Vec<Reading> {
+    snapshot_with(targets, wait, Arc::new(read))
+}
+
+fn snapshot_with(targets: Vec<Target>, wait: Duration, read: Reader) -> Vec<Reading> {
+    // 期限は全ボリュームで 1 つ。1 件ずつ `wait` まで待つと、待ち時間が件数倍に延びる。
+    let deadline = Instant::now() + wait;
+    let (sender, receiver) = mpsc::channel();
+    let mut readings: Vec<Reading> = targets
+        .into_iter()
+        .map(|target| Reading {
+            target,
+            result: None,
+        })
+        .collect();
+    let mut pending = 0;
+    for (index, reading) in readings.iter_mut().enumerate() {
+        let spawned = spawn_reader(
+            index,
+            reading.target.clone(),
+            Arc::clone(&read),
+            sender.clone(),
+        );
+        match spawned {
+            Ok(()) => pending += 1,
+            Err(error) => reading.result = Some(Err(spawn_failed(&error))),
+        }
+    }
+    // 送る側を読み取りスレッドだけにして、全員が終われば Disconnected で抜けられるようにする。
+    drop(sender);
+    while pending > 0 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        // 期限を過ぎた (Timeout)、またはすべてのスレッドが送らずに終わった (Disconnected)。
+        let Ok((index, result)) = receiver.recv_timeout(left) else {
+            break;
+        };
+        readings[index].result = Some(result);
+        pending -= 1;
+    }
+    readings
+}
+
 #[cfg(test)]
 impl Monitor {
     /// スレッドを起動せずに、描画テスト用の状態を持たせる。
@@ -379,6 +462,131 @@ mod tests {
         assert_eq!(targets(&[]), [Target::Startup]);
         assert_eq!(Target::Startup.label(), "/");
         assert_eq!(Target::Mount("/Volumes/Archive".into()).label(), "Archive");
+    }
+
+    #[test]
+    fn listed_targets_keep_the_given_order_and_treat_root_as_the_startup_disk() {
+        let mounts = [
+            "/Volumes/Archive/",
+            "//",
+            "/Volumes//Archive",
+            "/Volumes/Photos",
+            "/.",
+        ]
+        .map(String::from);
+        // 起動ディスクを先頭に足さず、書いた順のまま、正規化して重複を除く。
+        assert_eq!(
+            listed_targets(&mounts),
+            [
+                Target::Mount("/Volumes/Archive".into()),
+                Target::Startup,
+                Target::Mount("/Volumes/Photos".into()),
+            ]
+        );
+        assert_eq!(listed_targets(&["/".into()]), [Target::Startup]);
+        assert!(listed_targets(&[]).is_empty());
+        assert!(listed_targets(&[String::new()]).is_empty());
+        // `~/` は設定と同じく展開する。
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(
+            listed_targets(&["~/Mounted/".into()]),
+            [Target::Mount(home.join("Mounted"))]
+        );
+    }
+
+    fn fixed_volume(target: &Target) -> Result<Volume, ReadError> {
+        let name = match target {
+            Target::Startup => "Macintosh HD".to_string(),
+            Target::Mount(_) => target.label(),
+        };
+        Volume::new(name, 100, 40, Some(60)).map_err(ReadError::Failed)
+    }
+
+    #[test]
+    fn snapshot_returns_at_one_shared_deadline_without_waiting_for_stuck_reads() {
+        const WAIT: Duration = Duration::from_millis(250);
+        let (release, gate) = mpsc::channel::<()>();
+        let gate = Arc::new(Mutex::new(gate));
+        let stuck = |n: u8| Target::Mount(format!("/Volumes/Stuck{n}").into());
+        let is_stuck = |target: &Target| target.label().starts_with("Stuck");
+        let targets = vec![
+            stuck(1),
+            Target::Startup,
+            stuck(2),
+            stuck(3),
+            Target::Mount("/Volumes/Archive".into()),
+            stuck(4),
+        ];
+        let start = Instant::now();
+        let readings = snapshot_with(
+            targets.clone(),
+            WAIT,
+            Arc::new(move |target: &Target| {
+                if is_stuck(target) {
+                    // 応答しないディスクを、テストが解放するまで戻らない取得で再現する。
+                    let _ = gate.lock().unwrap().recv();
+                    return Err(ReadError::Failed("released".into()));
+                }
+                fixed_volume(target)
+            }),
+        );
+        let elapsed = start.elapsed();
+        // 期限まで待ち、戻らない取得を待たずに返る。期限は全体で 1 つなので、戻らない取得が
+        // 4 件あっても待ち時間は 4 倍に延びない。
+        assert!(elapsed >= WAIT, "{elapsed:?}");
+        assert!(elapsed < WAIT * 4, "{elapsed:?}");
+        // 結果は完了順ではなく、対象の順に並ぶ。
+        let order: Vec<_> = readings.iter().map(|reading| &reading.target).collect();
+        assert_eq!(order, targets.iter().collect::<Vec<_>>());
+        for reading in readings.iter().filter(|reading| is_stuck(&reading.target)) {
+            assert_eq!(reading.result, None, "{reading:?}");
+        }
+        assert_eq!(readings[0].name(), "Stuck1");
+        assert_eq!(readings[1].result, Some(fixed_volume(&Target::Startup)));
+        assert_eq!(readings[1].name(), "Macintosh HD");
+        assert_eq!(readings[4].name(), "Archive");
+        assert!(matches!(readings[4].result, Some(Ok(_))));
+        // 戻らなかった取得を終わらせる。
+        drop(release);
+    }
+
+    #[test]
+    fn snapshot_returns_as_soon_as_every_volume_has_answered() {
+        let start = Instant::now();
+        let readings = snapshot_with(
+            vec![Target::Startup, Target::Mount("/Volumes/Archive".into())],
+            Duration::from_secs(60),
+            Arc::new(|target: &Target| match target {
+                Target::Startup => fixed_volume(target),
+                Target::Mount(_) => Err(ReadError::NotMounted),
+            }),
+        );
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert_eq!(readings[0].result, Some(fixed_volume(&Target::Startup)));
+        assert_eq!(readings[1].result, Some(Err(ReadError::NotMounted)));
+        assert_eq!(readings[1].name(), "Archive");
+
+        // 対象が無ければ、何も待たずに返る。
+        let start = Instant::now();
+        assert!(snapshot_with(Vec::new(), Duration::from_secs(60), Arc::new(read)).is_empty());
+        assert!(start.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn snapshot_reports_a_panicking_reader_as_a_failure_instead_of_a_timeout() {
+        let readings = snapshot_with(
+            vec![Target::Startup, Target::Mount("/Volumes/Archive".into())],
+            Duration::from_secs(60),
+            Arc::new(|target: &Target| match target {
+                Target::Startup => fixed_volume(target),
+                Target::Mount(_) => panic!("reader bug"),
+            }),
+        );
+        assert!(matches!(readings[0].result, Some(Ok(_))));
+        assert_eq!(
+            readings[1].result,
+            Some(Err(ReadError::Failed("the disk reader panicked".into())))
+        );
     }
 
     fn wait_for(monitor: &mut Monitor, done: impl Fn(&Monitor) -> bool) {

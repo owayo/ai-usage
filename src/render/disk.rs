@@ -1,30 +1,47 @@
-//! ディスク容量の 1 行の中身。
+//! ディスク容量の 1 行の中身と、`--disk` の出力。
 //!
-//! バーのセル数・使用率・内訳・状態の文言と、それぞれの色をここで決める。描く側は、この区間
-//! (文字と色) を自分の形式に変換するだけにして、表示どうしで計算が食い違わないようにする。
+//! バーのセル数・使用率・内訳・状態の文言と、それぞれの色をここで決める。TUI のディスク欄と
+//! `--disk` の人向け出力は、この区間 (文字と色) を自分の形式に変換するだけにして、表示どうしで
+//! 計算が食い違わないようにする。TUI は区間を ratatui の `Span` に、`--disk` は statusline と
+//! 同じ ANSI SGR に変換する。
 
 use std::cmp::Reverse;
+use std::io;
 
+use chrono::{DateTime, Utc};
+use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
 use super::palette::{ALERT, LABEL, Level, MUTED, Paint};
-use super::statusline::pad_display;
-use crate::disk::{ReadError, Volume};
+use super::statusline::{pad_display, paint};
+use crate::disk::{ReadError, Reading, Target, Volume};
 
 /// 使用率 (%) の段階の境界。ディスクは利用枠より満杯に近い状態で使われるため、
 /// 利用枠の境界 (`USAGE_LEVELS`) より高めに置く。
 pub(super) const DISK_LEVELS: [f64; 3] = [80.0, 90.0, 95.0];
 /// ボリューム名の欄の最大幅。
 pub(super) const MAX_NAME_WIDTH: usize = 16;
+/// `--disk` のバーの幅。出力先の端末の幅は分からないので固定する。
+const BAR_WIDTH: usize = 20;
+/// `--disk --json` の形式の版。読み手が頼るキーを消したり意味を変えたりしたら上げる。
+const SCHEMA_VERSION: u32 = 1;
 
 /// 1 区間の文字と色。
 pub(super) type Segment = (String, Paint);
+
+/// 改行や ESC などの制御文字を空白にする。マウントポイントの名前やエラーの文に混ざっていても、
+/// 1 ボリューム 1 行を保ち、端末の表示を崩さない。
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
 
 /// 並べたボリュームのバーの位置を揃えるため、名前の欄を最も長い名前に合わせる。
 pub(super) fn name_width<S: AsRef<str>>(names: impl IntoIterator<Item = S>) -> usize {
     names
         .into_iter()
-        .map(|name| name.as_ref().width())
+        .map(|name| printable(name.as_ref()).width())
         .max()
         .unwrap_or(0)
         .min(MAX_NAME_WIDTH)
@@ -32,7 +49,10 @@ pub(super) fn name_width<S: AsRef<str>>(names: impl IntoIterator<Item = S>) -> u
 
 /// 名前の欄 (末尾の区切りを含む)。
 pub(super) fn name_segment(name: &str, name_width: usize) -> Segment {
-    (format!("{} ", pad_display(name, name_width + 1)), LABEL)
+    (
+        format!("{} ", pad_display(&printable(name), name_width + 1)),
+        LABEL,
+    )
 }
 
 /// バーの 3 区分。使用中の区分は使用率の段階の色にし、パージ可能分と空きは段階によらず
@@ -62,7 +82,7 @@ pub(super) fn breakdown_segment(breakdown: &str) -> Segment {
 
 /// 容量を取得できなかったボリュームの状態。
 pub(super) fn unavailable_segment(error: &ReadError) -> Segment {
-    (format!("unavailable: {error}"), ALERT)
+    (printable(&format!("unavailable: {error}")), ALERT)
 }
 
 /// 取得が戻らないボリュームの状態。
@@ -157,6 +177,151 @@ fn format_bytes(bytes: u64) -> String {
         unit += 1;
     }
     format!("{value:.1} {}", UNITS[unit])
+}
+
+// ===== --disk ================================================================
+
+/// `--disk`: 1 ボリューム 1 行の人向け出力を stdout に書く。
+pub fn disk_text(readings: &[Reading], color: bool) -> io::Result<()> {
+    super::write_stdout(&text(readings, color))
+}
+
+/// `--disk --json`: 容量をバイトのまま JSON で stdout に書く。
+pub fn disk_json(readings: &[Reading]) -> io::Result<()> {
+    super::write_stdout(&json(readings, Utc::now())?)
+}
+
+/// TUI のディスク欄の行と同じ見た目で、1 ボリューム 1 行に並べる。端末の幅は分からないので、
+/// バーは固定幅にし、内訳は最も詳しいものを出す。期限までに戻らなかったボリュームは
+/// `no response` と表示する。
+pub(super) fn text(readings: &[Reading], color: bool) -> String {
+    let names: Vec<String> = readings.iter().map(Reading::name).collect();
+    let width = name_width(&names);
+    let mut out = String::new();
+    for (reading, name) in readings.iter().zip(&names) {
+        let mut segments = vec![name_segment(name, width)];
+        match &reading.result {
+            Some(Ok(volume)) => {
+                segments.extend(bar_segments(volume, BAR_WIDTH));
+                segments.push(percent_segment(volume));
+                if let Some(breakdown) = breakdowns(volume).first() {
+                    segments.push(breakdown_segment(breakdown));
+                }
+            }
+            Some(Err(error)) => segments.push(unavailable_segment(error)),
+            None => segments.push(no_response_segment()),
+        }
+        for (text, part) in &segments {
+            out += &paint(color, *part, text);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// `--disk --json` の全体。
+#[derive(Serialize)]
+struct DiskReport {
+    schema_version: u32,
+    generated_at: String,
+    volumes: Vec<VolumeOut>,
+}
+
+/// 1 ボリューム。読み手が場合分けせずに済むよう、どの状態でもすべてのキーを出す (不明は null)。
+#[derive(Serialize)]
+struct VolumeOut {
+    /// 起動ディスクは `/`、それ以外は正規化したマウントポイント。
+    target: String,
+    status: Status,
+    name: Option<String>,
+    total_bytes: Option<u64>,
+    free_bytes: Option<u64>,
+    available_bytes: Option<u64>,
+    /// パージ可能な量が分からないボリュームでは null。0 にはしない。
+    purgeable_bytes: Option<u64>,
+    /// 使用 (total − available) の割合。表示用に丸めない。
+    used_percent: Option<f64>,
+    capacity_basis: Option<CapacityBasis>,
+    /// `status` が `error` のときの理由。
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Status {
+    Ok,
+    NotMounted,
+    NotLocal,
+    Timeout,
+    Error,
+}
+
+/// 利用可能 (`available_bytes`) の出どころ。
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CapacityBasis {
+    /// 重要な用途に使える容量 (Finder の「利用可能」)。パージ可能な量も分かる。
+    ImportantUsage,
+    /// 重要な用途の容量を返さないボリュームで、今すぐ書ける空きで代えた。
+    FreeSpace,
+}
+
+impl VolumeOut {
+    fn new(reading: &Reading) -> Self {
+        let target = match &reading.target {
+            Target::Startup => "/".to_string(),
+            Target::Mount(path) => path.to_string_lossy().into_owned(),
+        };
+        let (status, error) = match &reading.result {
+            Some(Ok(volume)) => return Self::measured(target, volume),
+            Some(Err(ReadError::NotMounted)) => (Status::NotMounted, None),
+            Some(Err(ReadError::NotLocal)) => (Status::NotLocal, None),
+            Some(Err(ReadError::Failed(message))) => (Status::Error, Some(message.clone())),
+            None => (Status::Timeout, None),
+        };
+        VolumeOut {
+            target,
+            status,
+            name: None,
+            total_bytes: None,
+            free_bytes: None,
+            available_bytes: None,
+            purgeable_bytes: None,
+            used_percent: None,
+            capacity_basis: None,
+            error,
+        }
+    }
+
+    /// 容量を読めたボリューム。
+    fn measured(target: String, volume: &Volume) -> Self {
+        VolumeOut {
+            target,
+            status: Status::Ok,
+            name: Some(volume.name.clone()),
+            total_bytes: Some(volume.total),
+            free_bytes: Some(volume.free),
+            available_bytes: Some(volume.available),
+            purgeable_bytes: volume.purgeable,
+            used_percent: Some(volume.used_percent()),
+            capacity_basis: Some(if volume.purgeable.is_some() {
+                CapacityBasis::ImportantUsage
+            } else {
+                CapacityBasis::FreeSpace
+            }),
+            error: None,
+        }
+    }
+}
+
+/// `--disk --json` の本文 (末尾に改行)。色は付けない。
+fn json(readings: &[Reading], now: DateTime<Utc>) -> serde_json::Result<String> {
+    let report = DiskReport {
+        schema_version: SCHEMA_VERSION,
+        generated_at: now.to_rfc3339(),
+        volumes: readings.iter().map(VolumeOut::new).collect(),
+    };
+    Ok(format!("{}\n", serde_json::to_string_pretty(&report)?))
 }
 
 #[cfg(test)]
@@ -264,5 +429,189 @@ mod tests {
             MAX_NAME_WIDTH
         );
         assert_eq!(name_segment("Archive", 12).0, "Archive       ");
+    }
+
+    fn mount(path: &str) -> Target {
+        Target::Mount(path.into())
+    }
+
+    fn reading(target: Target, result: Option<Result<Volume, ReadError>>) -> Reading {
+        Reading { target, result }
+    }
+
+    /// 重要な用途の容量を返さない外付けディスク。40% 使用で、パージ可能な量は不明。
+    fn external() -> Volume {
+        Volume::new("External".into(), 2_000 * GB, 1_200 * GB, None).unwrap()
+    }
+
+    /// 人向け出力の各状態をそろえた並び。
+    fn every_state() -> Vec<Reading> {
+        vec![
+            reading(Target::Startup, Some(Ok(startup()))),
+            reading(mount("/Volumes/External"), Some(Ok(external()))),
+            reading(mount("/Volumes/Archive"), Some(Err(ReadError::NotMounted))),
+            reading(mount("/Volumes/Share"), Some(Err(ReadError::NotLocal))),
+            reading(mount("/Volumes/Backup"), None),
+            reading(
+                mount("/Volumes/Broken"),
+                Some(Err(ReadError::Failed("I/O error".into()))),
+            ),
+        ]
+    }
+
+    #[test]
+    fn disk_text_lists_one_volume_per_line() {
+        assert_eq!(
+            text(&every_state(), false),
+            concat!(
+                "Macintosh HD  █████████████████▒▒░   86%  ",
+                "70.8 GB available of 494.4 GB · 13.1 GB free · 57.7 GB purgeable\n",
+                "External      ████████░░░░░░░░░░░░   40%  1.2 TB available of 2.0 TB\n",
+                "Archive       unavailable: not mounted\n",
+                "Share         unavailable: not a local volume\n",
+                "Backup        no response\n",
+                "Broken        unavailable: I/O error\n",
+            )
+        );
+        assert_eq!(text(&[], false), "");
+    }
+
+    #[test]
+    fn disk_text_colors_match_the_tui_panel() {
+        let critical = Volume::new("Full".into(), 1_000 * GB, 30 * GB, Some(30 * GB)).unwrap();
+        let readings = [
+            reading(Target::Startup, Some(Ok(startup()))),
+            reading(mount("/Volumes/Full"), Some(Ok(critical))),
+            reading(mount("/Volumes/Archive"), Some(Err(ReadError::NotMounted))),
+            reading(mount("/Volumes/Backup"), None),
+        ];
+        assert_eq!(
+            text(&readings, true),
+            concat!(
+                // 86%: 使用中と使用率は 2 段目の黄。パージ可能分は灰色、空きは暗い灰色。
+                "\x1b[38;5;245mMacintosh HD  \x1b[0m",
+                "\x1b[38;5;178m█████████████████\x1b[0m",
+                "\x1b[38;5;245m▒▒\x1b[0m",
+                "\x1b[38;5;242m░\x1b[0m",
+                "\x1b[38;5;178m   86%\x1b[0m",
+                "\x1b[38;5;245m  70.8 GB available of 494.4 GB · 13.1 GB free · 57.7 GB purgeable\x1b[0m\n",
+                // 97%: 最上段の赤。使用率の数字だけを太字にする。
+                "\x1b[38;5;245mFull          \x1b[0m",
+                "\x1b[38;5;196m███████████████████\x1b[0m",
+                "\x1b[38;5;242m░\x1b[0m",
+                "\x1b[1;38;5;196m   97%\x1b[0m",
+                "\x1b[38;5;245m  30.0 GB available of 1.0 TB\x1b[0m\n",
+                "\x1b[38;5;245mArchive       \x1b[0m",
+                "\x1b[38;5;196munavailable: not mounted\x1b[0m\n",
+                "\x1b[38;5;245mBackup        \x1b[0m",
+                "\x1b[38;5;178mno response\x1b[0m\n",
+            )
+        );
+    }
+
+    #[test]
+    fn disk_text_keeps_control_characters_out_of_the_terminal() {
+        let readings = [reading(
+            mount("/Volumes/Two\nLines"),
+            Some(Err(ReadError::Failed("bad\x1b[2Jthing".into()))),
+        )];
+        assert_eq!(
+            text(&readings, false),
+            "Two Lines  unavailable: bad [2Jthing\n"
+        );
+    }
+
+    #[test]
+    fn disk_json_keeps_every_key_and_reports_each_state() {
+        let now = DateTime::parse_from_rfc3339("2026-10-22T13:19:01.175468+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        // 2 つの値を別々に測った結果、パージ可能な量が 0 と分かったディスク。
+        let measured_zero =
+            Volume::new("Scratch".into(), 500 * GB, 20 * GB, Some(19 * GB)).unwrap();
+        let mut readings = every_state();
+        readings.push(reading(mount("/Volumes/Scratch"), Some(Ok(measured_zero))));
+        let body = json(&readings, now).unwrap();
+        assert!(body.ends_with("}\n"), "{body}");
+        assert!(!body.contains('\x1b'), "{body}");
+        let report: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(report["schema_version"], 1);
+        assert_eq!(report["generated_at"], "2026-10-22T13:19:01.175468+00:00");
+
+        let volumes = report["volumes"].as_array().unwrap();
+        assert_eq!(volumes.len(), 7);
+        let mut keys = [
+            "target",
+            "status",
+            "name",
+            "total_bytes",
+            "free_bytes",
+            "available_bytes",
+            "purgeable_bytes",
+            "used_percent",
+            "capacity_basis",
+            "error",
+        ];
+        keys.sort_unstable();
+        for volume in volumes {
+            let mut present: Vec<&str> = volume
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            present.sort_unstable();
+            assert_eq!(present, keys, "{volume}");
+        }
+
+        // 値はバイトのまま。使用率は表示用に丸めない。
+        let startup_json = &volumes[0];
+        assert_eq!(startup_json["target"], "/");
+        assert_eq!(startup_json["status"], "ok");
+        assert_eq!(startup_json["name"], "Macintosh HD");
+        assert_eq!(startup_json["total_bytes"], 494_384_795_648_u64);
+        assert_eq!(startup_json["free_bytes"], 13_080_645_632_u64);
+        assert_eq!(startup_json["available_bytes"], 70_754_759_808_u64);
+        assert_eq!(startup_json["purgeable_bytes"], 57_674_114_176_u64);
+        let percent = startup_json["used_percent"].as_f64().unwrap();
+        assert!(
+            (percent - startup().used_percent()).abs() < 1e-9,
+            "{percent}"
+        );
+        assert!((percent - 85.6883).abs() < 1e-4, "{percent}");
+        assert_eq!(startup_json["capacity_basis"], "important_usage");
+        assert!(startup_json["error"].is_null());
+
+        // パージ可能な量が分からなければ null にし、通常の空きで代えたことを示す。
+        let external_json = &volumes[1];
+        assert_eq!(external_json["target"], "/Volumes/External");
+        assert_eq!(external_json["status"], "ok");
+        assert_eq!(external_json["available_bytes"], 1_200 * GB);
+        assert!(external_json["purgeable_bytes"].is_null());
+        assert_eq!(external_json["used_percent"], 40.0);
+        assert_eq!(external_json["capacity_basis"], "free_space");
+
+        // 0 と分かっているパージ可能な量は 0 のまま出す。
+        let scratch_json = &volumes[6];
+        assert_eq!(scratch_json["purgeable_bytes"], 0);
+        assert_eq!(scratch_json["capacity_basis"], "important_usage");
+
+        // 値の無い状態は、target・status・error のほかをすべて null にする。
+        for (volume, target, status, error) in [
+            (&volumes[2], "/Volumes/Archive", "not_mounted", None),
+            (&volumes[3], "/Volumes/Share", "not_local", None),
+            (&volumes[4], "/Volumes/Backup", "timeout", None),
+            (&volumes[5], "/Volumes/Broken", "error", Some("I/O error")),
+        ] {
+            assert_eq!(volume["target"], target, "{volume}");
+            assert_eq!(volume["status"], status, "{volume}");
+            assert_eq!(volume["error"].as_str(), error, "{volume}");
+            for key in keys
+                .iter()
+                .filter(|key| !matches!(**key, "target" | "status" | "error"))
+            {
+                assert!(volume[*key].is_null(), "{key}: {volume}");
+            }
+        }
     }
 }
