@@ -16,12 +16,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 
-use super::manual_resets::format_resets_tui;
-use super::reset::{
-    FIVE_H_TH, legacy_long_window_thresholds, reset_color_index, window_thresholds,
-};
+use super::manual_resets::{TuiResetLine, format_resets_tui};
+use super::palette::{self, Fg, Level, Paint};
+use super::reset::{FIVE_H_TH, legacy_long_window_thresholds, window_thresholds};
 use super::sort::sorted_refs;
-use super::{brand_rgb, display_name, limit_observation_age, parse_utc};
+use super::{display_name, limit_observation_age, parse_utc};
 use crate::SortKey;
 use crate::diagnostics::Diagnostics;
 use crate::disk::{Monitor as DiskMonitor, Target as DiskTarget};
@@ -234,10 +233,12 @@ fn draw(frame: &mut Frame, app: &App) {
     // 更新で行数が減った場合も、リストと位置表示には同じ有効な位置を使う。
     let scroll = app.scroll.min(rows.len().saturating_sub(1));
     // List は表示領域より高い項目を丸ごと省くため、行へ展開して見える部分を描く。
+    // 期限の境界で行ごとに判定がずれないよう、現在時刻は 1 回の描画で 1 度だけ取る。
+    let now = Utc::now();
     let lines: Vec<_> = rows
         .iter()
         .skip(scroll)
-        .flat_map(|account| account_lines(account, app.color, chunks[1].width))
+        .flat_map(|account| account_lines(account, app.color, chunks[1].width, now))
         .collect();
     frame.render_widget(
         Paragraph::new(lines).block(Block::bordered().title(format!(
@@ -271,6 +272,22 @@ fn draw(frame: &mut Frame, app: &App) {
     );
 }
 
+/// palette の色を ratatui の Style にする。色を使わないときは、statusline と同じく太字も付けない。
+fn style(color: bool, paint: Paint) -> Style {
+    if !color {
+        return Style::default();
+    }
+    let style = Style::default().fg(match paint.fg {
+        Fg::Indexed(index) => Color::Indexed(index),
+        Fg::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    });
+    if paint.bold {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
+}
+
 fn inner(area: Rect) -> Rect {
     Rect::new(
         area.x.saturating_add(1),
@@ -280,52 +297,50 @@ fn inner(area: Rect) -> Rect {
     )
 }
 
-fn account_lines(account: &AccountOut, color: bool, area_width: u16) -> Vec<Line<'static>> {
-    let now = Utc::now();
-    let (r, g, b) = brand_rgb(account.provider);
-    let brand = if color {
-        Style::default().fg(Color::Rgb(r, g, b))
-    } else {
-        Style::default()
-    };
+/// 1 アカウントの行。statusline と共通の要素は palette の同じ色で塗り、太字や色は
+/// Span ごとに付ける (親の Line に置くと、色を付けない Span にも引き継がれる)。
+pub(super) fn account_lines(
+    account: &AccountOut,
+    color: bool,
+    area_width: u16,
+    now: DateTime<Utc>,
+) -> Vec<Line<'static>> {
+    let label = style(color, palette::LABEL);
     let name = display_name(
         account.label.as_deref(),
         account.email.as_deref(),
         account.profile_email.as_deref(),
         &account.profile,
     );
+    let provider = account.provider.label();
     let group = account
         .group_label
         .as_deref()
         .map(|s| format!(" · {s}"))
         .unwrap_or_default();
-    let identity = if name == account.provider.label() && group.is_empty() {
-        account.provider.label().to_string()
-    } else {
-        format!("{}{}  {name}", account.provider.label(), group)
-    };
-    let mut heading = vec![Span::styled(identity, brand.add_modifier(Modifier::BOLD))];
+    // provider 名は statusline 左端の印と同じ色。名前・モデルグループ・プランは名前の欄と同じ LABEL。
+    let mut heading = vec![Span::styled(
+        provider,
+        style(color, palette::marker(account.provider)),
+    )];
+    if name != provider || !group.is_empty() {
+        heading.push(Span::styled(format!("{group}  {name}"), label));
+    }
     if let Some(plan) = account.plan.as_deref().filter(|plan| !plan.is_empty()) {
-        heading.push(Span::raw(format!("  · {plan}")));
+        heading.push(Span::styled(format!("  · {plan}"), label));
     }
     let mut lines = vec![Line::from(heading)];
     if !account.ok {
         lines.push(Line::from(vec![
             Span::raw("  "),
+            Span::styled("Error: ", style(color, palette::ALERT)),
             Span::styled(
-                "Error: ",
-                if color {
-                    Style::default().fg(Color::Red)
-                } else {
-                    Style::default()
-                },
-            ),
-            Span::raw(
                 account
                     .error
                     .as_deref()
                     .unwrap_or("Unknown error")
                     .to_string(),
+                label,
             ),
         ]));
     } else {
@@ -351,37 +366,47 @@ fn account_lines(account: &AccountOut, color: bool, area_width: u16) -> Vec<Line
                 .as_ref()
                 .is_some_and(|observation| limit_observation_age(observation, now).is_some())
         {
-            lines.push(Line::from("  No usage quota reported"));
+            lines.push(Line::from(Span::styled(
+                "  No usage quota reported",
+                style(color, palette::MUTED),
+            )));
         }
         if let Some(observation) = account.limit_observation.as_ref()
             && let Some(age) = limit_observation_age(observation, now)
         {
-            lines.push(Line::from(vec![
-                Span::raw("  24h  "),
-                Span::styled(
-                    "LIMIT HIT",
-                    if color {
-                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    },
+            // statusline の `24h LIMIT` と同じく、観測の記録全体を ALERT で塗る。
+            let alert = style(color, palette::ALERT);
+            lines.push(Line::from(Span::styled(
+                format!("  24h  LIMIT HIT  {} · seen {age} ago", observation.model),
+                alert,
+            )));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "       {}/{} tokens at refusal",
+                    observation.used_tokens, observation.limit_tokens
                 ),
-                Span::raw(format!("  {} · seen {age} ago", observation.model)),
-            ]));
-            lines.push(Line::from(format!(
-                "       {}/{} tokens at refusal",
-                observation.used_tokens, observation.limit_tokens
+                alert,
             )));
         }
     }
     if let Some(resets) = &account.manual_resets {
-        for (index, summary) in format_resets_tui(resets, now).iter().enumerate() {
-            let prefix = if index == 0 {
+        for (index, line) in format_resets_tui(resets, now).into_iter().enumerate() {
+            let lead = if index == 0 {
                 "  Resets: "
             } else {
                 "          "
             };
-            lines.push(Line::from(format!("{prefix}{summary}")));
+            let mut spans = vec![Span::styled(lead, label)];
+            match line {
+                TuiResetLine::Summary(text) => spans.push(Span::styled(text, label)),
+                // 期限の日時だけを、statusline と同じく 7 日未満で ALERT にする。
+                TuiResetLine::Deadline { prefix, deadline } => {
+                    let paint = palette::manual_reset_deadline(deadline.expires_at, now);
+                    spans.push(Span::styled(prefix, label));
+                    spans.push(Span::styled(deadline.text, style(color, paint)));
+                }
+            }
+            lines.push(Line::from(spans));
         }
     }
     lines.push(Line::default());
@@ -414,26 +439,23 @@ fn window_spans(
             0
         }
     });
-    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(width - filled));
-    let bar_style = if color {
-        Style::default().fg(percent.map_or(Color::DarkGray, usage_color))
-    } else {
-        Style::default()
-    };
+    // 点灯部と数字は使用率の段階色、消灯部と不明な使用率は statusline と同じ MUTED。
+    let level = percent.map(Level::usage);
+    let muted = style(color, palette::MUTED);
+    let label = style(color, palette::LABEL);
     let reset = window.resets_at.as_deref().and_then(parse_utc);
-    let reset_style = if color {
-        let legacy = if short {
-            FIVE_H_TH
-        } else {
-            legacy_long_window_thresholds(provider)
-        };
-        Style::default().fg(Color::Indexed(reset_color_index(
+    let legacy = if short {
+        FIVE_H_TH
+    } else {
+        legacy_long_window_thresholds(provider)
+    };
+    let reset_style = style(
+        color,
+        palette::reset_countdown(
             reset.map(|time| (time - now).num_seconds()),
             window_thresholds(Some(window), legacy),
-        )))
-    } else {
-        Style::default()
-    };
+        ),
+    );
     let reset_at = reset
         .map(|time| {
             let local = time.with_timezone(&Local);
@@ -445,21 +467,30 @@ fn window_spans(
             format!(" ({})", local.format(pattern))
         })
         .unwrap_or_default();
-    vec![
+    let mut spans = vec![
         Span::styled(
-            format!("  {:<2}  ", kind_label(window, provider, short)),
-            Style::default().add_modifier(Modifier::BOLD),
+            format!("  {:<2}", kind_label(window, provider, short)),
+            label,
         ),
-        Span::styled(bar, bar_style),
-        Span::raw(format!(
-            "  {}  reset ",
+        Span::raw("  "),
+        Span::styled(
+            "█".repeat(filled),
+            level.map_or(muted, |level| style(color, level.fill())),
+        ),
+        Span::styled("░".repeat(width - filled), muted),
+        Span::raw("  "),
+        Span::styled(
             percent.map_or(" --%".to_string(), |p| format!("{p:>3.0}%")),
-        )),
-        Span::styled(
-            format!("{}{}", reset_text(window, now), reset_at),
-            reset_style,
+            level.map_or(muted, |level| style(color, level.text())),
         ),
-    ]
+        Span::styled("  reset ", label),
+        Span::styled(reset_text(window, now), reset_style),
+    ];
+    // リセットの日時は statusline の `--reset-at` と同じく MUTED。
+    if !reset_at.is_empty() {
+        spans.push(Span::styled(reset_at, muted));
+    }
+    spans
 }
 
 fn kind_label(window: &WindowOut, provider: Provider, short: bool) -> &'static str {
@@ -492,18 +523,6 @@ fn reset_text(window: &WindowOut, now: DateTime<Utc>) -> String {
         format!("{hours}h {minutes}m")
     } else {
         format!("{minutes}m")
-    }
-}
-
-fn usage_color(percent: f64) -> Color {
-    if percent >= 90.0 {
-        Color::Red
-    } else if percent >= 80.0 {
-        Color::LightRed
-    } else if percent >= 60.0 {
-        Color::Yellow
-    } else {
-        Color::Green
     }
 }
 
@@ -649,8 +668,17 @@ mod tests {
         );
     }
 
+    /// 「reset 」の後ろに置く、リセットまでの残り時間の Span。
+    fn countdown<'a>(spans: &'a [Span<'static>]) -> &'a Span<'static> {
+        let label = spans
+            .iter()
+            .position(|span| span.content == "  reset ")
+            .expect("reset label");
+        &spans[label + 1]
+    }
+
     #[test]
-    fn reset_countdown_and_date_use_period_specific_colors() {
+    fn reset_countdown_uses_period_colors_and_the_date_is_muted() {
         let now = parse_utc("2026-10-11T00:00:00Z").unwrap();
         for (kind, thresholds) in [
             (WindowKind::FiveHour, [3600, 7200, 10800]),
@@ -677,15 +705,17 @@ mod tests {
                 // 明示 kind は、プロバイダーや格納先の旧周期より優先する。
                 for short in [true, false] {
                     let spans = window_spans(&window, Provider::Grok, short, true, 80, now);
-                    let deadline = spans.last().unwrap();
                     assert_eq!(
-                        deadline.style.fg,
+                        countdown(&spans).style.fg,
                         Some(Color::Indexed(index)),
                         "{kind:?}, {seconds}s, short={short}"
                     );
+                    // 日時は statusline の `--reset-at` と同じく、残り時間に関係なく MUTED。
                     let date = reset.with_timezone(&Local).format("%m/%d %H:%M");
-                    assert!(deadline.content.ends_with(&format!(" ({date})")));
-                    assert_eq!(spans[1].style.fg, Some(Color::Green));
+                    let last = spans.last().unwrap();
+                    assert_eq!(last.content, format!(" ({date})"));
+                    assert_eq!(last.style.fg, Some(Color::Indexed(242)));
+                    assert_eq!(spans[2].style.fg, Some(Color::Indexed(35)));
                 }
             }
         }
@@ -709,9 +739,9 @@ mod tests {
             (Provider::Grok, true, 35),
         ] {
             let spans = window_spans(&window, provider, short, true, 80, now);
-            let deadline = spans.last().unwrap();
-            assert_eq!(deadline.style.fg, Some(Color::Indexed(index)));
-            assert!(deadline.content.starts_with("2d 0h ("));
+            let countdown = countdown(&spans);
+            assert_eq!(countdown.style.fg, Some(Color::Indexed(index)));
+            assert_eq!(countdown.content, "2d 0h");
         }
     }
 
@@ -736,16 +766,307 @@ mod tests {
             };
             let colored = window_spans(&window, Provider::Claude, false, true, 80, now);
             let plain = window_spans(&window, Provider::Claude, false, false, 80, now);
-            assert_eq!(
-                colored.last().unwrap().style.fg,
-                Some(Color::Indexed(index))
-            );
-            assert!(colored.last().unwrap().content.starts_with(text));
-            assert!(plain.iter().all(|span| span.style.fg.is_none()));
+            assert_eq!(countdown(&colored).style.fg, Some(Color::Indexed(index)));
+            assert_eq!(countdown(&colored).content, text);
+            // 色を使わないときは、statusline と同じく色も太字も付けない。
+            assert!(plain.iter().all(|span| span.style == Style::default()));
             assert_eq!(
                 Line::from(colored).to_string(),
                 Line::from(plain).to_string()
             );
+        }
+    }
+
+    #[test]
+    fn window_line_uses_the_statusline_colors() {
+        let now = parse_utc("2026-10-11T00:00:00Z").unwrap();
+        let window = |percent| WindowOut {
+            kind: Some(WindowKind::Weekly),
+            used_percent: percent,
+            resets_at: Some((now + chrono::Duration::days(2)).to_rfc3339()),
+            resets_in_seconds: None,
+        };
+        let fg = |span: &Span| span.style.fg;
+        let bold = |span: &Span| span.style.add_modifier.contains(Modifier::BOLD);
+        // (使用率, 点灯部と数字の色, 数字の太字)。数字は 80% から太字。
+        for (percent, index, strong) in [
+            (12.0, 35, false),
+            (62.0, 178, false),
+            (85.0, 208, true),
+            (95.0, 196, true),
+        ] {
+            let spans = window_spans(
+                &window(Some(percent)),
+                Provider::Claude,
+                false,
+                true,
+                80,
+                now,
+            );
+            let [
+                label,
+                _,
+                filled,
+                empty,
+                _,
+                number,
+                reset_label,
+                countdown,
+                date,
+            ] = &spans[..]
+            else {
+                panic!("{spans:?}");
+            };
+            assert_eq!(label.content, "  1w");
+            assert_eq!(fg(label), Some(Color::Indexed(245)));
+            assert_eq!(fg(filled), Some(Color::Indexed(index)), "{percent}");
+            assert_eq!(fg(empty), Some(Color::Indexed(242)), "{percent}");
+            assert_eq!(fg(number), Some(Color::Indexed(index)), "{percent}");
+            assert_eq!(bold(number), strong, "{percent}");
+            assert_eq!(fg(reset_label), Some(Color::Indexed(245)));
+            assert_eq!(fg(countdown), Some(Color::Indexed(178)));
+            assert_eq!(fg(date), Some(Color::Indexed(242)));
+            // 太字は数字だけ。枠のラベルやバーには付けない。
+            for span in [label, filled, empty, reset_label, countdown, date] {
+                assert!(!bold(span), "{span:?}");
+            }
+        }
+        // 使用率が不明なら、バー全体と `--%` を MUTED にする。
+        let spans = window_spans(&window(None), Provider::Claude, false, true, 80, now);
+        assert_eq!(spans[2].content, "");
+        assert_eq!(spans[3].content, "░".repeat(12));
+        assert_eq!(spans[3].style.fg, Some(Color::Indexed(242)));
+        assert_eq!(spans[5].content, " --%");
+        assert_eq!(spans[5].style.fg, Some(Color::Indexed(242)));
+        assert!(!spans[5].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    fn account(value: serde_json::Value) -> AccountOut {
+        let mut base = serde_json::json!({
+            "profile":"Home", "provider":"claude", "ok":true, "plan":null,
+            "email":null, "profile_email":null, "label":null, "group_label":null,
+            "five_hour":null, "weekly":null, "error":null
+        });
+        base.as_object_mut()
+            .unwrap()
+            .extend(value.as_object().unwrap().clone());
+        serde_json::from_value(base).unwrap()
+    }
+
+    /// `text` と同じ内容の Span。
+    fn span<'a>(lines: &'a [Line<'static>], text: &str) -> &'a Span<'static> {
+        lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content == text)
+            .unwrap_or_else(|| panic!("{text:?} が無い: {lines:#?}"))
+    }
+
+    #[test]
+    fn account_lines_use_the_statusline_colors() {
+        let now = parse_utc("2026-10-11T00:00:00Z").unwrap();
+        let at = |delta: chrono::Duration| (now + delta).to_rfc3339();
+        let date = |delta: chrono::Duration| {
+            (now + delta)
+                .with_timezone(&Local)
+                .format("%m/%d %H:%M")
+                .to_string()
+        };
+        let claude = account(serde_json::json!({
+            "label": "home", "plan": "Max",
+            "weekly": {"kind":"weekly","used_percent":85.0,"resets_at":at(chrono::Duration::days(2)),"resets_in_seconds":null},
+            "manual_resets": [
+                {"kind":"full","remaining":1,"expires_at":at(chrono::Duration::days(1))},
+                {"kind":"full","remaining":1,"expires_at":at(chrono::Duration::days(10))},
+                {"kind":"five_hour","remaining":0,"expires_at":null}
+            ]
+        }));
+        let lines = account_lines(&claude, true, 80, now);
+        let fg = |text: &str| span(&lines, text).style.fg;
+        // 見出し: provider 名は statusline の印と同じブランド色、名前とプランは LABEL。太字にしない。
+        assert_eq!(fg("Claude"), Some(Color::Rgb(217, 119, 87)));
+        assert_eq!(fg("  home"), Some(Color::Indexed(245)));
+        assert_eq!(fg("  · Max"), Some(Color::Indexed(245)));
+        // 手動リセット: 件数と `1@` は LABEL、7 日未満で切れる日時だけ ALERT。
+        assert_eq!(fg("  Resets: "), Some(Color::Indexed(245)));
+        assert_eq!(fg("full 2"), Some(Color::Indexed(245)));
+        assert_eq!(fg("5h 0"), Some(Color::Indexed(245)));
+        assert_eq!(fg("  1@"), Some(Color::Indexed(245)));
+        assert_eq!(
+            fg(&date(chrono::Duration::days(1))),
+            Some(Color::Indexed(196))
+        );
+        assert_eq!(
+            fg(&date(chrono::Duration::days(10))),
+            Some(Color::Indexed(245))
+        );
+        // 太字は 80% 以上の数字だけ。
+        let bold: Vec<_> = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .filter(|span| span.style.add_modifier.contains(Modifier::BOLD))
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(bold, [" 85%"]);
+        // 親の Line に色や太字を置かない (色を付けない Span に引き継がれるため)。
+        assert!(lines.iter().all(|line| line.style == Style::default()));
+
+        // Codex と Grok の provider 名は statusline の印と同じく白。
+        for provider in ["codex", "grok"] {
+            let lines = account_lines(
+                &account(serde_json::json!({"provider": provider})),
+                true,
+                80,
+                now,
+            );
+            assert_eq!(
+                lines[0].spans[0].style.fg,
+                Some(Color::Rgb(255, 255, 255)),
+                "{provider}"
+            );
+        }
+
+        // 取得の失敗: `Error:` は ALERT、メッセージは LABEL。
+        let failed = account(serde_json::json!({"ok": false, "error": "fetch failed"}));
+        let lines = account_lines(&failed, true, 80, now);
+        assert_eq!(fg_of(&lines, "Error: "), Some(Color::Indexed(196)));
+        assert_eq!(fg_of(&lines, "fetch failed"), Some(Color::Indexed(245)));
+
+        // 枠が無い行は MUTED。
+        let empty = account(serde_json::json!({}));
+        let lines = account_lines(&empty, true, 80, now);
+        assert_eq!(
+            fg_of(&lines, "  No usage quota reported"),
+            Some(Color::Indexed(242))
+        );
+
+        // 24 時間枠の制限は、statusline の `24h LIMIT` と同じく記録全体を ALERT にする。
+        let limited = account(serde_json::json!({
+            "provider": "grok",
+            "limit_observation": {"model":"grok-test","observed_at":at(-chrono::Duration::minutes(5)),
+                                  "used_tokens":120,"limit_tokens":100}
+        }));
+        let lines = account_lines(&limited, true, 80, now);
+        for text in [
+            "  24h  LIMIT HIT  grok-test · seen 5m ago",
+            "       120/100 tokens at refusal",
+        ] {
+            let limit = span(&lines, text);
+            assert_eq!(limit.style.fg, Some(Color::Indexed(196)), "{text}");
+            assert!(!limit.style.add_modifier.contains(Modifier::BOLD), "{text}");
+        }
+    }
+
+    fn fg_of(lines: &[Line<'static>], text: &str) -> Option<Color> {
+        span(lines, text).style.fg
+    }
+
+    /// `text` が始まるセル。1 文字が 1 セルを占める文字列だけを探す。
+    fn cell_at<'a>(buffer: &'a ratatui::buffer::Buffer, text: &str) -> &'a ratatui::buffer::Cell {
+        let chars: Vec<String> = text.chars().map(String::from).collect();
+        let area = buffer.area;
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                let found = chars.iter().enumerate().all(|(offset, ch)| {
+                    u16::try_from(offset)
+                        .ok()
+                        .and_then(|offset| buffer.cell((x.checked_add(offset)?, y)))
+                        .is_some_and(|cell| cell.symbol() == ch)
+                });
+                if found {
+                    return buffer.cell((x, y)).unwrap();
+                }
+            }
+        }
+        panic!("{text:?} が画面に無い");
+    }
+
+    #[test]
+    fn redrawing_the_same_terminal_replaces_colors_and_bold() {
+        let now = Utc::now();
+        let at = |delta: chrono::Duration| (now + delta).to_rfc3339();
+        let date = |delta: chrono::Duration| {
+            (now + delta)
+                .with_timezone(&Local)
+                .format("%m/%d %H:%M")
+                .to_string()
+        };
+        let report = |percent: f64, expiry: chrono::Duration| Report {
+            generated_at: now.to_rfc3339(),
+            accounts: vec![account(serde_json::json!({
+                "label": "home",
+                "five_hour": {"kind":"five_hour","used_percent":percent,
+                              "resets_at":at(chrono::Duration::hours(4)),"resets_in_seconds":null},
+                "manual_resets": [{"kind":"full","remaining":1,"expires_at":at(expiry)}]
+            }))],
+        };
+        let mut app = App {
+            warnings: Vec::new(),
+            report: Some(report(95.0, chrono::Duration::days(1))),
+            error: None,
+            loading: false,
+            scroll: 0,
+            sort: SortKey::Provider,
+            color: true,
+            disk: None,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let percent = cell_at(buffer, "95%");
+        assert_eq!(percent.fg, Color::Indexed(196));
+        assert!(percent.modifier.contains(Modifier::BOLD));
+        let heading = cell_at(buffer, "Claude");
+        assert_eq!(heading.fg, Color::Rgb(217, 119, 87));
+        assert!(!heading.modifier.contains(Modifier::BOLD));
+        let deadline = date(chrono::Duration::days(1));
+        assert_eq!(cell_at(buffer, &deadline).fg, Color::Indexed(196));
+
+        // 同じ端末へ描き直すと、前の描画の色や太字はセルに残らない。
+        app.report = Some(report(20.0, chrono::Duration::days(10)));
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let percent = cell_at(buffer, "20%");
+        assert_eq!(percent.fg, Color::Indexed(35));
+        let deadline = date(chrono::Duration::days(10));
+        assert_eq!(cell_at(buffer, &deadline).fg, Color::Indexed(245));
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .all(|cell| !cell.modifier.contains(Modifier::BOLD))
+        );
+    }
+
+    #[test]
+    fn account_lines_without_color_have_no_style_and_the_same_text() {
+        let now = parse_utc("2026-10-11T00:00:00Z").unwrap();
+        let soon = (now + chrono::Duration::days(1)).to_rfc3339();
+        for value in [
+            serde_json::json!({
+                "label": "home", "plan": "Max",
+                "five_hour": {"kind":"five_hour","used_percent":95.0,"resets_at":soon,"resets_in_seconds":null},
+                "manual_resets": [{"kind":"full","remaining":1,"expires_at":soon}]
+            }),
+            serde_json::json!({"ok": false, "error": "fetch failed"}),
+            serde_json::json!({
+                "provider": "grok",
+                "limit_observation": {"model":"grok-test","observed_at":now.to_rfc3339(),
+                                      "used_tokens":120,"limit_tokens":100}
+            }),
+        ] {
+            let account = account(value);
+            let colored = account_lines(&account, true, 80, now);
+            let plain = account_lines(&account, false, 80, now);
+            assert!(
+                plain
+                    .iter()
+                    .flat_map(|line| &line.spans)
+                    .all(|span| span.style == Style::default()),
+                "{plain:#?}"
+            );
+            let text = |lines: &[Line]| lines.iter().map(Line::to_string).collect::<Vec<_>>();
+            assert_eq!(text(&colored), text(&plain));
         }
     }
 

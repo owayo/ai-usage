@@ -5,8 +5,9 @@ use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, Color, ContentArrangement, Table};
 
 use super::manual_resets::format_resets;
+use super::palette::brand_rgb;
 use super::sort::sorted_refs;
-use super::{brand_rgb, display_name, limit_observation_age};
+use super::{display_name, limit_observation_age};
 use crate::SortKey;
 use crate::model::{AccountReport, Provider, Window};
 use crate::report::{LimitObservationOut, ManualResetOut};

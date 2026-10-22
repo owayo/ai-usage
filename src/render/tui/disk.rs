@@ -5,12 +5,13 @@ use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
+use super::super::palette::{ALERT, LABEL, Level, MUTED, Paint};
 use super::super::statusline::pad_display;
+use super::style;
 use crate::disk::{Monitor, Row, Volume};
 
 /// ディスク欄を出しても、アカウント一覧に残す行数 (枠を含む)。見出しと 2 つの利用枠が収まる。
@@ -22,6 +23,9 @@ const MIN_BAR: usize = 6;
 const COMFORT_BAR: usize = 16;
 const MAX_BAR: usize = 40;
 const LEGEND: &str = "Disk · █ used ▒ purgeable ░ free";
+/// 使用率 (%) の段階の境界。ディスクは利用枠より満杯に近い状態で使われるため、
+/// 利用枠の境界 (`USAGE_LEVELS`) より高めに置く。
+const DISK_LEVELS: [f64; 3] = [80.0, 90.0, 95.0];
 
 /// ディスク欄の置き方。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,37 +130,58 @@ fn name_field(row: &Row, name_width: usize) -> String {
     format!("{} ", pad_display(&row_name(row), name_width + 1))
 }
 
-/// 値のある行の使用率と、バーの後ろに置ける説明 (詳しい順、最後は空)。
-fn texts(row: &Row, now: Instant) -> Option<(&Volume, String, Vec<String>)> {
+/// バーの後ろに置く説明。内訳と経過時間は色を分けるため、別々に持つ。
+#[derive(Default)]
+struct Detail {
+    /// 容量の内訳。最も短い候補では空。
+    breakdown: String,
+    /// 表示中の値が古いときの経過時間 (`3m ago`)。
+    stale: Option<String>,
+}
+
+impl Detail {
+    /// 説明の前に空ける 2 桁を含めた区間と色。内訳と経過時間の両方があれば ` · ` でつなぐ。
+    /// 幅の計算と描画の両方がこれを使うので、測った幅と描いた幅はずれない。
+    fn parts(&self) -> Vec<(String, Paint)> {
+        let mut parts = Vec::new();
+        if !self.breakdown.is_empty() {
+            parts.push((format!("  {}", self.breakdown), LABEL));
+        }
+        if let Some(stale) = &self.stale {
+            let separator = if parts.is_empty() { "  " } else { " · " };
+            parts.push((format!("{separator}{stale}"), MUTED));
+        }
+        parts
+    }
+
+    /// 説明に要る幅。説明がなければ 0。
+    fn width(&self) -> usize {
+        self.parts().iter().map(|(text, _)| text.width()).sum()
+    }
+}
+
+/// 値のある行の使用率と、バーの後ろに置ける説明 (詳しい順。最後は内訳なし)。
+fn texts(row: &Row, now: Instant) -> Option<(&Volume, String, Vec<Detail>)> {
     let (volume, read_at) = row.last.as_ref()?;
     // 直近の取得が失敗した、または戻らないときは、表示中の値がいつのものかを添える。
+    // 内訳を出せない幅でも経過時間だけは残るよう、どの候補にも付ける。
     let stale = (row.error.is_some() || row.overdue(now))
         .then(|| format!("{} ago", age(now.saturating_duration_since(*read_at))));
-    let details = details(volume)
+    let details = breakdowns(volume)
         .into_iter()
-        .map(|detail| match (&stale, detail.is_empty()) {
-            (Some(stale), true) => stale.clone(),
-            (Some(stale), false) => format!("{detail} · {stale}"),
-            (None, _) => detail,
+        .map(|breakdown| Detail {
+            breakdown,
+            stale: stale.clone(),
         })
         .collect();
     Some((volume, format!("  {}", percent_label(volume)), details))
-}
-
-/// 説明の前に空ける 2 桁を含めた、説明に要る幅。
-fn detail_width(detail: &str) -> usize {
-    if detail.is_empty() {
-        0
-    } else {
-        2 + detail.width()
-    }
 }
 
 /// 最も詳しい説明を出せるバーの幅。値のない行は None。
 fn preferred_bar(row: &Row, name_width: usize, width: usize, now: Instant) -> Option<usize> {
     let (_, percent, details) = texts(row, now)?;
     let budget = width.saturating_sub(name_field(row, name_width).width() + percent.width());
-    let needs: Vec<usize> = details.iter().map(|detail| detail_width(detail)).collect();
+    let needs: Vec<usize> = details.iter().map(Detail::width).collect();
     // バーを COMFORT_BAR 以上に保てる中で最も詳しい説明を選ぶ。どれも入らない幅では
     // バーを MIN_BAR まで縮めて説明を残し、それも無理ならバーと使用率だけを出す。
     let chosen = needs
@@ -180,68 +205,70 @@ fn row_spans(
     color: bool,
     now: Instant,
 ) -> Vec<Span<'static>> {
-    let paint = |color_name: Color| {
-        if color {
-            Style::default().fg(color_name)
-        } else {
-            Style::default()
-        }
-    };
     let name = name_field(row, name_width);
     let Some((volume, percent, details)) = texts(row, now) else {
-        let status = if let Some(error) = &row.error {
-            Span::styled(format!("unavailable: {error}"), paint(Color::Red))
+        let (status, paint) = if let Some(error) = &row.error {
+            (format!("unavailable: {error}"), ALERT)
         } else if row.overdue(now) {
-            Span::styled("no response", paint(Color::Yellow))
+            ("no response".into(), Level::Caution.fill())
         } else {
-            Span::raw("reading…")
+            ("reading…".into(), MUTED)
         };
-        return vec![Span::raw(name), status];
+        return vec![
+            Span::styled(name, style(color, LABEL)),
+            Span::styled(status, style(color, paint)),
+        ];
     };
     let budget = width.saturating_sub(name.width() + percent.width());
     let bar_width = bar.min(budget).max(1);
     let detail = details
         .into_iter()
-        .find(|detail| budget >= detail_width(detail) + bar_width)
+        .find(|detail| budget >= detail.width() + bar_width)
         .unwrap_or_default();
 
+    // 使用中の区分と使用率の数字は使用率の段階の色にし、パージ可能分と空きは段階によらず
+    // 灰色にする。0 セルの区分は出さない。
+    let level = Level::of(volume.used_percent(), DISK_LEVELS);
     let [used, purgeable, free] = bar_cells(volume, bar_width);
-    let bar = format!(
-        "{}{}{}",
-        "█".repeat(used),
-        "▒".repeat(purgeable),
-        "░".repeat(free)
-    );
-    let mut spans = vec![
-        Span::raw(name),
-        Span::styled(bar, paint(disk_color(volume.used_percent()))),
-        Span::raw(percent),
-    ];
-    if !detail.is_empty() {
-        spans.push(Span::raw(format!("  {detail}")));
+    let mut spans = vec![Span::styled(name, style(color, LABEL))];
+    for (cells, symbol, paint) in [
+        (used, "█", level.fill()),
+        (purgeable, "▒", LABEL),
+        (free, "░", MUTED),
+    ] {
+        if cells > 0 {
+            spans.push(Span::styled(symbol.repeat(cells), style(color, paint)));
+        }
     }
+    spans.push(Span::styled(percent, style(color, level.text())));
+    spans.extend(
+        detail
+            .parts()
+            .into_iter()
+            .map(|(text, paint)| Span::styled(text, style(color, paint))),
+    );
     spans
 }
 
-/// バーの後ろに置く説明を、詳しいものから順に並べる。最後は説明なし。
-fn details(volume: &Volume) -> Vec<String> {
+/// バーの後ろに置く容量の内訳を、詳しいものから順に並べる。最後は内訳なし。
+fn breakdowns(volume: &Volume) -> Vec<String> {
     let available = format_bytes(volume.available);
     let total = format_bytes(volume.total);
-    let mut details = Vec::new();
+    let mut breakdowns = Vec::new();
     if let Some(purgeable) = volume.purgeable.filter(|&purgeable| purgeable > 0) {
         let purgeable = format_bytes(purgeable);
-        details.push(format!(
+        breakdowns.push(format!(
             "{available} available of {total} · {} free · {purgeable} purgeable",
             format_bytes(volume.free)
         ));
-        details.push(format!(
+        breakdowns.push(format!(
             "{available} available of {total} · {purgeable} purgeable"
         ));
     }
-    details.push(format!("{available} available of {total}"));
-    details.push(format!("{available} available"));
-    details.push(String::new());
-    details
+    breakdowns.push(format!("{available} available of {total}"));
+    breakdowns.push(format!("{available} available"));
+    breakdowns.push(String::new());
+    breakdowns
 }
 
 /// 使用・パージ可能・空きのセル数。合計は必ず `width` になる。
@@ -321,21 +348,10 @@ fn age(elapsed: Duration) -> String {
     }
 }
 
-/// ディスクは利用枠より満杯に近い状態で使われるため、しきい値を高めに置く。
-fn disk_color(percent: f64) -> Color {
-    if percent >= 95.0 {
-        Color::Red
-    } else if percent >= 90.0 {
-        Color::LightRed
-    } else if percent >= 80.0 {
-        Color::Yellow
-    } else {
-        Color::Green
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use ratatui::style::{Color, Modifier, Style};
+
     use super::*;
     use crate::disk::{ReadError, Target};
 
@@ -377,6 +393,28 @@ mod tests {
     ) -> Vec<Span<'static>> {
         let bar = preferred_bar(row, names, width, now).unwrap_or(MIN_BAR);
         row_spans(row, names, width, bar, color, now)
+    }
+
+    /// 期待する装飾。palette を通さず、256 色の番号で書く。
+    fn fg(index: u8) -> Style {
+        Style::default().fg(Color::Indexed(index))
+    }
+
+    fn bold(index: u8) -> Style {
+        fg(index).add_modifier(Modifier::BOLD)
+    }
+
+    /// `needle` を含む区間。区分や項目ごとに区間を分けているので、含む区間は 1 つに限る。
+    fn span_with<'a>(spans: &'a [Span<'static>], needle: &str) -> &'a Span<'static> {
+        let mut found = spans.iter().filter(|span| span.content.contains(needle));
+        let span = found
+            .next()
+            .unwrap_or_else(|| panic!("no span contains {needle:?}: {spans:?}"));
+        assert!(
+            found.next().is_none(),
+            "several spans contain {needle:?}: {spans:?}"
+        );
+        span
     }
 
     #[test]
@@ -493,29 +531,58 @@ mod tests {
     fn rows_report_loading_unavailable_and_stale_values() {
         let now = base();
         let names = 12;
+        // 値のない行は、名前と状態の 2 区間。状態の色は取得中・応答なし・失敗で変える。
+        let status = |row: &Row| {
+            let spans = spans_for(row, names, 80, true, now);
+            assert_eq!(spans.len(), 2, "{spans:?}");
+            assert_eq!(spans[0].style, fg(245), "{spans:?}");
+            spans[1].style
+        };
         let mut row = Row::new(Target::Mount("/Volumes/Archive".into()), now);
         assert_eq!(
             text(&spans_for(&row, names, 80, false, now)).trim_end(),
             "Archive       reading…"
         );
+        assert_eq!(status(&row), fg(242));
 
         row.started = Some(now - OVERDUE_FOR_TEST);
         assert!(text(&spans_for(&row, names, 80, false, now)).ends_with("no response"));
+        assert_eq!(status(&row), fg(178));
 
         row.started = None;
         row.error = Some(ReadError::NotMounted);
-        let spans = spans_for(&row, names, 80, true, now);
-        assert!(text(&spans).ends_with("unavailable: not mounted"));
-        assert_eq!(spans.last().unwrap().style.fg, Some(Color::Red));
+        assert!(
+            text(&spans_for(&row, names, 80, false, now)).ends_with("unavailable: not mounted")
+        );
+        assert_eq!(status(&row), fg(196));
 
         // 失敗しても前回の値は残し、いつの値かを添える。
         let mut stale = sampled(startup(), now - Duration::from_secs(180));
         stale.error = Some(ReadError::Failed("I/O error".into()));
         let line = text(&spans_for(&stale, names, 118, false, now));
         assert!(line.ends_with("57.7 GB purgeable · 3m ago"), "{line:?}");
+        // 内訳は値に添える色、経過時間は値の古さを示す色で、区間を分ける。
+        let spans = spans_for(&stale, names, 118, true, now);
+        let [.., breakdown, age] = spans.as_slice() else {
+            panic!("{spans:?}");
+        };
+        assert!(
+            breakdown.content.ends_with("57.7 GB purgeable"),
+            "{spans:?}"
+        );
+        assert_eq!(breakdown.style, fg(245));
+        assert_eq!(age.content, " · 3m ago");
+        assert_eq!(age.style, fg(242));
         // 説明が入らない幅でも、経過時間だけは残す。
         let narrow = text(&spans_for(&stale, names, 34, false, now));
         assert!(narrow.ends_with("86%  3m ago"), "{narrow:?}");
+        let spans = spans_for(&stale, names, 34, true, now);
+        let [.., percent, age] = spans.as_slice() else {
+            panic!("{spans:?}");
+        };
+        assert_eq!(percent.content, "   86%");
+        assert_eq!(age.content, "  3m ago");
+        assert_eq!(age.style, fg(242));
 
         // 取得が戻らない間も同じ。成功した値だけなら経過時間は出さない。
         let mut waiting = sampled(startup(), now - Duration::from_secs(33));
@@ -529,24 +596,78 @@ mod tests {
 
     #[test]
     fn bar_color_follows_the_used_share_and_respects_no_color() {
+        // ディスクの段階の境界は 80% / 90% / 95%。境界ちょうどは上の段階に入る。
         for (percent, expected) in [
-            (0.0, Color::Green),
-            (79.9, Color::Green),
-            (80.0, Color::Yellow),
-            (89.9, Color::Yellow),
-            (90.0, Color::LightRed),
-            (95.0, Color::Red),
-            (100.0, Color::Red),
+            (0.0, Level::Normal),
+            (79.9, Level::Normal),
+            (80.0, Level::Caution),
+            (89.9, Level::Caution),
+            (90.0, Level::Warning),
+            (95.0, Level::Critical),
+            (100.0, Level::Critical),
         ] {
-            assert_eq!(disk_color(percent), expected, "{percent}");
+            assert_eq!(Level::of(percent, DISK_LEVELS), expected, "{percent}");
         }
+
         let now = base();
-        let row = sampled(startup(), now);
-        let colored = spans_for(&row, 12, 80, true, now);
-        assert_eq!(colored[1].style.fg, Some(Color::Yellow));
-        let plain = spans_for(&row, 12, 80, false, now);
-        assert!(plain.iter().all(|span| span.style.fg.is_none()));
-        assert_eq!(text(&colored), text(&plain));
+        // 起動ディスク (86%): 使用中の区分と使用率は 2 段目の色。パージ可能分と空きは灰色。
+        let spans = spans_for(&sampled(startup(), now), 12, 80, true, now);
+        assert_eq!(span_with(&spans, "Macintosh HD").style, fg(245));
+        assert_eq!(span_with(&spans, "█").style, fg(178));
+        assert_eq!(span_with(&spans, "▒").style, fg(245));
+        assert_eq!(span_with(&spans, "░").style, fg(242));
+        assert_eq!(span_with(&spans, "86%").style, fg(178));
+        assert_eq!(span_with(&spans, "available").style, fg(245));
+
+        // 90% 以上は使用率の数字だけを太字にし、バーは太字にしない。
+        let full = |free: u64| {
+            let volume = Volume::new("V".into(), 1_000 * GB, free * GB, Some(free * GB));
+            sampled(volume.unwrap(), now)
+        };
+        for (row, percent, used, expected) in [
+            (full(80), "92%", fg(208), bold(208)),
+            (full(30), "97%", fg(196), bold(196)),
+        ] {
+            let spans = spans_for(&row, 12, 80, true, now);
+            assert_eq!(span_with(&spans, "█").style, used, "{percent}");
+            assert_eq!(span_with(&spans, percent).style, expected, "{percent}");
+            assert_eq!(span_with(&spans, "░").style, fg(242), "{percent}");
+        }
+
+        // 0 セルの区分は区間を作らない。
+        let spans = spans_for(&full(0), 12, 80, true, now);
+        assert!(
+            spans.iter().all(|span| !span.content.is_empty()),
+            "{spans:?}"
+        );
+        assert!(!text(&spans).contains(['▒', '░']), "{spans:?}");
+
+        // 色を使わないときは、どの区間にも色も太字も付けず、文字は色付きのときと同じにする。
+        let archive = || Row::new(Target::Mount("/Volumes/Archive".into()), now);
+        let mut stale = sampled(startup(), now - Duration::from_secs(180));
+        stale.error = Some(ReadError::Failed("I/O error".into()));
+        let mut silent = archive();
+        silent.started = Some(now - OVERDUE_FOR_TEST);
+        let mut unavailable = archive();
+        unavailable.error = Some(ReadError::NotMounted);
+        for row in [
+            sampled(startup(), now),
+            full(30),
+            stale,
+            archive(),
+            silent,
+            unavailable,
+        ] {
+            for width in [34, 80, 118] {
+                let colored = spans_for(&row, 12, width, true, now);
+                let plain = spans_for(&row, 12, width, false, now);
+                assert!(
+                    plain.iter().all(|span| span.style == Style::default()),
+                    "{plain:?}"
+                );
+                assert_eq!(text(&colored), text(&plain));
+            }
+        }
     }
 
     #[test]
@@ -598,5 +719,81 @@ mod tests {
         // 説明の短い Archive の行も、起動ディスクの行と同じ幅のバーで描く。
         assert_eq!(bars[0], bars[1], "{bars:?}");
         assert!(bars[0] >= MIN_BAR, "{bars:?}");
+    }
+
+    #[test]
+    fn rendered_cells_use_the_palette_colors() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::buffer::Cell;
+
+        /// 字形 `symbol` の最初のセルの色と装飾。
+        fn first(cells: &[Cell], symbol: &str) -> (Color, Modifier) {
+            let cell = cells
+                .iter()
+                .find(|cell| cell.symbol() == symbol)
+                .unwrap_or_else(|| panic!("no {symbol:?} cell"));
+            (cell.fg, cell.modifier)
+        }
+        /// 使用率の数字と `%` のセルの文字と、それぞれの色と装飾。
+        fn percent(cells: &[Cell]) -> (String, Vec<(Color, Modifier)>) {
+            let end = cells.iter().position(|cell| cell.symbol() == "%").unwrap();
+            let cells = &cells[end - 2..=end];
+            (
+                cells.iter().map(Cell::symbol).collect(),
+                cells.iter().map(|cell| (cell.fg, cell.modifier)).collect(),
+            )
+        }
+        let plain = (Color::Reset, Modifier::empty());
+        let indexed = |index: u8| (Color::Indexed(index), Modifier::empty());
+
+        let now = base();
+        let critical = Volume::new("Full".into(), 1_000 * GB, 30 * GB, Some(30 * GB)).unwrap();
+        // 起動ディスク (86%) と 97% のボリュームを色付きで描き、各行のセルを返す。
+        let draw = |placement: Placement| -> Vec<Vec<Cell>> {
+            let monitor = Monitor::from_rows(vec![
+                sampled(startup(), now),
+                sampled(critical.clone(), now),
+            ]);
+            let mut terminal = Terminal::new(TestBackend::new(100, placement.height())).unwrap();
+            terminal
+                .draw(|frame| render(frame, frame.area(), &monitor, placement, true, now))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..placement.height())
+                .map(|y| {
+                    (0..100)
+                        .map(|x| buffer.cell((x, y)).unwrap().clone())
+                        .collect()
+                })
+                .collect()
+        };
+
+        let lines = draw(Placement::Panel(2));
+        // 枠と見出し (凡例の字形も) には色を付けない。
+        assert_eq!(first(&lines[0], "┌"), plain);
+        assert_eq!(first(&lines[0], "D"), plain);
+        assert_eq!(first(&lines[0], "█"), plain);
+        assert_eq!(first(&lines[1], "│"), plain);
+        // 起動ディスク (86%) は 2 段目の色。パージ可能分と空きは段階によらず灰色。
+        assert_eq!(first(&lines[1], "M"), indexed(245));
+        assert_eq!(first(&lines[1], "█"), indexed(178));
+        assert_eq!(first(&lines[1], "▒"), indexed(245));
+        assert_eq!(first(&lines[1], "░"), indexed(242));
+        assert_eq!(percent(&lines[1]), ("86%".into(), vec![indexed(178); 3]));
+        // 97% は最上段。使用率の数字だけを太字にする。
+        assert_eq!(first(&lines[2], "█"), indexed(196));
+        assert_eq!(first(&lines[2], "░"), indexed(242));
+        assert_eq!(
+            percent(&lines[2]),
+            ("97%".into(), vec![(Color::Indexed(196), Modifier::BOLD); 3])
+        );
+
+        // 1 行の置き方でも同じ色。先頭の `Disk` には色を付けない。
+        let line = &draw(Placement::Line)[0];
+        assert_eq!(first(line, "D"), plain);
+        assert_eq!(first(line, "M"), indexed(245));
+        assert_eq!(first(line, "█"), indexed(178));
+        assert_eq!(percent(line), ("86%".into(), vec![indexed(178); 3]));
     }
 }

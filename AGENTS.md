@@ -28,9 +28,10 @@ shows this Mac's disk usage at the bottom.
 | `src/cache.rs` | Per-source usage cache (120 s by default), credential fingerprints, process locks, and atomic writes. |
 | `src/diagnostics.rs` | Warning delivery: stderr for normal commands, a shared queue while the TUI draws. |
 | `src/disk.rs` / `src/disk/macos.rs` | TUI disk panel data: Finder-style capacity (`Volume`), target list, and the detached-thread `Monitor`. `macos.rs` holds the only `unsafe` code (mount table via `getfsstat`, NSURL key constants). |
-| `src/render.rs`   | Shared row resolution (display name, active highlight, brand colors), JSON output, and `write_stdout`; re-exports the renderers. |
+| `src/render.rs`   | Shared row resolution (display name, active highlight), JSON output, and `write_stdout`; re-exports the renderers. |
 | `src/render/sort.rs` / `src/render/table.rs` / `src/render/statusline.rs` | Row sorting (`SortableRow`), human table, compact statusline. |
-| `src/render/manual_resets.rs` | Manual-reset summaries shared by the table column and the statusline `R:` suffix. |
+| `src/render/manual_resets.rs` | Manual-reset summaries shared by the table column, the statusline `R:` suffix, and the TUI lines (`TuiResetLine` keeps each expiry apart so the TUI can color its date). |
+| `src/render/palette.rs` | Colors shared by the statusline and the TUI: `Paint` (foreground + bold), the four-step `Level` scale, `LABEL` / `MUTED` / `ALERT`, the provider marker and brand RGB (also used by the table), and the reset-countdown and manual-reset-deadline colors. The statusline converts a `Paint` to ANSI SGR, the TUI to a ratatui `Style`. |
 | `src/render/tui.rs` / `src/render/tui/disk.rs` | TUI event loop and layout; the disk panel's placement, bar, and text. |
 | `src/main.rs`     | CLI, config-row binding and provider resolution, concurrent fetch. |
 
@@ -181,6 +182,15 @@ exact extremes, decimal units, width-dependent detail text and bar widths, one s
 bar width per panel, stale / `no response` / `unavailable` rows, colors, and the TUI
 layout at 9–24 rows (`render/tui/disk.rs`, `render/tui.rs`).
 
+Color coverage pins the shared scale with literal values: usage levels at 60/80/90%
+with bold percentages from 80%, exclusive reset-countdown thresholds, the seven-day
+manual-reset boundary, provider markers, and the exact SGR byte format
+(`render/palette.rs`). The TUI checks each span and the rendered `TestBackend` cells
+(bold only on high percentages, no style on parent lines, nothing under `--no-color`,
+redraws that leave no stale color or bold behind), the disk panel checks each bar
+segment's color, and `render/color_parity.rs` renders the same accounts through the
+statusline and the TUI to confirm that shared text carries the same color.
+
 ## 保守時に維持する動作
 
 - PixelLab の `imageGenerated` が欠落・null・数値以外の場合は、使用率を `None` とする。生成上限が分かる月次枠とリセット時刻は残し、実測の0%と区別する。
@@ -199,9 +209,15 @@ layout at 9–24 rows (`render/tui/disk.rs`, `render/tui.rs`).
 - Grok の認証情報は小数秒を捨てず作成時刻を比較する。
 - stdout へは `render::write_stdout` で書き、`print!` / `println!` を使わない。読み手が先に閉じた pipe (`| head`) は panic させず、`main` で終了コード 0 の正常終了にする。
 - `--reset-at` のときは、長期枠の日時を出せない行 (時刻不明・リセット済み・長期枠なし・短期枠のみ) にも同じ14桁を空け、後ろに続く `R:` の列を揃える。
+- TUI と statusline に共通する要素の色は、`render/palette.rs` の同じ関数で決める。各レンダラーは `Paint` の変換 (statusline は ANSI SGR、TUI は ratatui の `Style`) だけを持ち、色番号を描画側に直接書かない。
+- statusline の出力はバイト単位で保つ。区間の区切りと末尾の `\x1b[0m` を変えず、同じ色の区間も結合しない。
+- TUI では親の `Line` / `Paragraph` に太字や色を置かず、Span ごとに付ける。親に置いた装飾は、色を付けない Span にも引き継がれる。`--no-color` / `NO_COLOR` / `TERM=dumb` では色も太字も付けない。
+- 手動リセットの期限の日時は、statusline と TUI のどちらも残り7日未満だけ赤にし、ちょうど7日は通常色のままにする。TUI は期限をすべて並べるため、日時ごとに判定する。
+- TUI は現在時刻を1回の描画につき1度だけ取り、全アカウントの残り時間と期限の色に同じ時刻を使う。行ごとに取り直すと、期限の境界で行によって判定が食い違う。
 - TUI のディスク欄は、描画と切り離した `std::thread` の切り離しスレッドで読む。パージ可能な量の問い合わせは1回40〜120msかかり、戻らないこともある。`tokio::task::spawn_blocking` は終了時に作業の完了を待つため使わない。2秒を過ぎた取得は `no response` の表示に切り替えるだけで打ち切らず、同じボリュームの次の取得は前回が戻ってから30秒後に始める。
 - 追加ボリューム (`[tui] disk_mounts`) は、`getfsstat(MNT_NOWAIT)` のマウント表でマウントポイントかつローカルだと確かめてから問い合わせる。ネットワークボリュームには問い合わせない。抜いたディスクやネットワークボリュームは古い値を出さず `unavailable` にする。
-- ディスクの使用率は Finder と同じく `total − 重要な用途に使える容量` で数え、表示する%とバーの色に同じ値を使う。重要な用途の容量が0・欠落・総容量超えのときは通常の空きで代え、パージ可能な量は不明として扱う (0にしない)。
+- ディスクの使用率は Finder と同じく `total − 重要な用途に使える容量` で数え、表示する%と使用中の部分の色に同じ値を使う。重要な用途の容量が0・欠落・総容量超えのときは通常の空きで代え、パージ可能な量は不明として扱う (0にしない)。
+- ディスク欄で段階色を付けるのは、バーの使用中の部分と % だけにする (しきい値の 80/90/95% は変えない)。パージ可能の部分は灰色、空きの部分は暗い灰色にする。
 - ディスク欄はアカウント一覧に6行を残せる高さのときだけ枠付きで出し、足りなければ枠なしの1行、それも足りなければ出さない。
 - ディスク欄の行どうしでバーの幅を揃える (説明の最も長い行に合わせる)。説明はバーを16セル残せる範囲で最も詳しいものを選び、狭い端末でだけバーを6セルまで縮める。バーの3区分の合計は常にバーの幅に一致させ、最低1セルの補正は使用中と空きにだけ掛ける。1セルに満たないパージ可能分のために使用中のセルを削らない。
 
@@ -295,7 +311,9 @@ fold an unknown count into `0` — `0` is a confirmed "no resets left".
   every draw, so an old cache never shows expired grants. The table lists every
   expiry (`full 2 (1@10/23 05:27, 1@10/30 03:57)`); the statusline appends only
   the counts and the nearest known expiry (available grants first, paused ones
-  only when none are available) and paints the date red under seven days.
+  only when none are available) and paints the date red under seven days. The
+  TUI, which lists every expiry, does the same for each date; both renderers
+  take that color from `render/palette.rs`.
 
 ## PixelLab
 

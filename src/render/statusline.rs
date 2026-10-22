@@ -5,13 +5,12 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::manual_resets::format_resets_compact;
-use super::reset::{
-    FIVE_H_TH, legacy_long_window_thresholds, reset_color_index, window_thresholds,
-};
+use super::palette::{self, brand_rgb};
+use super::reset::{FIVE_H_TH, legacy_long_window_thresholds, window_thresholds};
 use super::sort::{sorted_refs, statusline_default_cmp};
 use super::{
-    ActiveTarget, brand_rgb, display_name, legacy_long_window_label, limit_observation_age,
-    parse_utc, preferred_email, resolve_active, window_label,
+    ActiveTarget, display_name, legacy_long_window_label, limit_observation_age, parse_utc,
+    preferred_email, resolve_active, window_label,
 };
 use crate::SortKey;
 use crate::model::Provider;
@@ -31,7 +30,6 @@ const GRAY: &str = "38;5;245";
 const RED: &str = "38;5;196";
 const DIM: &str = "38;5;242";
 const GREEN: &str = "38;5;35";
-const BOLD_RED: &str = "1;38;5;196"; // アクティブなアカウント。
 /// account 名 / model-group 名の欄幅(末尾の区切り 1 桁を含む)。最長の想定値
 /// "Claude&GPT"(10 桁)がちょうど収まり、その右に区切りが 1 桁残る。
 const NAME_FIELD_WIDTH: usize = 11;
@@ -171,9 +169,10 @@ fn render_identity(
     // Antigravity 行は単一 token で account name が冗長なため model-group を表示する。
     // それ以外は account name を表示する。"Claude&GPT" が入る幅で pad し、全行の gauge を揃える。
     let display = account.group_label.as_deref().unwrap_or(&name);
+    let active_code = palette::ACTIVE.sgr();
     rendered += &paint(
         opts.color,
-        if active { BOLD_RED } else { GRAY },
+        if active { &active_code } else { GRAY },
         &pad_display(display, NAME_FIELD_WIDTH),
     );
     rendered
@@ -411,7 +410,7 @@ fn pct_code(pct: f64) -> &'static str {
 }
 
 fn reset_code(sec: i64, th: [i64; 3]) -> String {
-    format!("38;5;{}", reset_color_index(Some(sec), th))
+    palette::reset_countdown(Some(sec), th).sgr()
 }
 
 fn compact_dur(sec: i64) -> String {

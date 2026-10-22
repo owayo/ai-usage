@@ -1,4 +1,5 @@
-//! statusline と TUI で共有する、リセットまでの残り時間の警告色。
+//! statusline と TUI で共有する、リセットまでの残り時間の警告のしきい値。
+//! 色そのものは `palette::reset_countdown` が決める。
 
 use crate::model::{Provider, WindowKind};
 use crate::report::WindowOut;
@@ -24,17 +25,5 @@ pub(super) fn legacy_long_window_thresholds(provider: Provider) -> [i64; 3] {
     match provider {
         Provider::PixelLab | Provider::Grok => MONTHLY_TH,
         _ => WEEK_TH,
-    }
-}
-
-/// ANSI 256 色の番号。日時不明と期限超過は、近い未来の警告色から分ける。
-pub(super) fn reset_color_index(seconds: Option<i64>, thresholds: [i64; 3]) -> u8 {
-    match seconds {
-        None => 242,
-        Some(seconds) if seconds <= 0 => 35,
-        Some(seconds) if seconds < thresholds[0] => 196,
-        Some(seconds) if seconds < thresholds[1] => 208,
-        Some(seconds) if seconds < thresholds[2] => 178,
-        Some(_) => 35,
     }
 }

@@ -76,19 +76,40 @@ pub(super) fn format_resets(
     }
 }
 
+/// TUI の手動リセットの 1 行。期限の日時は statusline と同じ規則で色を付けるため、
+/// 前に置く文字とは分けて持つ。
+pub(super) enum TuiResetLine {
+    /// 種類ごとの残回数 (`full 1`、`5h 0`、`full paused 1`、何も無ければ `0`)。
+    Summary(String),
+    /// 付与分ごとの有効期限。`prefix` は `  1@` の部分。
+    Deadline {
+        prefix: String,
+        deadline: ResetDeadline,
+    },
+}
+
 /// TUI では期限を付与分ごとの行に分け、狭い端末でも切れないようにする。
-pub(super) fn format_resets_tui(resets: &[ManualResetOut], now: DateTime<Utc>) -> Vec<String> {
+pub(super) fn format_resets_tui(
+    resets: &[ManualResetOut],
+    now: DateTime<Utc>,
+) -> Vec<TuiResetLine> {
     let mut lines = Vec::new();
     for group in summarize(resets, now) {
-        lines.push(group.label_count());
+        lines.push(TuiResetLine::Summary(group.label_count()));
         if group.total.is_some_and(|count| count > 0) {
             for (expiry, count) in group.deadlines {
-                lines.push(format!("  {count}@{}", format_deadline(expiry, now)));
+                lines.push(TuiResetLine::Deadline {
+                    prefix: format!("  {count}@"),
+                    deadline: ResetDeadline {
+                        expires_at: expiry,
+                        text: format_deadline(expiry, now),
+                    },
+                });
             }
         }
     }
     if lines.is_empty() {
-        lines.push("0".into());
+        lines.push(TuiResetLine::Summary("0".into()));
     }
     lines
 }
@@ -231,6 +252,42 @@ mod tests {
         );
         let after = parse_utc("2026-06-21T00:00:00Z").unwrap();
         assert_eq!(format_resets(&resets, after, true), "full 0\n5h 0");
+    }
+
+    #[test]
+    fn tui_lines_keep_each_expiry_for_coloring() {
+        let now = parse_utc("2026-06-15T00:00:00Z").unwrap();
+        let soon = parse_utc("2026-06-16T04:00:00Z").unwrap();
+        let resets = [
+            reset(ResetKind::Full, Some(1), Some("2026-06-16T04:00:00Z")),
+            reset(ResetKind::Full, Some(2), None),
+            reset(ResetKind::FiveHour, Some(0), None),
+        ];
+        let lines = format_resets_tui(&resets, now);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| match line {
+                TuiResetLine::Summary(text) => text.clone(),
+                TuiResetLine::Deadline { prefix, deadline } => {
+                    format!("{prefix}{}", deadline.text)
+                }
+            })
+            .collect();
+        let dated = format!("  1@{}", format_deadline(Some(soon), now));
+        assert_eq!(text, ["full 3", "  2@?", dated.as_str(), "5h 0"]);
+        // TUI が statusline と同じ規則で日時を塗れるよう、期限は日時のまま渡す (不明は None)。
+        let expiries: Vec<_> = lines
+            .iter()
+            .filter_map(|line| match line {
+                TuiResetLine::Deadline { deadline, .. } => Some(deadline.expires_at),
+                TuiResetLine::Summary(_) => None,
+            })
+            .collect();
+        assert_eq!(expiries, [None, Some(soon)]);
+        assert!(matches!(
+            &format_resets_tui(&[], now)[..],
+            [TuiResetLine::Summary(text)] if text == "0"
+        ));
     }
 
     #[test]

@@ -1,10 +1,11 @@
 //! human table、JSON、compact colored statusline の rendering。
 //!
-//! table / statusline / 行ソートはサブモジュールに分かれる。このファイルは
-//! レンダラー間で共有する行の解決(表示名・active 判定・brand color)と、
+//! table / statusline / 行ソートはサブモジュールに分かれ、色は `palette` に集める。
+//! このファイルはレンダラー間で共有する行の解決(表示名・active 判定)と、
 //! 15 行で足りる JSON 出力を持つ。
 
 mod manual_resets;
+mod palette;
 mod reset;
 mod sort;
 mod statusline;
@@ -170,20 +171,6 @@ fn legacy_long_window_label(p: Provider) -> &'static str {
 /// 呼び出し元が渡す従来 label に fallback する。
 fn window_label(kind: Option<WindowKind>, legacy: &'static str) -> &'static str {
     kind.map(WindowKind::label).unwrap_or(legacy)
-}
-
-/// provider ごとの brand RGB。table(comfy-table `Color::Rgb`)と statusline
-/// (`brand_sgr` の ANSI truecolor)で共有する単一 source。
-fn brand_rgb(p: Provider) -> (u8, u8, u8) {
-    match p {
-        Provider::Claude => (217, 119, 87), // Anthropic のコーラル #D97757
-        Provider::Codex => (16, 163, 127),  // OpenAI のティール #10A37F
-        Provider::Antigravity => (66, 133, 244), // Google のブルー #4285F4
-        Provider::PixelLab => (132, 204, 22), // ピクセルアート調の黄緑 #84CC16
-        // xAI brand は白/黒基調で dark 背景では黒が沈むため、識別性の高い
-        // 明るい cyan(Tailwind cyan-400 #22D3EE)を採用する。
-        Provider::Grok => (34, 211, 238),
-    }
 }
 
 fn parse_utc(s: &str) -> Option<DateTime<Utc>> {
