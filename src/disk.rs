@@ -12,6 +12,8 @@
 mod macos;
 
 use std::fmt;
+use std::io;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -189,6 +191,34 @@ impl Row {
 type Reader = Arc<dyn Fn(&Target) -> Result<Volume, ReadError> + Send + Sync>;
 type Outcome = (usize, Result<Volume, ReadError>);
 
+/// `read` を切り離しスレッドで呼び、結果を添字付きで `sender` に送る。JoinHandle は捨てるので、
+/// 呼び出し側が終わるときにこのスレッドを待たない。
+///
+/// `read` が panic しても失敗として送る。送らずに終わると、受け取る側からは戻らない取得と
+/// 区別がつかない。
+fn spawn_reader(
+    index: usize,
+    target: Target,
+    read: Reader,
+    sender: Sender<Outcome>,
+) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name("ai-usage-disk".into())
+        .spawn(move || {
+            // panic した後に `read` や `target` は使わず、スレッドはそのまま終わる。
+            let result = panic::catch_unwind(AssertUnwindSafe(|| read(&target)))
+                .unwrap_or_else(|_| Err(ReadError::Failed("the disk reader panicked".into())));
+            // 受け取る側が先に終わっていれば、結果は捨てる。
+            let _ = sender.send((index, result));
+        })
+        .map(drop)
+}
+
+/// 読み取りのスレッドを起動できなかったときの失敗。
+fn spawn_failed(error: &io::Error) -> ReadError {
+    ReadError::Failed(format!("cannot start the disk reader: {error}"))
+}
+
 /// 対象ごとに切り離しスレッドで容量を取得し、結果を行に反映する。
 pub struct Monitor {
     rows: Vec<Row>,
@@ -247,22 +277,17 @@ impl Monitor {
             if row.started.is_some() || now < row.next {
                 continue;
             }
-            let target = row.target.clone();
-            let read = Arc::clone(&self.read);
-            let sender = self.sender.clone();
-            // JoinHandle を捨てて切り離す。TUI の終了時にこのスレッドを待たない。
-            let spawned = std::thread::Builder::new()
-                .name("ai-usage-disk".into())
-                .spawn(move || {
-                    // 受け取る側が先に終わっていれば、結果は捨てる。
-                    let _ = sender.send((index, read(&target)));
-                });
+            // TUI の終了時に、このスレッドを待たない。
+            let spawned = spawn_reader(
+                index,
+                row.target.clone(),
+                Arc::clone(&self.read),
+                self.sender.clone(),
+            );
             match spawned {
-                Ok(_) => row.started = Some(now),
+                Ok(()) => row.started = Some(now),
                 Err(error) => {
-                    row.error = Some(ReadError::Failed(format!(
-                        "cannot start the disk reader: {error}"
-                    )));
+                    row.error = Some(spawn_failed(&error));
                     row.next = now + INTERVAL;
                 }
             }
@@ -438,6 +463,34 @@ mod tests {
             monitor.rows()[0].error,
             Some(ReadError::Failed("I/O error".into()))
         );
+    }
+
+    #[test]
+    fn a_panicking_reader_counts_as_a_failed_read_and_is_retried() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let start = Instant::now();
+        let mut monitor = Monitor::with_reader(
+            vec![Target::Startup],
+            start,
+            Arc::new(move |_: &Target| -> Result<Volume, ReadError> {
+                counter.fetch_add(1, Ordering::SeqCst);
+                panic!("reader bug");
+            }),
+        );
+        monitor.poll(start);
+        wait_for(&mut monitor, |monitor| monitor.rows()[0].started.is_none());
+        // 取得中のまま残らず、ほかの失敗と同じく INTERVAL 後に読み直す。
+        let row = &monitor.rows()[0];
+        assert_eq!(
+            row.error,
+            Some(ReadError::Failed("the disk reader panicked".into()))
+        );
+        let next = row.next;
+        assert!(monitor.poll(next));
+        assert!(monitor.rows()[0].started.is_some());
+        wait_for(&mut monitor, |monitor| monitor.rows()[0].started.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]
