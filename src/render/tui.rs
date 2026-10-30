@@ -690,7 +690,7 @@ mod tests {
         for (kind, thresholds) in [
             (WindowKind::FiveHour, [3600, 7200, 10800]),
             (WindowKind::Daily, [14400, 28800, 43200]),
-            (WindowKind::Weekly, [86400, 172800, 259200]),
+            (WindowKind::Weekly, [86400, 172800, 345600]),
             (WindowKind::Monthly, [259200, 604800, 1209600]),
         ] {
             for (seconds, index) in [
