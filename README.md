@@ -163,7 +163,7 @@ ai-usage --sort weekly-usage      # closest to the cap first
 ai-usage --sort weekly-reset      # soonest reset first
 ```
 
-The TUI groups quota bars under each account heading, with each window labeled `5h`, `1d`, `1w`, or `1m` and its reset countdown beside it. Elements it shares with the statusline use the statusline's colors. The filled part of each bar and its percentage are green below 60%, yellow from 60%, orange from 80%, and red from 90%, while the unused part and the absolute reset date are dim. The countdown uses the statusline's period-specific thresholds, changing from green through yellow and orange to red as the reset approaches. Manual resets include each grant's expiry, and each expiry date turns red once fewer than seven days remain. `--no-color` turns off colors and bold text. Use `↑` / `↓` or `j` / `k` to scroll, and `q` / `Esc` / `Ctrl+C` to quit. Usage refreshes every minute. `--tui --input <PATH>` rereads the saved `--json` file every minute without network access. When the Grok CLI observed a model-specific free limit rejection within the last 24 hours, the TUI shows its model, observation age, and token counts separately from the weekly credit window. This observation is not a measurement of the current remaining quota.
+The TUI groups quota bars under each account heading, with each window labeled `5h`, `1d`, `1w`, or `1m` and its reset countdown beside it. It shares the statusline's [color rules](#colors). Manual resets include each grant's expiry. Use `↑` / `↓` or `j` / `k` to scroll, and `q` / `Esc` / `Ctrl+C` to quit. Usage refreshes every minute. `--tui --input <PATH>` rereads the saved `--json` file every minute without network access. When the Grok CLI observed a model-specific free limit rejection within the last 24 hours, the TUI shows its model, observation age, and token counts separately from the weekly credit window. This observation is not a measurement of the current remaining quota.
 
 The TUI also shows each quota window's absolute reset date and time. If a refresh returns fewer accounts, the displayed scroll position stays within the new list. Fetch warnings appear in the dashboard header.
 
@@ -181,6 +181,34 @@ The command waits at most 2 seconds; a volume that has not answered by then show
 If PixelLab supplies a generation limit but omits the generation count, its monthly window and reset time remain visible with an unknown percentage (`--%`). An explicit zero count still displays `0%`.
 
 Every command and option, including statusline active-row selection, `--input` for fast status-bar redraws from a cached `--json` file, and `--debug`: [docs/cli-reference.md](docs/cli-reference.md)
+
+### Colors
+
+The TUI and statusline use the same colors for quota bars, percentages, and reset countdowns. Disk rows use the same colors in the TUI and `--disk` output.
+
+The filled part of a bar and its percentage follow these usage thresholds:
+
+| Color | Quota usage | Disk usage |
+|-------|-------------|------------|
+| Green | Below 60% | Below 80% |
+| Yellow | 60% to <80% | 80% to <90% |
+| Orange | 80% to <90% | 90% to <95% |
+| Red | 90% or more | 95% or more |
+
+Quota percentages are also bold from 80%; disk percentages are bold from 90%. Unused quota bars and absolute reset dates are dim. Disk bars show purgeable space in gray and free space in dim gray.
+
+For a reset in the future, the countdown color depends on the quota window's period:
+
+| Window | Green | Yellow | Orange | Red |
+|--------|-------|--------|--------|-----|
+| 5-hour (`5h`) | 3 hours or more | 2 to <3 hours | 1 to <2 hours | Less than 1 hour |
+| Daily (`1d`) | 12 hours or more | 8 to <12 hours | 4 to <8 hours | Less than 4 hours |
+| Weekly (`1w`) | 4 days or more | 2 to <4 days | 1 to <2 days | Less than 1 day |
+| Monthly (`1m`) | 14 days or more | 7 to <14 days | 3 to <7 days | Less than 3 days |
+
+Weekly countdowns turn yellow once fewer than four days remain, including `3dxxh`; exactly four days is green. Colors use the remaining time before display rounding. A reset that is due or past is green; an unknown reset time is dim.
+
+Manual-reset expiry dates turn red when fewer than seven days remain; exactly seven days stays gray. Disable colors and bold text with `--no-color`, a non-empty `NO_COLOR`, or `TERM=dumb`.
 
 ## Configuration
 
