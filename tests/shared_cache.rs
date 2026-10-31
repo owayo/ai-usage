@@ -78,6 +78,8 @@ fn assert_shared_refresh_failure(response_status: &'static str) {
                 }
                 Err(error) => panic!("{error}"),
             };
+            // Accepted sockets can inherit O_NONBLOCK on macOS.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
