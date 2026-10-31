@@ -34,12 +34,12 @@ shows this Mac's disk usage at the bottom, and `--disk` prints it on its own.
 | `src/render/manual_resets.rs` | Manual-reset summaries shared by the table column, the statusline `R:` suffix, and the TUI lines (`TuiResetLine` keeps each expiry apart so the TUI can color its date). |
 | `src/render/palette.rs` | Colors shared by the statusline and the TUI: `Paint` (foreground + bold), the four-step `Level` scale, `LABEL` / `MUTED` / `ALERT`, the provider marker and brand RGB (also used by the table), and the reset-countdown and manual-reset-deadline colors. The statusline converts a `Paint` to ANSI SGR (`--disk` reuses that conversion), the TUI to a ratatui `Style`. |
 | `src/render/tui.rs` / `src/render/tui/disk.rs` | TUI event loop and layout; the disk panel's placement and the bar width and text detail chosen for the terminal width. |
-| `src/main.rs`     | CLI, config-row binding and provider resolution, concurrent fetch, and the `--disk` branch with its target resolution. |
+| `src/lib.rs`     | CLI, config-row binding and provider resolution, concurrent fetch, and the `--disk` branch with its target resolution. |
 
 ## Transient failures vs auth failures
 
 `http.rs` marks recoverable failures by wrapping them in a private
-`RetryableHttpError` and exposes `is_retryable()`; `main.rs` retries only those.
+`RetryableHttpError` and exposes `is_retryable()`; `lib.rs` retries only those.
 Provider modules that refresh a token on 401/403 (`pixellab.rs`, `grok.rs`) must
 consult `is_retryable()` **before** matching on the message text. The Cloudflare
 challenge string is literally `Cloudflare challenge (HTTP 403). …`, so a naive
@@ -149,7 +149,7 @@ bypass for cached / OAuth-only modes, target building across the
 empty-string `CLAUDE_CONFIG_DIR` / `NO_COLOR` handling (both mean "unset", so a
 `FOO=` in the environment neither redirects the config path to the cwd nor drops
 colours), and the Chrome-failure degradation that spares OAuth providers
-(`main.rs`).
+(`lib.rs`).
 Drive the network paths via `make build` + a real run.
 
 Additional regression coverage checks emoji/grapheme padding, table color suppression,
@@ -162,7 +162,7 @@ stdout pipe whose reader is already closed (broken pipe ends quietly with status
 Later additions cover manual-reset parsing (Claude grants: empty, unknown scopes, missing
 `clears`; Codex credits: duplicate ids, missing status) and rendering (year display, failed
 rows, the table column, and the `R:` column staying aligned with `--reset-at`), per-provider
-config rows under `--profile` / `--only` (`main.rs`), `jwt::claims` with padded/unpadded
+config rows under `--profile` / `--only` (`lib.rs`), `jwt::claims` with padded/unpadded
 payloads, `config::expand_home`, `cookies::load` end to end (schema v24 hash stripping,
 older schemas, unrelated hosts, a path with space/`?`/`#`), and `http.rs` response
 classification against a local `std::net::TcpListener` HTTP/1.1 server (retryable 503 /
@@ -195,7 +195,7 @@ unrounded `used_percent`, `null` versus a measured `0` for purgeable space) in
 `render/disk.rs`; a TUI row drawn with a 20-cell bar that must equal the `--disk` line
 byte for byte, colors included (`render/tui/disk.rs`); and the clap rules (conflicting
 modes, `--mount` requiring `--disk`, empty `--mount`, usage-only options accepted) plus
-target resolution that never reads the config with `--mount` (`main.rs`).
+target resolution that never reads the config with `--mount` (`lib.rs`).
 `tests/disk.rs` runs the real CLI on macOS: `--disk --json --mount / --mount <missing>`
 next to usage-only options (no stderr, no cache directory created), targets from
 `[tui].disk_mounts` with `[tui].disk = false`, `--no-color` / `NO_COLOR` / default
@@ -303,7 +303,7 @@ buffer and the read of Foundation's NSURL key constants. Keep it there.
 ## Adding a provider
 
 Add a `Provider` variant in `model.rs`, a `fetch()` module returning `Usage`,
-and a matching `FetchSpec` variant in `main.rs`, plus provider-specific render
+and a matching `FetchSpec` variant in `lib.rs`, plus provider-specific render
 metadata. Every returned `Window` must carry its real `WindowKind`; renderers
 must not infer a period from the provider.
 
@@ -437,7 +437,7 @@ disable TLS certificate **and** hostname verification for the self-signed
 - An overall cap on the whole local path (`LOCAL_FETCH_TIMEOUT`), because
   `local_endpoints()` returns the product of processes × listening ports and
   issues two requests per endpoint. Without the cap, one hung language_server
-  consumes `main.rs`'s `JOB_DEADLINE` and the OAuth fallback never runs — the
+  consumes `lib.rs`'s `JOB_DEADLINE` and the OAuth fallback never runs — the
   row fails even with a valid token. `local_timeouts_leave_budget_for_the_oauth_fallback`
   locks this relationship in.
 
@@ -596,3 +596,10 @@ license blocks between `<!-- standard:*:start/end -->` markers are generated —
 change the facts (workflows, Makefile, Cargo.toml) rather than the text. Never
 commit personal paths, emails, org names, or live tokens / secrets — use `~` /
 `$HOME` placeholders in docs and examples.
+
+## Library API
+
+`src/main.rs` is a thin CLI entry point. Existing processing helpers and CLI tests
+live in `src/lib.rs`; `src/embedding.rs` exposes the typed application API described
+in README. Keep fetch/credential/Markdown logic shared with the CLI. Embedding must
+not parse host arguments, print results, install process-global handlers, or exit.
