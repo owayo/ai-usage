@@ -308,3 +308,24 @@ make ci      # CI と同じ検査 (書き換えない)
 <!-- standard:license:start -->
 [MIT](LICENSE)
 <!-- standard:license:end -->
+
+## アプリケーションへの組み込み
+
+RustのライブラリAPIは `ai_usage::embedding::collect` です。呼び出し元のTokioランタイムで
+`CollectOptions` を渡すと、既存のJSON形式の `report` と `warnings` を返します。
+ホストのコマンドライン引数を読まず、CLIの描画やランタイムの生成は行いません。
+設定・認証・共有キャッシュ・各サービスの取得処理はCLIと共通です。利用者の操作に応じて
+バックグラウンドで呼び出してください。初回にKeychainのアクセス確認が出る場合があります。
+資格情報の書き戻しは行いませんが、既存の共有キャッシュは読み書きします。
+
+```rust,no_run
+# async fn example() -> anyhow::Result<()> {
+let snapshot = ai_usage::embedding::collect(Default::default()).await?;
+let json = serde_json::to_string(&snapshot)?;
+# Ok(())
+# }
+```
+
+macOSアプリがシステムSQLiteを使っている場合は、依存指定の `default-features = false` で
+`bundled-sqlite` を無効にしてください。既定のCLIビルドは従来どおりSQLiteを同梱します。
+CLIのエントリは `run_cli` で、ライブラリの取得APIから呼ぶ必要はありません。

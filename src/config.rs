@@ -212,6 +212,13 @@ pub fn expand_home(path: &str) -> PathBuf {
 /// 不正な file は stderr に報告し、abort せず default として扱う。
 /// unknown field は無視し、新しい config を古い binary でも読めるようにする。
 pub fn load(explicit: Option<&Path>) -> Config {
+    load_with_diagnostics(explicit, &crate::diagnostics::Diagnostics::new(false))
+}
+
+pub(crate) fn load_with_diagnostics(
+    explicit: Option<&Path>,
+    diagnostics: &crate::diagnostics::Diagnostics,
+) -> Config {
     let path = match explicit {
         Some(p) => Some(p.to_path_buf()),
         None => default_path(),
@@ -230,12 +237,18 @@ pub fn load(explicit: Option<&Path>) -> Config {
             return Config::default();
         }
         Err(error) => {
-            eprintln!("ai-usage: ignoring config {}: {error}", path.display());
+            diagnostics.warn(format!(
+                "ai-usage: ignoring config {}: {error}",
+                path.display()
+            ));
             return Config::default();
         }
     };
     toml::from_str(&text).unwrap_or_else(|e| {
-        eprintln!("ai-usage: ignoring invalid config {}: {e}", path.display());
+        diagnostics.warn(format!(
+            "ai-usage: ignoring invalid config {}: {e}",
+            path.display()
+        ));
         Config::default()
     })
 }

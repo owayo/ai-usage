@@ -308,3 +308,25 @@ The [maintenance review record](docs/maintenance.md) documents confirmed bugs, r
 <!-- standard:license:start -->
 [MIT](LICENSE)
 <!-- standard:license:end -->
+
+## Embedding in an application
+
+`ai_usage::embedding::collect(CollectOptions)` returns the existing JSON report DTO
+and captured warnings. The caller supplies the Tokio runtime. It does not read host
+arguments, render CLI output, or install global handlers. Configuration, credential
+handling, the shared cache, and provider fetchers are shared with the CLI.
+
+```rust,no_run
+# async fn example() -> anyhow::Result<()> {
+let snapshot = ai_usage::embedding::collect(Default::default()).await?;
+let json = serde_json::to_string(&snapshot)?;
+# Ok(())
+# }
+```
+
+Call it on a background worker after an explicit user action: macOS may ask for
+Keychain access. Credentials are not written back; the existing usage cache is read
+and written. Set `default-features = false` in the Cargo dependency to disable
+`bundled-sqlite` when the host application already uses system SQLite. Default CLI
+builds continue to bundle SQLite. `run_cli` remains the CLI entry point and is not
+needed by embedding callers.
