@@ -68,16 +68,18 @@ pub async fn fetch(client: &Client, cookies: &HashMap<String, String>) -> Result
         plan: None,
         short: parse_window(usage.get("five_hour"), WindowKind::FiveHour),
         long: parse_window(usage.get("seven_day"), WindowKind::Weekly),
-        manual_resets: Some(
-            parse_manual_resets(usage.get("cedar_ember"), Utc::now()).unwrap_or_else(|| {
-                vec![
-                    ManualReset::unknown(ResetKind::Full),
-                    ManualReset::unknown(ResetKind::FiveHour),
-                ]
-            }),
-        ),
+        manual_resets: Some(manual_resets_or_unknown(
+            usage.get("cedar_ember"),
+            Utc::now(),
+        )),
         limit_observation: None,
     }))
+}
+
+/// `cedar_ember` を読めないときは、完全リセットの回数だけを不明として返す。
+/// 取得できた 0 回とは区別する。
+fn manual_resets_or_unknown(v: Option<&serde_json::Value>, now: DateTime<Utc>) -> Vec<ManualReset> {
+    parse_manual_resets(v, now).unwrap_or_else(|| vec![ManualReset::unknown(ResetKind::Full)])
 }
 
 fn parse_manual_resets(
@@ -124,16 +126,15 @@ fn parse_manual_resets(
             });
         }
     }
-    // 設定ページは未付与の完全 / 5 時間リセットも 0 回として区別する。
-    for kind in [ResetKind::Full, ResetKind::FiveHour] {
-        if !resets.iter().any(|r| r.kind == kind) {
-            resets.push(ManualReset {
-                kind,
-                remaining: Some(0),
-                expires_at: None,
-                paused: false,
-            });
-        }
+    // 完全リセットは、付与が無くても残り 0 回と分かるように補う。5 時間枠だけを回復する
+    // リセットは付与が届いたときだけ数え、0 回は補わない (補うと全行に `5h 0` が並ぶ)。
+    if !resets.iter().any(|r| r.kind == ResetKind::Full) {
+        resets.push(ManualReset {
+            kind: ResetKind::Full,
+            remaining: Some(0),
+            expires_at: None,
+            paused: false,
+        });
     }
     Some(resets)
 }
@@ -193,6 +194,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 種類と残回数だけを並べ、期待値を 1 行で書けるようにする。
+    fn summary(resets: &[ManualReset]) -> Vec<(ResetKind, Option<u64>)> {
+        resets
+            .iter()
+            .map(|reset| (reset.kind, reset.remaining))
+            .collect()
+    }
+
     #[test]
     fn manual_resets_preserve_scope_count_and_each_expiry() {
         let now = DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
@@ -227,13 +236,46 @@ mod tests {
             {"id":"spent","resets_left":0}
         ]});
         let resets = parse_manual_resets(Some(&v), now).unwrap();
-        assert_eq!(resets.len(), 3);
-        assert_eq!(resets[0].remaining, Some(1));
-        assert_eq!(resets[1].remaining, Some(5));
+        // 重複した id・失効・使い切りを除いた 2 件が残る。完全リセットがあるので 0 回は補わない。
+        assert_eq!(
+            summary(&resets),
+            vec![(ResetKind::Full, Some(1)), (ResetKind::Full, Some(5))]
+        );
+        assert!(!resets[0].paused);
         assert!(resets[1].paused);
         assert!(resets[1].expires_at.is_some());
-        assert_eq!(resets[2].kind, ResetKind::FiveHour);
-        assert_eq!(resets[2].remaining, Some(0));
+    }
+
+    #[test]
+    fn five_hour_reset_appears_only_for_a_live_grant() {
+        let now = DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ends_at = DateTime::parse_from_rfc3339("2026-06-22T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        // 5 時間枠だけを回復する付与が届いたら、残回数・期限・一時停止を保って 5h として数える。
+        let v = json!({"eligible":true,"grants":[
+            {"id":"session","resets_left":2,"paused":true,"clears":["five_hour"],"ends_at":"2026-06-22T00:00:00Z"}
+        ]});
+        let resets = parse_manual_resets(Some(&v), now).unwrap();
+        assert_eq!(
+            summary(&resets),
+            vec![(ResetKind::FiveHour, Some(2)), (ResetKind::Full, Some(0))]
+        );
+        assert!(resets[0].paused);
+        assert_eq!(resets[0].expires_at, Some(ends_at));
+        // 失効や使い切りで生きた付与が無くなったら、5h の 0 回は補わない。
+        for grant in [
+            json!({"id":"session","resets_left":2,"clears":["five_hour"],"ends_at":"2026-06-15T00:00:00Z"}),
+            json!({"id":"session","resets_left":0,"clears":["five_hour"]}),
+        ] {
+            let v = json!({"eligible":true,"grants":[grant]});
+            assert_eq!(
+                summary(&parse_manual_resets(Some(&v), now).unwrap()),
+                vec![(ResetKind::Full, Some(0))]
+            );
+        }
     }
 
     #[test]
@@ -241,29 +283,16 @@ mod tests {
         let now = DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let summary = |resets: Vec<ManualReset>| {
-            resets
-                .iter()
-                .map(|reset| (reset.kind, reset.remaining))
-                .collect::<Vec<_>>()
-        };
-        // 付与が 1 件も無いアカウントは、完全 / 5 時間とも取得済みの 0 回として表示する。
+        // 付与が 1 件も無いアカウントは、完全リセットだけを取得済みの 0 回として表示する。
         let empty = parse_manual_resets(Some(&json!({"eligible":true,"grants":[]})), now).unwrap();
-        assert_eq!(
-            summary(empty),
-            vec![(ResetKind::Full, Some(0)), (ResetKind::FiveHour, Some(0))]
-        );
-        // 回復対象の枠を判別できない付与は other として数え、0 回の表示は残す。
+        assert_eq!(summary(&empty), vec![(ResetKind::Full, Some(0))]);
+        // 回復対象の枠を判別できない付与は other として数え、完全リセットの 0 回は残す。
         let other = json!({"eligible":true,"grants":[
             {"id":"opus","resets_left":2,"clears":["opus_weekly"]}
         ]});
         assert_eq!(
-            summary(parse_manual_resets(Some(&other), now).unwrap()),
-            vec![
-                (ResetKind::Other, Some(2)),
-                (ResetKind::Full, Some(0)),
-                (ResetKind::FiveHour, Some(0)),
-            ]
+            summary(&parse_manual_resets(Some(&other), now).unwrap()),
+            vec![(ResetKind::Other, Some(2)), (ResetKind::Full, Some(0))]
         );
         // 有効な付与なのに clears が無い応答は範囲が分からないため、全体を不明にする。
         let unscoped = json!({"eligible":true,"grants":[{"id":"x","resets_left":1}]});
@@ -273,6 +302,8 @@ mod tests {
     #[test]
     fn missing_or_malformed_reset_data_is_unknown_instead_of_zero() {
         let now = Utc::now();
+        // 読めない応答では、完全リセットの回数だけを不明として返す。
+        let unknown = vec![(ResetKind::Full, None)];
         for v in [
             json!(null),
             json!({}),
@@ -280,10 +311,12 @@ mod tests {
             json!({"eligible":true,"grants":[{"id":"bad","resets_left":-1}]}),
         ] {
             assert!(parse_manual_resets(Some(&v), now).is_none());
+            assert_eq!(summary(&manual_resets_or_unknown(Some(&v), now)), unknown);
         }
-        assert!(parse_manual_resets(None, now).is_none());
-        let none = parse_manual_resets(Some(&json!({"eligible":false})), now).unwrap();
-        assert!(none.iter().all(|r| r.remaining == Some(0)));
+        assert_eq!(summary(&manual_resets_or_unknown(None, now)), unknown);
+        // 対象外のアカウントは取得済みの 0 回で、不明とは区別する。
+        let ineligible = manual_resets_or_unknown(Some(&json!({"eligible":false})), now);
+        assert_eq!(summary(&ineligible), vec![(ResetKind::Full, Some(0))]);
     }
 
     #[test]

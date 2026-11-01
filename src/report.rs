@@ -358,6 +358,8 @@ mod tests {
         let report = Report::build(&[report_with(Ok(usage))]);
         let mut json = serde_json::to_value(&report).unwrap();
         let resets = &json["accounts"][0]["manual_resets"];
+        // 取得側が渡した要素だけを出し、種類を補わない。
+        assert_eq!(resets.as_array().map(Vec::len), Some(3));
         assert_eq!(resets[0]["remaining"], 2);
         assert_eq!(resets[0]["expires_at"], expiry.to_rfc3339());
         assert_eq!(resets[0]["paused"], true);
