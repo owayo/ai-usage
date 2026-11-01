@@ -18,6 +18,20 @@ fn provider_color(p: Provider) -> Color {
     Color::Rgb { r, g, b }
 }
 
+/// 手動リセットの列に出す値。失敗した行と、表示する種類が無い行は None。
+fn manual_reset_text(report: &AccountReport, now: DateTime<Utc>) -> Option<String> {
+    let resets: Vec<_> = report
+        .usage
+        .as_ref()
+        .ok()?
+        .manual_resets
+        .as_ref()?
+        .iter()
+        .map(ManualResetOut::from)
+        .collect();
+    format_resets(&resets, now, true)
+}
+
 /// service column の text。provider に、Antigravity 行では model-group を付ける。
 fn service_label(p: Provider, group: Option<&str>) -> String {
     match group {
@@ -38,9 +52,11 @@ pub fn table(reports: &[AccountReport], sort: SortKey, color: bool) -> std::io::
 /// 端末幅による自動調整を保ったまま、色の要否に応じてセルを組み立てる。
 fn build_table(reports: &[AccountReport], sort: SortKey, color: bool, now: DateTime<Utc>) -> Table {
     let mut table = Table::new();
-    let show_resets = reports
-        .iter()
-        .any(|r| r.usage.as_ref().is_ok_and(|u| u.manual_resets.is_some()));
+    // SortKey::Provider のときは入力(=ジョブ順)をそのまま保持。
+    let ordered = sorted_refs(reports, sort, now, None);
+    // 列の有無とセルに同じ値を使うため、手動リセットの表示は行ごとに 1 回だけ組み立てる。
+    let resets: Vec<_> = ordered.iter().map(|r| manual_reset_text(r, now)).collect();
+    let show_resets = resets.iter().any(Option::is_some);
     let mut header = vec!["Account", "Service", "Plan", "Short window", "Long window"];
     if show_resets {
         header.push("Manual resets");
@@ -50,9 +66,7 @@ fn build_table(reports: &[AccountReport], sort: SortKey, color: bool, now: DateT
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(header);
 
-    // SortKey::Provider のときは入力(=ジョブ順)をそのまま保持。
-    let ordered = sorted_refs(reports, sort, now, None);
-    for r in ordered {
+    for (r, reset_text) in ordered.into_iter().zip(resets) {
         let provider_email = match &r.usage {
             Ok(u) => u.email.as_deref(),
             Err(_) => None,
@@ -94,15 +108,7 @@ fn build_table(reports: &[AccountReport], sort: SortKey, color: bool, now: DateT
                     window_cell(&u.long, now, long_bar_width, color),
                 ];
                 if show_resets {
-                    let text = u
-                        .manual_resets
-                        .as_ref()
-                        .map(|resets| {
-                            let resets: Vec<_> = resets.iter().map(ManualResetOut::from).collect();
-                            format_resets(&resets, now, true)
-                        })
-                        .unwrap_or_else(|| "—".into());
-                    cells.push(Cell::new(text));
+                    cells.push(Cell::new(reset_text.as_deref().unwrap_or("—")));
                 }
                 table.add_row(cells);
             }
@@ -243,9 +249,27 @@ mod tests {
     }
 
     #[test]
-    fn manual_resets_column_appears_only_when_a_row_reports_resets() {
+    fn manual_resets_column_appears_only_when_a_row_has_resets_to_show() {
         use crate::model::{ManualReset, ResetKind, Usage};
         let now = fixed_utc("2026-06-15T00:00:00Z");
+        // 残りが 0 回の付与と、描画の時点で失効した付与だけを持つ行。
+        let zero = || Usage {
+            manual_resets: Some(vec![
+                ManualReset {
+                    kind: ResetKind::Full,
+                    remaining: Some(0),
+                    expires_at: None,
+                    paused: false,
+                },
+                ManualReset {
+                    kind: ResetKind::Full,
+                    remaining: Some(3),
+                    expires_at: Some(now),
+                    paused: false,
+                },
+            ]),
+            ..Default::default()
+        };
         let report = |provider, usage| AccountReport {
             profile_name: "Work".into(),
             profile_email: None,
@@ -267,9 +291,10 @@ mod tests {
                 .cloned()
                 .unwrap_or_else(|| panic!("{text:?} が無い: {lines:#?}"))
         };
-        // 手動リセットを持つ行が無ければ列自体を出さない。
+        // 出す手動リセットを持つ行が無ければ、0 回だけの行があっても列自体を出さない。
         let without = render(&[
             report(Provider::PixelLab, Ok(Usage::default())),
+            report(Provider::Claude, Ok(zero())),
             report(Provider::Claude, Err(anyhow::anyhow!("test failure"))),
         ]);
         assert!(
@@ -277,7 +302,18 @@ mod tests {
             "{without:#?}"
         );
 
-        // 1 行でも持てば列を足し、持たない行と失敗行は "—" で埋める。
+        // 取得できなかった回数は 0 回と区別して出すため、それだけでも列を足す。
+        let unknown = render(&[report(
+            Provider::Claude,
+            Ok(Usage {
+                manual_resets: Some(vec![ManualReset::unknown(ResetKind::Full)]),
+                ..Default::default()
+            }),
+        )]);
+        line(&unknown, "Manual resets");
+        assert!(line(&unknown, "Claude").contains("full ?"), "{unknown:#?}");
+
+        // 1 行でも出すものがあれば列を足し、ほかの行は "—" で埋める。
         let expiry = fixed_utc("2026-06-20T00:00:00Z");
         let with = render(&[
             report(
@@ -292,6 +328,7 @@ mod tests {
                     ..Default::default()
                 }),
             ),
+            report(Provider::Claude, Ok(zero())),
             report(Provider::PixelLab, Ok(Usage::default())),
             report(Provider::Claude, Err(anyhow::anyhow!("test failure"))),
         ]);
@@ -301,8 +338,10 @@ mod tests {
             line(&with, "Codex").contains(&format!("full 2 (2@{date})")),
             "{with:#?}"
         );
-        for text in ["PixelLab", "test failure"] {
-            let row = line(&with, text);
+        // 0 回だけの行・手動リセットを持たない行・取得に失敗した行。
+        let rows: Vec<_> = with.iter().filter(|line| line.contains("Work")).collect();
+        assert_eq!(rows.len(), 4, "{with:#?}");
+        for row in rows.iter().filter(|line| !line.contains("Codex")) {
             let last_cell = row.trim_end_matches('│').rsplit('┆').next().unwrap();
             assert_eq!(last_cell.trim(), "—", "{with:#?}");
         }

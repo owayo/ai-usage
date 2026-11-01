@@ -87,10 +87,11 @@ pub(super) fn render_row(
             &format!("  24h LIMIT {} ({age} ago)", observation.model),
         );
     }
+    // 残っている手動リセットが無い行 (0 回だけ・失効済みだけ) には `R:` を付けない。
     if a.ok
         && let Some(resets) = &a.manual_resets
+        && let Some(resets) = format_resets_compact(resets, now)
     {
-        let resets = format_resets_compact(resets, now);
         rendered += &paint(opts.color, LABEL, &format!("  R:{}", resets.counts));
         if let Some(deadline) = resets.deadline {
             rendered += &paint(opts.color, LABEL, " (");
@@ -470,18 +471,23 @@ mod tests {
         let tick = chrono::Duration::nanoseconds(1);
         let mut opts = plain_opts();
         opts.color = true;
+        // 期限ちょうどと過ぎた付与は失効扱いで、`R:` ごと出さない (None)。
         for (remaining, red) in [
-            (Some(week - tick), true),
-            (Some(week), false),
-            (Some(week + tick), false),
-            (Some(tick), true),
-            (Some(chrono::Duration::zero()), false),
-            (Some(-tick), false),
-            (None, false),
+            (Some(week - tick), Some(true)),
+            (Some(week), Some(false)),
+            (Some(week + tick), Some(false)),
+            (Some(tick), Some(true)),
+            (Some(chrono::Duration::zero()), None),
+            (Some(-tick), None),
+            (None, Some(false)),
         ] {
             let expiry = remaining.map(|remaining| now + remaining);
             let account = manual_reset_account(expiry);
             let line = render_row(&account, None, false, &opts, now);
+            let Some(red) = red else {
+                assert!(!line.contains("R:"), "remaining={remaining:?}: {line:?}");
+                continue;
+            };
             let suffix = line.rsplit_once("R:").unwrap().1;
             assert_eq!(
                 suffix.matches("\x1b[38;5;196m").count(),
@@ -564,6 +570,26 @@ mod tests {
         without.manual_resets = None;
         let line = render_row(&without, None, false, &plain_opts(), now);
         assert!(!line.contains("R:"), "{line:?}");
+
+        // 残りが 0 回の付与と、描画の時点で失効した付与だけなら `R:` も前の空白も付けない。
+        let reset = |remaining, expires_at: Option<DateTime<Utc>>| ManualResetOut {
+            kind: ResetKind::Full,
+            remaining,
+            expires_at: expires_at.map(|expiry| expiry.to_rfc3339()),
+            paused: false,
+        };
+        let mut spent = manual_reset_account(None);
+        spent.manual_resets = Some(vec![reset(Some(0), None), reset(Some(2), Some(now))]);
+        assert_eq!(
+            render_row(&spent, None, false, &plain_opts(), now),
+            render_row(&without, None, false, &plain_opts(), now)
+        );
+
+        // 取得できなかった回数は 0 回と区別して出す。
+        let mut unknown = manual_reset_account(None);
+        unknown.manual_resets = Some(vec![reset(None, None)]);
+        let line = render_row(&unknown, None, false, &plain_opts(), now);
+        assert!(line.ends_with("  R:full ?"), "{line:?}");
     }
 
     #[test]
@@ -829,8 +855,8 @@ mod tests {
                 "  \x1b[38;5;178m2d05h \x1b[0m",
                 "\x1b[38;5;242m ({weekly_reset})\x1b[0m",
                 "\x1b[38;5;196m  24h LIMIT test-model (3h ago)\x1b[0m",
-                // 手動リセット: 件数と括弧は LABEL、7 日未満で切れる期限だけ赤。
-                "\x1b[38;5;245m  R:full 1; 5h 0\x1b[0m",
+                // 手動リセット: 件数と括弧は LABEL、7 日未満で切れる期限だけ赤。0 回の 5h は出さない。
+                "\x1b[38;5;245m  R:full 1\x1b[0m",
                 "\x1b[38;5;245m (\x1b[0m",
                 "\x1b[38;5;196m{reset_expiry}\x1b[0m",
                 "\x1b[38;5;245m)\x1b[0m",

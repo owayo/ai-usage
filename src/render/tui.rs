@@ -870,6 +870,39 @@ mod tests {
     }
 
     #[test]
+    fn account_lines_omit_resets_when_none_remain() {
+        let now = parse_utc("2026-10-11T00:00:00Z").unwrap();
+        let text = |value: serde_json::Value| {
+            account_lines(&account(value), false, 80, now)
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+        // 残りが 0 回の付与と、描画の時点で失効した付与だけなら `Resets:` 行を出さない。
+        let spent = text(serde_json::json!({"manual_resets": [
+            {"kind":"full","remaining":0,"expires_at":null},
+            {"kind":"full","remaining":2,"expires_at":now.to_rfc3339()}
+        ]}));
+        assert!(
+            !spent.iter().any(|line| line.contains("Resets:")),
+            "{spent:#?}"
+        );
+        // 取得できなかった回数は 0 回と区別して出す。
+        let unknown = text(serde_json::json!({"manual_resets": [
+            {"kind":"full","remaining":null,"expires_at":null}
+        ]}));
+        assert!(
+            unknown.iter().any(|line| line == "  Resets: full ?"),
+            "{unknown:#?}"
+        );
+    }
+
+    #[test]
     fn account_lines_use_the_statusline_colors() {
         let now = parse_utc("2026-10-11T00:00:00Z").unwrap();
         let at = |delta: chrono::Duration| (now + delta).to_rfc3339();
@@ -897,8 +930,15 @@ mod tests {
         // 手動リセット: 件数と `1@` は LABEL、7 日未満で切れる日時だけ ALERT。
         assert_eq!(fg("  Resets: "), Some(Color::Indexed(245)));
         assert_eq!(fg("full 2"), Some(Color::Indexed(245)));
-        assert_eq!(fg("5h 0"), Some(Color::Indexed(245)));
         assert_eq!(fg("  1@"), Some(Color::Indexed(245)));
+        // 残りが 0 回の 5h は出さない。
+        assert!(
+            !lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| span.content.contains("5h 0")),
+            "{lines:#?}"
+        );
         assert_eq!(
             fg(&date(chrono::Duration::days(1))),
             Some(Color::Indexed(196))

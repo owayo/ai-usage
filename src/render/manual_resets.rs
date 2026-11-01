@@ -1,4 +1,6 @@
 //! 手動リセットの残回数と有効期限を両レンダラーで同じ意味で表示する。
+//! 残りが 0 回の種類は出さず、何も残っていない行は手動リセットの表示ごと省く。
+//! 取得できなかった回数 (`?`) は、0 回と区別して出す。
 
 use std::collections::BTreeMap;
 
@@ -49,11 +51,12 @@ impl std::fmt::Display for CompactResets {
     }
 }
 
+/// テーブルの手動リセットの列。表示する種類が無ければ None を返す。
 pub(super) fn format_resets(
     resets: &[ManualResetOut],
     now: DateTime<Utc>,
     multiline: bool,
-) -> String {
+) -> Option<String> {
     let groups: Vec<_> = summarize(resets, now)
         .into_iter()
         .map(|group| {
@@ -69,17 +72,13 @@ pub(super) fn format_resets(
             text
         })
         .collect();
-    if groups.is_empty() {
-        "0".into()
-    } else {
-        groups.join(if multiline { "\n" } else { "; " })
-    }
+    (!groups.is_empty()).then(|| groups.join(if multiline { "\n" } else { "; " }))
 }
 
 /// TUI の手動リセットの 1 行。期限の日時は statusline と同じ規則で色を付けるため、
 /// 前に置く文字とは分けて持つ。
 pub(super) enum TuiResetLine {
-    /// 種類ごとの残回数 (`full 1`、`5h 0`、`full paused 1`、何も無ければ `0`)。
+    /// 種類ごとの残回数 (`full 1`、`5h ?`、`full paused 1`)。
     Summary(String),
     /// 付与分ごとの有効期限。`prefix` は `  1@` の部分。
     Deadline {
@@ -89,6 +88,7 @@ pub(super) enum TuiResetLine {
 }
 
 /// TUI では期限を付与分ごとの行に分け、狭い端末でも切れないようにする。
+/// 表示する種類が無ければ空を返す。
 pub(super) fn format_resets_tui(
     resets: &[ManualResetOut],
     now: DateTime<Utc>,
@@ -108,23 +108,18 @@ pub(super) fn format_resets_tui(
             }
         }
     }
-    if lines.is_empty() {
-        lines.push(TuiResetLine::Summary("0".into()));
-    }
     lines
 }
 
 /// statusline は種類ごとの残回数と、行全体で最も近い有効期限だけを表示する。
+/// 表示する種類が無ければ None を返し、`R:` ごと省く。
 pub(super) fn format_resets_compact(
     resets: &[ManualResetOut],
     now: DateTime<Utc>,
-) -> CompactResets {
+) -> Option<CompactResets> {
     let groups = summarize(resets, now);
     if groups.is_empty() {
-        return CompactResets {
-            counts: "0".into(),
-            deadline: None,
-        };
+        return None;
     }
     let counts = groups
         .iter()
@@ -150,7 +145,7 @@ pub(super) fn format_resets_compact(
             text: format_deadline(expiry, now),
         })
     };
-    CompactResets { counts, deadline }
+    Some(CompactResets { counts, deadline })
 }
 
 fn format_deadline(expiry: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
@@ -175,18 +170,13 @@ fn summarize(resets: &[ManualResetOut], now: DateTime<Utc>) -> Vec<ResetGroup> {
         ResetKind::Weekly,
         ResetKind::Other,
     ] {
-        let entries: Vec<_> = resets.iter().filter(|r| r.kind == kind).collect();
-        if entries.is_empty() {
-            continue;
-        }
         for paused in [false, true] {
-            let entries: Vec<_> = entries.iter().filter(|r| r.paused == paused).collect();
-            if paused && entries.is_empty() {
-                continue;
-            }
             let mut total = Some(0_u64);
             let mut deadlines = BTreeMap::<Option<DateTime<Utc>>, u64>::new();
-            for reset in entries {
+            for reset in resets
+                .iter()
+                .filter(|r| r.kind == kind && r.paused == paused)
+            {
                 let expiry = reset.expires_at.as_deref().and_then(parse_utc);
                 // JSON cache を読むたびに判定し、キャッシュ更新前でも失効分を数えない。
                 if expiry.is_some_and(|end| end <= now) {
@@ -200,7 +190,8 @@ fn summarize(resets: &[ManualResetOut], now: DateTime<Utc>) -> Vec<ResetGroup> {
                     *slot = slot.saturating_add(count);
                 }
             }
-            if paused && total == Some(0) {
+            // 残りが 0 回の種類は出さない (失効しただけの付与も含む)。不明は 0 回と区別して残す。
+            if total == Some(0) {
                 continue;
             }
             groups.push(ResetGroup {
@@ -227,6 +218,41 @@ mod tests {
         }
     }
 
+    /// statusline に出す文字列。手動リセットの表示を省く行は None。
+    fn compact(resets: &[ManualResetOut], now: DateTime<Utc>) -> Option<String> {
+        format_resets_compact(resets, now).map(|resets| resets.to_string())
+    }
+
+    #[test]
+    fn nothing_is_shown_when_no_reset_remains() {
+        let now = parse_utc("2026-06-15T00:00:00Z").unwrap();
+        let mut held = reset(ResetKind::Full, Some(0), None);
+        held.paused = true;
+        // 0 回・描画の時点で失効した付与 (期限ちょうどを含む)・一時停止中の 0 回だけなら、
+        // どのレンダラーにも何も渡さない。
+        for resets in [
+            vec![],
+            vec![reset(ResetKind::Full, Some(0), None)],
+            vec![
+                reset(ResetKind::Full, Some(0), None),
+                reset(ResetKind::FiveHour, Some(0), None),
+                reset(ResetKind::Other, Some(2), Some("2026-06-15T00:00:00Z")),
+                held,
+            ],
+        ] {
+            assert_eq!(format_resets(&resets, now, false), None);
+            assert_eq!(compact(&resets, now), None);
+            assert!(format_resets_tui(&resets, now).is_empty());
+        }
+        // 0 回の種類だけを省き、残っている種類と回数が不明な種類は出す。
+        let mixed = [
+            reset(ResetKind::Full, Some(0), None),
+            reset(ResetKind::Weekly, Some(1), None),
+            reset(ResetKind::Other, None, None),
+        ];
+        assert_eq!(compact(&mixed, now).as_deref(), Some("1w 1; other ? (?)"));
+    }
+
     #[test]
     fn cache_expiry_removes_only_expired_grants_and_keeps_each_deadline() {
         let now = parse_utc("2026-06-15T00:00:00Z").unwrap();
@@ -246,12 +272,14 @@ mod tests {
                 .format("%m/%d %H:%M")
                 .to_string()
         };
+        // 残りが 0 回の 5h は出さない。
         assert_eq!(
             text,
-            format!("full 3 (1@{}, 2@{}); 5h 0", local(expiry), local(later))
+            Some(format!("full 3 (1@{}, 2@{})", local(expiry), local(later)))
         );
+        // すべて失効したら、手動リセットの表示ごと省く。
         let after = parse_utc("2026-06-21T00:00:00Z").unwrap();
-        assert_eq!(format_resets(&resets, after, true), "full 0\n5h 0");
+        assert_eq!(format_resets(&resets, after, true), None);
     }
 
     #[test]
@@ -274,7 +302,7 @@ mod tests {
             })
             .collect();
         let dated = format!("  1@{}", format_deadline(Some(soon), now));
-        assert_eq!(text, ["full 3", "  2@?", dated.as_str(), "5h 0"]);
+        assert_eq!(text, ["full 3", "  2@?", dated.as_str()]);
         // TUI が statusline と同じ規則で日時を塗れるよう、期限は日時のまま渡す (不明は None)。
         let expiries: Vec<_> = lines
             .iter()
@@ -284,10 +312,6 @@ mod tests {
             })
             .collect();
         assert_eq!(expiries, [None, Some(soon)]);
-        assert!(matches!(
-            &format_resets_tui(&[], now)[..],
-            [TuiResetLine::Summary(text)] if text == "0"
-        ));
     }
 
     #[test]
@@ -315,7 +339,10 @@ mod tests {
             reset(ResetKind::Full, None, None),
             reset(ResetKind::FiveHour, Some(2), Some("invalid")),
         ];
-        assert_eq!(format_resets(&resets, now, false), "full ?; 5h 2 (2@?)");
+        assert_eq!(
+            format_resets(&resets, now, false).as_deref(),
+            Some("full ?; 5h 2 (2@?)")
+        );
     }
 
     #[test]
@@ -328,9 +355,10 @@ mod tests {
             .unwrap()
             .with_timezone(&Local)
             .format("%m/%d %H:%M");
+        // 利用できる付与が無くても、一時停止中の付与は別に数えて出す。
         assert_eq!(
             format_resets(&[held], now, false),
-            format!("full 0; full paused 1 (1@{date})")
+            Some(format!("full paused 1 (1@{date})"))
         );
     }
 
@@ -345,14 +373,18 @@ mod tests {
             reset(ResetKind::Full, Some(9), Some("2026-06-15T00:00:00Z")),
         ];
         assert_eq!(
-            format_resets_compact(&resets, now).to_string(),
-            format!("full 3; 5h 1 ({})", format_deadline(Some(earliest), now))
+            compact(&resets, now),
+            Some(format!(
+                "full 3; 5h 1 ({})",
+                format_deadline(Some(earliest), now)
+            ))
         );
+        // 5h の付与が失効したら 5h ごと消え、期限は残った付与から選ぶ。
         let after = parse_utc("2026-06-17T00:00:00Z").unwrap();
         let next = parse_utc("2026-06-18T04:00:00Z").unwrap();
         assert_eq!(
-            format_resets_compact(&resets, after).to_string(),
-            format!("full 3; 5h 0 ({})", format_deadline(Some(next), after))
+            compact(&resets, after),
+            Some(format!("full 3 ({})", format_deadline(Some(next), after)))
         );
     }
 
@@ -366,21 +398,19 @@ mod tests {
             reset(ResetKind::FiveHour, None, None),
         ];
         assert_eq!(
-            format_resets_compact(&resets, now).to_string(),
-            format!("full 2; 5h ? ({})", format_deadline(Some(expiry), now))
+            compact(&resets, now),
+            Some(format!(
+                "full 2; 5h ? ({})",
+                format_deadline(Some(expiry), now)
+            ))
         );
         assert_eq!(
-            format_resets_compact(&[reset(ResetKind::Full, Some(2), Some("invalid"))], now)
-                .to_string(),
-            "full 2 (?)"
+            compact(&[reset(ResetKind::Full, Some(2), Some("invalid"))], now).as_deref(),
+            Some("full 2 (?)")
         );
         assert_eq!(
-            format_resets_compact(&[reset(ResetKind::Full, Some(0), None)], now).to_string(),
-            "full 0"
-        );
-        assert_eq!(
-            format_resets_compact(&[reset(ResetKind::Full, None, None)], now).to_string(),
-            "full ?"
+            compact(&[reset(ResetKind::Full, None, None)], now).as_deref(),
+            Some("full ?")
         );
     }
 
@@ -393,23 +423,22 @@ mod tests {
         held.paused = true;
         let available = reset(ResetKind::FiveHour, Some(2), Some("2026-06-20T04:00:00Z"));
         assert_eq!(
-            format_resets_compact(&[held.clone(), available], now).to_string(),
-            format!(
-                "full 0; full paused 1; 5h 2 ({})",
+            compact(&[held.clone(), available], now),
+            Some(format!(
+                "full paused 1; 5h 2 ({})",
                 format_deadline(Some(expiry), now)
-            )
+            ))
         );
         assert_eq!(
-            format_resets_compact(&[held.clone()], now).to_string(),
-            format!(
-                "full 0; full paused 1 ({})",
+            compact(&[held.clone()], now),
+            Some(format!(
+                "full paused 1 ({})",
                 format_deadline(Some(held_expiry), now)
-            )
+            ))
         );
         assert_eq!(
-            format_resets_compact(&[held, reset(ResetKind::FiveHour, Some(1), None)], now)
-                .to_string(),
-            "full 0; full paused 1; 5h 1 (?)"
+            compact(&[held, reset(ResetKind::FiveHour, Some(1), None)], now).as_deref(),
+            Some("full paused 1; 5h 1 (?)")
         );
     }
 }
