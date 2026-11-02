@@ -316,13 +316,9 @@ fn window_seg(
                 Some(_) => "now".to_string(),
                 None => "--".to_string(),
             };
-            // 残り時間・リセット済み ("now")・時刻不明 ("--") のどれも、色は残り秒数から
-            // palette::reset_countdown が決める。
-            s += &paint(
-                opts.color,
-                palette::reset_countdown(rem, th),
-                &format!("{countdown:<6}"),
-            );
+            // 残り時間とリセット日時は、同じ残り秒数としきい値から決めた色で描く。
+            let reset_paint = palette::reset_countdown(rem, th);
+            s += &paint(opts.color, reset_paint, &format!("{countdown:<6}"));
             // --reset-at: 長期枠の残り時間の後ろに (MM/DD 曜 HH:MM) を local 時刻で併記する。
             // 短期枠は呼び出し元で show_reset_at=false 固定。リセット済みの枠には付けない。
             if show_reset_at
@@ -331,7 +327,7 @@ fn window_seg(
             {
                 s += &paint(
                     opts.color,
-                    MUTED,
+                    reset_paint,
                     &format!(" ({})", format_reset_at(r.with_timezone(&Local), false)),
                 );
                 reset_at_shown = true;
@@ -868,12 +864,12 @@ mod tests {
                 "\x1b[38;5;178m██████████\x1b[0m\x1b[38;5;242m░░░░░░\x1b[0m",
                 " \x1b[38;5;178m 62%\x1b[0m",
                 "  \x1b[38;5;35m4h40m \x1b[0m",
-                // 1w: 85% は数字だけ太字。残り 2d05h は黄、--reset-at の日時は MUTED。
+                // 1w: 85% は数字だけ太字。残り 2d05h と --reset-at の日時は同じ黄。
                 "   \x1b[38;5;245m1w \x1b[0m",
                 "\x1b[38;5;208m██████████████\x1b[0m\x1b[38;5;242m░░\x1b[0m",
                 " \x1b[1;38;5;208m 85%\x1b[0m",
                 "  \x1b[38;5;178m2d05h \x1b[0m",
-                "\x1b[38;5;242m ({weekly_day} {weekday} {weekly_time})\x1b[0m",
+                "\x1b[38;5;178m ({weekly_day} {weekday} {weekly_time})\x1b[0m",
                 "\x1b[38;5;196m  24h LIMIT test-model (3h ago)\x1b[0m",
                 // 手動リセット: 件数と括弧は LABEL、7 日未満で切れる期限だけ赤。0 回の 5h は出さない。
                 "\x1b[38;5;73m  ↻ \x1b[0m\x1b[38;5;245m1\x1b[0m",

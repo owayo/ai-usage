@@ -502,9 +502,9 @@ fn window_spans(
         Span::styled(reset_label, label),
         Span::styled(countdown, reset_style),
     ];
-    // リセットの日時は statusline の `--reset-at` と同じく MUTED。
+    // リセットの日時は statusline の `--reset-at` と同じく、残り時間と同じ色にする。
     if !reset_at.is_empty() {
-        spans.push(Span::styled(reset_at, muted));
+        spans.push(Span::styled(reset_at, reset_style));
     }
     spans
 }
@@ -694,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_countdown_uses_period_colors_and_the_date_is_muted() {
+    fn reset_countdown_and_date_use_the_same_period_colors() {
         let now = parse_utc("2026-10-11T00:00:00Z").unwrap();
         for (kind, thresholds) in [
             (WindowKind::FiveHour, [3600, 7200, 10800]),
@@ -726,11 +726,11 @@ mod tests {
                         Some(Color::Indexed(index)),
                         "{kind:?}, {seconds}s, short={short}"
                     );
-                    // 日時は statusline の `--reset-at` と同じく、残り時間に関係なく MUTED。
+                    // 日時は statusline の `--reset-at` と同じく、残り時間と同じ色。
                     let date = format_reset_at(reset.with_timezone(&Local), false);
                     let last = spans.last().unwrap();
                     assert_eq!(last.content, format!(" ({date})"));
-                    assert_eq!(last.style.fg, Some(Color::Indexed(242)));
+                    assert_eq!(last.style, countdown(&spans).style);
                     assert_eq!(spans[2].style.fg, Some(Color::Indexed(35)));
                 }
             }
@@ -867,7 +867,7 @@ mod tests {
             assert_eq!(bold(number), strong, "{percent}");
             assert_eq!(fg(reset_label), Some(Color::Indexed(245)));
             assert_eq!(fg(countdown), Some(Color::Indexed(178)));
-            assert_eq!(fg(date), Some(Color::Indexed(242)));
+            assert_eq!(fg(date), Some(Color::Indexed(178)));
             // 太字は数字だけ。枠のラベルやバーには付けない。
             for span in [label, filled, empty, reset_label, countdown, date] {
                 assert!(!bold(span), "{span:?}");

@@ -44,7 +44,7 @@ impl Paint {
 /// 枠のラベル、アカウント名、プラン、手動リセットの件数など、値に添える文字。
 /// ディスク欄のパージ可能の部分 (`▒`) にも使う。
 pub(super) const LABEL: Paint = Paint::indexed(245);
-/// 値の無いところ (バーの消灯部や空き、`--`)、利用枠のリセット日時、値の古さ。
+/// 値の無いところ (バーの消灯部や空き、`--`) と値の古さ。
 pub(super) const MUTED: Paint = Paint::indexed(242);
 /// 24 時間枠の制限、7 日未満で切れる手動リセットの期限、取得の失敗。
 pub(super) const ALERT: Paint = Paint::indexed(196);
@@ -105,7 +105,7 @@ impl Level {
     }
 }
 
-/// リセットまでの残り時間の色。`thresholds` は周期ごとの境界 (秒、昇順) で、境界ちょうどは
+/// リセットまでの残り時間と日時の色。`thresholds` は周期ごとの境界 (秒、昇順) で、境界ちょうどは
 /// 余裕のある側に入る。日時が不明なら MUTED、期限を過ぎていれば Normal にする。
 pub(super) fn reset_countdown(seconds: Option<i64>, thresholds: [i64; 3]) -> Paint {
     let level = match seconds {

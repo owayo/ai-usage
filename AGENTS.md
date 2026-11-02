@@ -232,6 +232,7 @@ get the same check against `--disk` in `render/tui/disk.rs`.
 - Grok の認証情報は小数秒を捨てず作成時刻を比較する。
 - stdout へは `render::write_stdout` で書き、`print!` / `println!` を使わない。読み手が先に閉じた pipe (`| head`) は panic させず、`main` で終了コード 0 の正常終了にする。
 - `--reset-at` のときは、長期枠の日時を出せない行 (時刻不明・リセット済み・長期枠なし・短期枠のみ) にも同じ17桁を空け、後ろに続く `↻` の列を揃える。
+- TUI と statusline の利用枠のリセット日時は、括弧も含めて直前の残り時間と同じ色にする。同じ残り秒数と周期のしきい値から求めた `Paint` / `Style` を再利用し、日時だけ別に色を判定しない。
 - TUI と statusline に共通する要素の色は、`render/palette.rs` の同じ関数で決める。各レンダラーは `Paint` の変換 (statusline は ANSI SGR、TUI は ratatui の `Style`) だけを持ち、色番号を描画側に直接書かない。
 - statusline の出力はバイト単位で保つ。区間の区切りと末尾の `\x1b[0m` を変えず、同じ色の区間も結合しない。
 - TUI では親の `Line` / `Paragraph` に太字や色を置かず、Span ごとに付ける。親に置いた装飾は、色を付けない Span にも引き継がれる。`--no-color` / `NO_COLOR` / `TERM=dumb` では色も太字も付けない。
