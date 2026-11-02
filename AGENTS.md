@@ -235,8 +235,9 @@ get the same check against `--disk` in `render/tui/disk.rs`.
 - TUI と statusline に共通する要素の色は、`render/palette.rs` の同じ関数で決める。各レンダラーは `Paint` の変換 (statusline は ANSI SGR、TUI は ratatui の `Style`) だけを持ち、色番号を描画側に直接書かない。
 - statusline の出力はバイト単位で保つ。区間の区切りと末尾の `\x1b[0m` を変えず、同じ色の区間も結合しない。
 - TUI では親の `Line` / `Paragraph` に太字や色を置かず、Span ごとに付ける。親に置いた装飾は、色を付けない Span にも引き継がれる。`--no-color` / `NO_COLOR` / `TERM=dumb` では色も太字も付けない。
-- 手動リセットは、残りが0回の種類を表示しない。1回も残っていない行には statusline の `↻` も TUI の `Resets:` 行も出さず、テーブルのセルは `—` にする。テーブルの列は、出すものがある行が1つも無ければ省く。この規則は `render/manual_resets.rs` の `summarize` の1か所に置き、取得できなかった回数 (`?`) は0回と区別して出す。
+- 手動リセットは、残りが0回の種類を表示しない。1回も残っていない行には statusline の `↻` も TUI の `↻` 行も出さず、テーブルのセルは `—` にする。テーブルの列は、出すものがある行が1つも無ければ省く。この規則は `render/manual_resets.rs` の `summarize` の1か所に置き、取得できなかった回数 (`?`) は0回と区別して出す。
 - Claude の取得側で、付与が無いときに0回を補うのは `full` だけにする (`--json` に確定の0回を残すため)。`5h` は、5時間枠だけを回復する付与が届いたときだけ入れる。
+- TUI と statusline の利用枠のリセット日時は、`render/reset.rs` の同じ関数で日本語の曜日を付ける。TUI は別年の日時に年も残す。手動リセットは両方で `full` を省き、共通パレットのティールの `↻` を使う。`5h` / `1w` などの種類と `paused` は省かず、TUI は付与ごとの期限を下の行に残し、`1@12/01 火 04:49` のように括弧なしの曜日を付ける。
 - 手動リセットの期限の日時は、statusline と TUI のどちらも残り7日未満だけ赤にし、ちょうど7日は通常色のままにする。TUI は期限をすべて並べるため、日時ごとに判定する。
 - TUI は現在時刻を1回の描画につき1度だけ取り、並べ替え (`--sort weekly-reset`) と全アカウントの残り時間・期限の色に同じ時刻を使う。行ごとに取り直すと、期限の境界で行によって判定が食い違う。
 - TUI のディスク欄は、描画と切り離した `std::thread` の切り離しスレッドで読む。パージ可能な量の問い合わせは1回40〜120msかかり、戻らないこともある。`tokio::task::spawn_blocking` は終了時に作業の完了を待つため使わない。2秒を過ぎた取得は `no response` の表示に切り替えるだけで打ち切らず、同じボリュームの次の取得は前回が戻ってから30秒後に始める。
@@ -342,7 +343,7 @@ fold an unknown count into `0` — `0` is a confirmed "no resets left".
 - **Rendering** (`render/manual_resets.rs`) re-checks expiry against `now` on
   every draw, so an old cache never shows expired grants. `summarize` drops every
   kind whose count is a confirmed `0`, for all renderers: a row with nothing left
-  gets no statusline `↻`, no TUI `Resets:` line, and `—` in the table, whose
+  gets no statusline `↻`, no TUI `↻` line, and `—` in the table, whose
   column appears only when some row has something to show. Unknown counts still
   read `?`. The table lists every
   expiry (`full 2 (1@10/23 05:27, 1@10/30 03:57)`); the statusline appends only

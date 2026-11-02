@@ -1,8 +1,22 @@
-//! statusline と TUI で共有する、リセットまでの残り時間の警告のしきい値。
+//! statusline と TUI で共有する、リセット日時の表示と残り時間の警告のしきい値。
 //! 色そのものは `palette::reset_countdown` が決める。
+
+use chrono::{DateTime, Datelike, Local};
 
 use crate::model::{Provider, WindowKind};
 use crate::report::WindowOut;
+
+/// ローカル日付に対応する日本語の曜日を付ける。TUI は別年の日時だけ年も出す。
+pub(super) fn format_reset_at(local: DateTime<Local>, show_year: bool) -> String {
+    let date_pattern = if show_year { "%Y/%m/%d" } else { "%m/%d" };
+    let weekday =
+        ["月", "火", "水", "木", "金", "土", "日"][local.weekday().num_days_from_monday() as usize];
+    format!(
+        "{} {weekday} {}",
+        local.format(date_pattern),
+        local.format("%H:%M")
+    )
+}
 
 pub(super) const FIVE_H_TH: [i64; 3] = [3600, 7200, 10800];
 const DAILY_TH: [i64; 3] = [4 * 3600, 8 * 3600, 12 * 3600];

@@ -50,7 +50,7 @@ pub(super) const MUTED: Paint = Paint::indexed(242);
 pub(super) const ALERT: Paint = Paint::indexed(196);
 /// statusline で、このセッションのアカウント名を示す。
 pub(super) const ACTIVE: Paint = ALERT.bold();
-/// statusline の手動リセットの印。変更系アイコンに合わせたティール。
+/// statusline と TUI の手動リセットの印。変更系アイコンに合わせたティール。
 pub(super) const MANUAL_RESET_MARKER: Paint = Paint::indexed(73);
 const WHITE: Paint = Paint::rgb((255, 255, 255));
 

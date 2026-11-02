@@ -15,10 +15,11 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use super::manual_resets::{TuiResetLine, format_resets_tui};
 use super::palette::{self, Fg, Level, Paint};
-use super::reset::{FIVE_H_TH, legacy_long_window_thresholds, window_thresholds};
+use super::reset::{FIVE_H_TH, format_reset_at, legacy_long_window_thresholds, window_thresholds};
 use super::sort::sorted_refs;
 use super::{display_name, limit_observation_age, parse_utc};
 use crate::SortKey;
@@ -399,11 +400,11 @@ pub(super) fn account_lines(
     if let Some(resets) = &account.manual_resets {
         for (index, line) in format_resets_tui(resets, now).into_iter().enumerate() {
             let lead = if index == 0 {
-                "  Resets: "
+                Span::styled("  ↻ ", style(color, palette::MANUAL_RESET_MARKER))
             } else {
-                "          "
+                Span::raw("    ")
             };
-            let mut spans = vec![Span::styled(lead, label)];
+            let mut spans = vec![lead];
             match line {
                 TuiResetLine::Summary(text) => spans.push(Span::styled(text, label)),
                 // 期限の日時だけを、statusline と同じく 7 日未満で ALERT にする。
@@ -439,13 +440,6 @@ fn window_spans(
         .used_percent
         .filter(|percent| percent.is_finite())
         .map(|percent| percent.clamp(0.0, 100.0));
-    let filled = percent.map_or(0, |percent| {
-        if percent > 0.0 {
-            ((percent * width as f64 / 100.0).ceil() as usize).min(width)
-        } else {
-            0
-        }
-    });
     // 点灯部と数字は使用率の段階色、消灯部と不明な使用率は statusline と同じ MUTED。
     let level = percent.map(Level::usage);
     let muted = style(color, palette::MUTED);
@@ -466,19 +460,34 @@ fn window_spans(
     let reset_at = reset
         .map(|time| {
             let local = time.with_timezone(&Local);
-            let pattern = if local.year() == now.with_timezone(&Local).year() {
-                "%m/%d %H:%M"
-            } else {
-                "%Y/%m/%d %H:%M"
-            };
-            format!(" ({})", local.format(pattern))
+            let show_year = local.year() != now.with_timezone(&Local).year();
+            format!(" ({})", format_reset_at(local, show_year))
         })
         .unwrap_or_default();
+    let period_text = format!("  {:<2}", kind_label(window, provider, short));
+    let percent_text = percent.map_or(" --%".to_string(), |p| format!("{p:>3.0}%"));
+    let countdown = reset_text(window, now);
+    // 枠線を除いた幅に、曜日入りの日時を残す。足りなければ reset の文字を省き、バーを縮める。
+    let available = usize::from(area_width.saturating_sub(2));
+    let fixed_width =
+        period_text.width() + 2 + 2 + percent_text.width() + countdown.width() + reset_at.width();
+    let reset_label = if fixed_width + width + "  reset ".width() <= available {
+        "  reset "
+    } else {
+        "  "
+    };
+    let width = width
+        .min(available.saturating_sub(fixed_width + reset_label.width()))
+        .max(1);
+    let filled = percent.map_or(0, |percent| {
+        if percent > 0.0 {
+            ((percent * width as f64 / 100.0).ceil() as usize).min(width)
+        } else {
+            0
+        }
+    });
     let mut spans = vec![
-        Span::styled(
-            format!("  {:<2}", kind_label(window, provider, short)),
-            label,
-        ),
+        Span::styled(period_text, label),
         Span::raw("  "),
         Span::styled(
             "█".repeat(filled),
@@ -487,11 +496,11 @@ fn window_spans(
         Span::styled("░".repeat(width - filled), muted),
         Span::raw("  "),
         Span::styled(
-            percent.map_or(" --%".to_string(), |p| format!("{p:>3.0}%")),
+            percent_text,
             level.map_or(muted, |level| style(color, level.text())),
         ),
-        Span::styled("  reset ", label),
-        Span::styled(reset_text(window, now), reset_style),
+        Span::styled(reset_label, label),
+        Span::styled(countdown, reset_style),
     ];
     // リセットの日時は statusline の `--reset-at` と同じく MUTED。
     if !reset_at.is_empty() {
@@ -536,6 +545,7 @@ fn reset_text(window: &WindowOut, now: DateTime<Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -657,9 +667,8 @@ mod tests {
             .as_deref()
             .and_then(parse_utc)
             .unwrap()
-            .with_timezone(&Local)
-            .format("%m/%d %H:%M")
-            .to_string();
+            .with_timezone(&Local);
+        let absolute = format_reset_at(absolute, false);
         let line = Line::from(window_spans(
             &window,
             Provider::Grok,
@@ -718,12 +727,38 @@ mod tests {
                         "{kind:?}, {seconds}s, short={short}"
                     );
                     // 日時は statusline の `--reset-at` と同じく、残り時間に関係なく MUTED。
-                    let date = reset.with_timezone(&Local).format("%m/%d %H:%M");
+                    let date = format_reset_at(reset.with_timezone(&Local), false);
                     let last = spans.last().unwrap();
                     assert_eq!(last.content, format!(" ({date})"));
                     assert_eq!(last.style.fg, Some(Color::Indexed(242)));
                     assert_eq!(spans[2].style.fg, Some(Color::Indexed(35)));
                 }
+            }
+        }
+        // ローカル日付の曜日を出し、別年のリセットには年も残す。
+        let now = Local
+            .with_ymd_and_hms(2026, 11, 2, 0, 0, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&Utc);
+        for (year, expected) in [
+            (2026, " (11/03 火 00:10)"),
+            (2027, " (2027/11/03 水 00:10)"),
+        ] {
+            let reset = Local
+                .with_ymd_and_hms(year, 11, 3, 0, 10, 0)
+                .single()
+                .unwrap();
+            let window = WindowOut {
+                kind: Some(WindowKind::Weekly),
+                used_percent: Some(12.0),
+                resets_at: Some(reset.to_rfc3339()),
+                resets_in_seconds: None,
+            };
+            for area_width in [48, 80] {
+                let spans = window_spans(&window, Provider::Claude, false, true, area_width, now);
+                assert_eq!(spans.last().unwrap().content, expected);
+                assert!(Line::from(spans).width() <= usize::from(area_width - 2));
             }
         }
     }
@@ -883,35 +918,25 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        // 残りが 0 回の付与と、描画の時点で失効した付与だけなら `Resets:` 行を出さない。
+        // 残りが 0 回の付与と、描画の時点で失効した付与だけなら `↻` 行を出さない。
         let spent = text(serde_json::json!({"manual_resets": [
             {"kind":"full","remaining":0,"expires_at":null},
             {"kind":"full","remaining":2,"expires_at":now.to_rfc3339()}
         ]}));
-        assert!(
-            !spent.iter().any(|line| line.contains("Resets:")),
-            "{spent:#?}"
-        );
+        assert!(!spent.iter().any(|line| line.contains('↻')), "{spent:#?}");
         // 取得できなかった回数は 0 回と区別して出す。
         let unknown = text(serde_json::json!({"manual_resets": [
             {"kind":"full","remaining":null,"expires_at":null}
         ]}));
-        assert!(
-            unknown.iter().any(|line| line == "  Resets: full ?"),
-            "{unknown:#?}"
-        );
+        assert!(unknown.iter().any(|line| line == "  ↻ ?"), "{unknown:#?}");
     }
 
     #[test]
     fn account_lines_use_the_statusline_colors() {
         let now = parse_utc("2026-10-11T00:00:00Z").unwrap();
         let at = |delta: chrono::Duration| (now + delta).to_rfc3339();
-        let date = |delta: chrono::Duration| {
-            (now + delta)
-                .with_timezone(&Local)
-                .format("%m/%d %H:%M")
-                .to_string()
-        };
+        let date =
+            |delta: chrono::Duration| format_reset_at((now + delta).with_timezone(&Local), false);
         let claude = account(serde_json::json!({
             "label": "home", "plan": "Max",
             "weekly": {"kind":"weekly","used_percent":85.0,"resets_at":at(chrono::Duration::days(2)),"resets_in_seconds":null},
@@ -927,9 +952,9 @@ mod tests {
         assert_eq!(fg("Claude"), Some(Color::Rgb(217, 119, 87)));
         assert_eq!(fg("  home"), Some(Color::Indexed(245)));
         assert_eq!(fg("  · Max"), Some(Color::Indexed(245)));
-        // 手動リセット: 件数と `1@` は LABEL、7 日未満で切れる日時だけ ALERT。
-        assert_eq!(fg("  Resets: "), Some(Color::Indexed(245)));
-        assert_eq!(fg("full 2"), Some(Color::Indexed(245)));
+        // 手動リセット: 印はティール、件数と `1@` は LABEL、7 日未満で切れる日時だけ ALERT。
+        assert_eq!(fg("  ↻ "), Some(Color::Indexed(73)));
+        assert_eq!(fg("2"), Some(Color::Indexed(245)));
         assert_eq!(fg("  1@"), Some(Color::Indexed(245)));
         // 残りが 0 回の 5h は出さない。
         assert!(
@@ -1033,9 +1058,10 @@ mod tests {
         let now = Utc::now();
         let at = |delta: chrono::Duration| (now + delta).to_rfc3339();
         let date = |delta: chrono::Duration| {
+            // cell_at は1セルの文字を探すため、日時の ASCII 部分で色を確かめる。
             (now + delta)
                 .with_timezone(&Local)
-                .format("%m/%d %H:%M")
+                .format("%m/%d")
                 .to_string()
         };
         let report = |percent: f64, expiry: chrono::Duration| Report {
@@ -1066,6 +1092,9 @@ mod tests {
         let heading = cell_at(buffer, "Claude");
         assert_eq!(heading.fg, Color::Rgb(217, 119, 87));
         assert!(!heading.modifier.contains(Modifier::BOLD));
+        let marker = cell_at(buffer, "↻");
+        assert_eq!(marker.fg, Color::Indexed(73));
+        assert!(!marker.modifier.contains(Modifier::BOLD));
         let deadline = date(chrono::Duration::days(1));
         assert_eq!(cell_at(buffer, &deadline).fg, Color::Indexed(196));
 
@@ -1198,7 +1227,7 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(screen.contains("Resets: full 2"), "{screen}");
+        assert!(screen.contains("↻ 2"), "{screen}");
         assert_eq!(screen.matches("1@").count(), 2, "{screen}");
         assert!(screen.contains("24h  LIMIT HIT"), "{screen}");
         assert!(screen.contains("grok-test · seen"), "{screen}");

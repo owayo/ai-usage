@@ -140,9 +140,11 @@ fn shared_text_has_the_same_color_in_the_statusline_and_the_tui() {
     }));
     let (statusline, tui) = render_both(&claude, now);
     let weekly_date = local(weekly_reset);
-    // statusline は日付と時刻の間に曜日が入るため、共通部分をそれぞれ比べる。
+    // 日付と時刻に加え、両方に共通する手動リセットの印も比べる。
     let (weekly_day, weekly_time) = weekly_date.split_once(' ').unwrap();
     let manual_date = local(manual_expiry);
+    let tui_manual_date =
+        super::reset::format_reset_at((now + manual_expiry).with_timezone(&Local), false);
     for (text, nth) in [
         ("Claude", 0),
         ("home", 0),
@@ -157,7 +159,6 @@ fn shared_text_has_the_same_color_in_the_statusline_and_the_tui() {
         (" 85%", 0),
         (weekly_day, 0),
         (weekly_time, 0),
-        (manual_date.as_str(), 0),
     ] {
         assert_eq!(
             color_of(&statusline, text, nth),
@@ -165,13 +166,19 @@ fn shared_text_has_the_same_color_in_the_statusline_and_the_tui() {
             "{text:?} ({nth})"
         );
     }
-    // 完全リセットの種類名は statusline で省くが、件数の色は同じ。
+    // 完全リセットの種類名は両方で省き、件数の色を比べる。
     let reset_count = statusline
         .iter()
         .find(|segment| segment.text == "1")
         .unwrap();
-    assert_eq!(reset_count.sgr, color_of(&tui, "full 1", 0));
+    let tui_count = tui.iter().find(|segment| segment.text == "1").unwrap();
+    assert_eq!(reset_count.sgr, tui_count.sgr);
     assert_eq!(color_of(&statusline, "↻", 0).as_deref(), Some("38;5;73"));
+    assert_eq!(color_of(&statusline, "↻", 0), color_of(&tui, "↻", 0));
+    assert_eq!(
+        color_of(&statusline, &manual_date, 0),
+        color_of(&tui, &tui_manual_date, 0)
+    );
     // 残り時間は表記が違う (`40m` / `40m`、`2d05h` / `2d 5h`) ので、それぞれの表記で比べる。
     assert_eq!(color_of(&statusline, "40m", 0), color_of(&tui, "40m", 0));
     assert_eq!(
@@ -180,7 +187,10 @@ fn shared_text_has_the_same_color_in_the_statusline_and_the_tui() {
     );
 
     // 比べた色が、どちらも色なしで一致しているだけではないことを確かめる。
-    assert_eq!(color_of(&tui, &manual_date, 0).as_deref(), Some("38;5;196"));
+    assert_eq!(
+        color_of(&tui, &tui_manual_date, 0).as_deref(),
+        Some("38;5;196")
+    );
     assert_eq!(color_of(&tui, " 85%", 0).as_deref(), Some("1;38;5;208"));
 
     // Codex の白い印、使用率が不明な枠、24 時間枠の制限。

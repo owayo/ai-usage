@@ -1,12 +1,12 @@
 //! compact / colored statusline 出力(1 account 1 行)。
 
-use chrono::{DateTime, Datelike, Local, Utc};
+use chrono::{DateTime, Local, Utc};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::manual_resets::format_resets_compact;
 use super::palette::{self, ACTIVE, ALERT, Fg, LABEL, Level, MUTED, Paint};
-use super::reset::{FIVE_H_TH, legacy_long_window_thresholds, window_thresholds};
+use super::reset::{FIVE_H_TH, format_reset_at, legacy_long_window_thresholds, window_thresholds};
 use super::sort::{sorted_refs, statusline_default_cmp};
 use super::{
     ActiveTarget, display_name, legacy_long_window_label, limit_observation_age, parse_utc,
@@ -329,17 +329,10 @@ fn window_seg(
                 && rem.is_some_and(|sec| sec > 0)
                 && let Some(r) = reset
             {
-                let local = r.with_timezone(&Local);
-                let weekday = ["月", "火", "水", "木", "金", "土", "日"]
-                    [local.weekday().num_days_from_monday() as usize];
                 s += &paint(
                     opts.color,
                     MUTED,
-                    &format!(
-                        " ({} {weekday} {})",
-                        local.format("%m/%d"),
-                        local.format("%H:%M")
-                    ),
+                    &format!(" ({})", format_reset_at(r.with_timezone(&Local), false)),
                 );
                 reset_at_shown = true;
             }
@@ -408,7 +401,7 @@ fn compact_dur(sec: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
+    use chrono::{Datelike, TimeZone};
 
     use super::super::reset::{MONTHLY_TH, WEEK_TH};
     use super::*;

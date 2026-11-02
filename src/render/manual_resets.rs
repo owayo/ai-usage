@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Datelike, Local, Utc};
 
 use super::parse_utc;
+use super::reset::format_reset_at;
 use crate::model::ResetKind;
 use crate::report::ManualResetOut;
 
@@ -78,7 +79,7 @@ pub(super) fn format_resets(
 /// TUI の手動リセットの 1 行。期限の日時は statusline と同じ規則で色を付けるため、
 /// 前に置く文字とは分けて持つ。
 pub(super) enum TuiResetLine {
-    /// 種類ごとの残回数 (`full 1`、`5h ?`、`full paused 1`)。
+    /// 種類ごとの残回数 (`1`、`5h ?`、`paused 1`)。完全リセットの種類名は省く。
     Summary(String),
     /// 付与分ごとの有効期限。`prefix` は `  1@` の部分。
     Deadline {
@@ -95,14 +96,14 @@ pub(super) fn format_resets_tui(
 ) -> Vec<TuiResetLine> {
     let mut lines = Vec::new();
     for group in summarize(resets, now) {
-        lines.push(TuiResetLine::Summary(group.label_count(false)));
+        lines.push(TuiResetLine::Summary(group.label_count(true)));
         if group.total.is_some_and(|count| count > 0) {
             for (expiry, count) in group.deadlines {
                 lines.push(TuiResetLine::Deadline {
                     prefix: format!("  {count}@"),
                     deadline: ResetDeadline {
                         expires_at: expiry,
-                        text: format_deadline(expiry, now),
+                        text: format_tui_deadline(expiry, now),
                     },
                 });
             }
@@ -163,6 +164,16 @@ fn format_deadline(expiry: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String 
         .unwrap_or_else(|| "?".into())
 }
 
+fn format_tui_deadline(expiry: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
+    expiry
+        .map(|expiry| {
+            let local = expiry.with_timezone(&Local);
+            let show_year = local.year() != now.with_timezone(&Local).year();
+            format_reset_at(local, show_year)
+        })
+        .unwrap_or_else(|| "?".into())
+}
+
 fn summarize(resets: &[ManualResetOut], now: DateTime<Utc>) -> Vec<ResetGroup> {
     let mut groups = Vec::new();
     for kind in [
@@ -209,6 +220,7 @@ fn summarize(resets: &[ManualResetOut], now: DateTime<Utc>) -> Vec<ResetGroup> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     fn reset(kind: ResetKind, remaining: Option<u64>, expires_at: Option<&str>) -> ManualResetOut {
         ManualResetOut {
@@ -302,8 +314,8 @@ mod tests {
                 }
             })
             .collect();
-        let dated = format!("  1@{}", format_deadline(Some(soon), now));
-        assert_eq!(text, ["full 3", "  2@?", dated.as_str()]);
+        let dated = format!("  1@{}", format_tui_deadline(Some(soon), now));
+        assert_eq!(text, ["3", "  2@?", dated.as_str()]);
         // TUI が statusline と同じ規則で日時を塗れるよう、期限は日時のまま渡す (不明は None)。
         let expiries: Vec<_> = lines
             .iter()
@@ -313,6 +325,15 @@ mod tests {
             })
             .collect();
         assert_eq!(expiries, [None, Some(soon)]);
+        for (year, expected) in [(2026, "12/01 火 04:49"), (2027, "2027/12/01 水 04:49")] {
+            let expiry = Local
+                .with_ymd_and_hms(year, 12, 1, 4, 49, 0)
+                .single()
+                .unwrap()
+                .with_timezone(&Utc);
+            assert_eq!(format_tui_deadline(Some(expiry), now), expected);
+        }
+        assert_eq!(format_tui_deadline(None, now), "?");
     }
 
     #[test]
