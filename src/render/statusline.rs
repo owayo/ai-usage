@@ -92,7 +92,8 @@ pub(super) fn render_row(
         && let Some(resets) = &a.manual_resets
         && let Some(resets) = format_resets_compact(resets, now)
     {
-        rendered += &paint(opts.color, LABEL, &format!("  ↻ {}", resets.counts));
+        rendered += &paint(opts.color, palette::MANUAL_RESET_MARKER, "  ↻ ");
+        rendered += &paint(opts.color, LABEL, &resets.counts);
         if let Some(deadline) = resets.deadline {
             rendered += &paint(opts.color, LABEL, " (");
             rendered += &paint(
@@ -514,7 +515,10 @@ mod tests {
                     "{suffix:?}"
                 );
                 assert!(suffix.ends_with("\x1b[38;5;245m)\x1b[0m"), "{suffix:?}");
-                assert!(suffix.starts_with("1\x1b[0m"), "{suffix:?}");
+                assert!(
+                    suffix.starts_with("\x1b[0m\x1b[38;5;245m1\x1b[0m"),
+                    "{suffix:?}"
+                );
             }
         }
     }
@@ -879,7 +883,7 @@ mod tests {
                 "\x1b[38;5;242m ({weekly_day} {weekday} {weekly_time})\x1b[0m",
                 "\x1b[38;5;196m  24h LIMIT test-model (3h ago)\x1b[0m",
                 // 手動リセット: 件数と括弧は LABEL、7 日未満で切れる期限だけ赤。0 回の 5h は出さない。
-                "\x1b[38;5;245m  ↻ 1\x1b[0m",
+                "\x1b[38;5;73m  ↻ \x1b[0m\x1b[38;5;245m1\x1b[0m",
                 "\x1b[38;5;245m (\x1b[0m",
                 "\x1b[38;5;196m{reset_expiry}\x1b[0m",
                 "\x1b[38;5;245m)\x1b[0m",
@@ -930,7 +934,7 @@ mod tests {
                 " \x1b[38;5;35m  0%\x1b[0m",
                 "  \x1b[38;5;242m--    \x1b[0m",
                 // 7 日以上先の期限は LABEL のまま。同じ色が続いても区間ごとに閉じる。
-                "\x1b[38;5;245m  ↻ 1\x1b[0m",
+                "\x1b[38;5;73m  ↻ \x1b[0m\x1b[38;5;245m1\x1b[0m",
                 "\x1b[38;5;245m (\x1b[0m",
                 "\x1b[38;5;245m{reset_expiry}\x1b[0m",
                 "\x1b[38;5;245m)\x1b[0m",
@@ -1045,7 +1049,7 @@ mod tests {
                     "\x1b[38;5;35m███████\x1b[0m\x1b[38;5;242m{free}\x1b[0m",
                     " \x1b[38;5;35m 20%\x1b[0m",
                     "  \x1b[38;5;178m2h00m \x1b[0m{pad}",
-                    "\x1b[38;5;245m  ↻ 1\x1b[0m",
+                    "\x1b[38;5;73m  ↻ \x1b[0m\x1b[38;5;245m1\x1b[0m",
                     "\x1b[38;5;245m (\x1b[0m",
                     "\x1b[38;5;245m?\x1b[0m",
                     "\x1b[38;5;245m)\x1b[0m",

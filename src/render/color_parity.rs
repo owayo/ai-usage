@@ -166,7 +166,12 @@ fn shared_text_has_the_same_color_in_the_statusline_and_the_tui() {
         );
     }
     // 完全リセットの種類名は statusline で省くが、件数の色は同じ。
-    assert_eq!(color_of(&statusline, "↻ 1", 0), color_of(&tui, "full 1", 0));
+    let reset_count = statusline
+        .iter()
+        .find(|segment| segment.text == "1")
+        .unwrap();
+    assert_eq!(reset_count.sgr, color_of(&tui, "full 1", 0));
+    assert_eq!(color_of(&statusline, "↻", 0).as_deref(), Some("38;5;73"));
     // 残り時間は表記が違う (`40m` / `40m`、`2d05h` / `2d 5h`) ので、それぞれの表記で比べる。
     assert_eq!(color_of(&statusline, "40m", 0), color_of(&tui, "40m", 0));
     assert_eq!(

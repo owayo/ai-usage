@@ -50,6 +50,8 @@ pub(super) const MUTED: Paint = Paint::indexed(242);
 pub(super) const ALERT: Paint = Paint::indexed(196);
 /// statusline で、このセッションのアカウント名を示す。
 pub(super) const ACTIVE: Paint = ALERT.bold();
+/// statusline の手動リセットの印。変更系アイコンに合わせたティール。
+pub(super) const MANUAL_RESET_MARKER: Paint = Paint::indexed(73);
 const WHITE: Paint = Paint::rgb((255, 255, 255));
 
 /// 4 段階の警告色。利用枠の使用率、ディスクの使用率、リセットまでの残り時間で同じ 4 色を使う。
@@ -166,6 +168,7 @@ mod tests {
         assert_eq!(LABEL, Paint::indexed(245));
         assert_eq!(MUTED, Paint::indexed(242));
         assert_eq!(ALERT, Paint::indexed(196));
+        assert_eq!(MANUAL_RESET_MARKER, Paint::indexed(73));
         assert_eq!(
             ACTIVE,
             Paint {
