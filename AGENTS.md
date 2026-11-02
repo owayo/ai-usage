@@ -31,7 +31,7 @@ shows this Mac's disk usage at the bottom, and `--disk` prints it on its own.
 | `src/render.rs`   | Shared row resolution (display name, active highlight), JSON output, and `write_stdout`; re-exports the renderers. |
 | `src/render/disk.rs` | Disk rows shared by the TUI panel and `--disk`: bar cells, percentage, size breakdowns, and status text as `(text, Paint)` segments; the `--disk` text output and `--disk --json` (schema version 1). |
 | `src/render/sort.rs` / `src/render/table.rs` / `src/render/statusline.rs` | Row sorting (`SortableRow`), human table, compact statusline. |
-| `src/render/manual_resets.rs` | Manual-reset summaries shared by the table column, the statusline `R:` suffix, and the TUI lines (`TuiResetLine` keeps each expiry apart so the TUI can color its date). |
+| `src/render/manual_resets.rs` | Manual-reset summaries shared by the table column, the statusline `↻` suffix, and the TUI lines (`TuiResetLine` keeps each expiry apart so the TUI can color its date). |
 | `src/render/palette.rs` | Colors shared by the statusline and the TUI: `Paint` (foreground + bold), the four-step `Level` scale, `LABEL` / `MUTED` / `ALERT`, the provider marker and brand RGB (also used by the table), and the reset-countdown and manual-reset-deadline colors. The statusline converts a `Paint` to ANSI SGR (`--disk` reuses that conversion), the TUI to a ratatui `Style`. |
 | `src/render/tui.rs` / `src/render/tui/disk.rs` | TUI event loop and layout; the disk panel's placement and the bar width and text detail chosen for the terminal width. |
 | `src/lib.rs`     | CLI, config-row binding and provider resolution, concurrent fetch, and the `--disk` branch with its target resolution. |
@@ -162,7 +162,7 @@ stdout pipe whose reader is already closed (broken pipe ends quietly with status
 Later additions cover manual-reset parsing (Claude grants: empty, unknown scopes, missing
 `clears`, a `5h` entry only for a live five-hour grant, and the `full ?` fallback; Codex
 credits: duplicate ids, missing status) and rendering (year display, failed
-rows, zero counts and rows with nothing left being omitted, the table column, and the `R:`
+rows, zero counts and rows with nothing left being omitted, the table column, and the `↻`
 column staying aligned with `--reset-at`), per-provider
 config rows under `--profile` / `--only` (`lib.rs`), `jwt::claims` with padded/unpadded
 payloads, `config::expand_home`, `cookies::load` end to end (schema v24 hash stripping,
@@ -231,11 +231,11 @@ get the same check against `--disk` in `render/tui/disk.rs`.
 - Antigravity の `ps` / `lsof` は非同期で待ち、各1秒の期限とキャンセル時の終了を設定する。探索を含むローカル経路全体の5秒制限も維持する。
 - Grok の認証情報は小数秒を捨てず作成時刻を比較する。
 - stdout へは `render::write_stdout` で書き、`print!` / `println!` を使わない。読み手が先に閉じた pipe (`| head`) は panic させず、`main` で終了コード 0 の正常終了にする。
-- `--reset-at` のときは、長期枠の日時を出せない行 (時刻不明・リセット済み・長期枠なし・短期枠のみ) にも同じ14桁を空け、後ろに続く `R:` の列を揃える。
+- `--reset-at` のときは、長期枠の日時を出せない行 (時刻不明・リセット済み・長期枠なし・短期枠のみ) にも同じ17桁を空け、後ろに続く `↻` の列を揃える。
 - TUI と statusline に共通する要素の色は、`render/palette.rs` の同じ関数で決める。各レンダラーは `Paint` の変換 (statusline は ANSI SGR、TUI は ratatui の `Style`) だけを持ち、色番号を描画側に直接書かない。
 - statusline の出力はバイト単位で保つ。区間の区切りと末尾の `\x1b[0m` を変えず、同じ色の区間も結合しない。
 - TUI では親の `Line` / `Paragraph` に太字や色を置かず、Span ごとに付ける。親に置いた装飾は、色を付けない Span にも引き継がれる。`--no-color` / `NO_COLOR` / `TERM=dumb` では色も太字も付けない。
-- 手動リセットは、残りが0回の種類を表示しない。1回も残っていない行には statusline の `R:` も TUI の `Resets:` 行も出さず、テーブルのセルは `—` にする。テーブルの列は、出すものがある行が1つも無ければ省く。この規則は `render/manual_resets.rs` の `summarize` の1か所に置き、取得できなかった回数 (`?`) は0回と区別して出す。
+- 手動リセットは、残りが0回の種類を表示しない。1回も残っていない行には statusline の `↻` も TUI の `Resets:` 行も出さず、テーブルのセルは `—` にする。テーブルの列は、出すものがある行が1つも無ければ省く。この規則は `render/manual_resets.rs` の `summarize` の1か所に置き、取得できなかった回数 (`?`) は0回と区別して出す。
 - Claude の取得側で、付与が無いときに0回を補うのは `full` だけにする (`--json` に確定の0回を残すため)。`5h` は、5時間枠だけを回復する付与が届いたときだけ入れる。
 - 手動リセットの期限の日時は、statusline と TUI のどちらも残り7日未満だけ赤にし、ちょうど7日は通常色のままにする。TUI は期限をすべて並べるため、日時ごとに判定する。
 - TUI は現在時刻を1回の描画につき1度だけ取り、並べ替え (`--sort weekly-reset`) と全アカウントの残り時間・期限の色に同じ時刻を使う。行ごとに取り直すと、期限の境界で行によって判定が食い違う。
@@ -342,11 +342,11 @@ fold an unknown count into `0` — `0` is a confirmed "no resets left".
 - **Rendering** (`render/manual_resets.rs`) re-checks expiry against `now` on
   every draw, so an old cache never shows expired grants. `summarize` drops every
   kind whose count is a confirmed `0`, for all renderers: a row with nothing left
-  gets no statusline `R:`, no TUI `Resets:` line, and `—` in the table, whose
+  gets no statusline `↻`, no TUI `Resets:` line, and `—` in the table, whose
   column appears only when some row has something to show. Unknown counts still
   read `?`. The table lists every
   expiry (`full 2 (1@10/23 05:27, 1@10/30 03:57)`); the statusline appends only
-  the counts and the nearest known expiry (available grants first, paused ones
+  the counts (omitting the `full` label) and the nearest known expiry (available grants first, paused ones
   only when none are available) and paints the date red under seven days. The
   TUI, which lists every expiry, does the same for each date; both renderers
   take that color from `render/palette.rs`.
@@ -575,7 +575,7 @@ Legacy PixelLab and Grok rows also use
 monthly reset-warning thresholds, matching their `1m` labels instead of the
 weekly defaults. The optional `manual_resets` array (`kind`, `remaining`,
 `expires_at`, `paused`) is likewise skipped when absent, so older caches render
-without the `R:` suffix; unknown future reset kinds deserialize as `other`.
+without the `↻` suffix; unknown future reset kinds deserialize as `other`.
 
 `--statusline --input <cache>` is a cache-only render path: it must not discover
 Chrome profiles, access Keychain, or call the network. `--list-profiles` and

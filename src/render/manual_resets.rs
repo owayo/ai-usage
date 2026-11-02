@@ -18,15 +18,15 @@ struct ResetGroup {
 }
 
 impl ResetGroup {
-    fn label_count(&self) -> String {
-        let label = format!(
-            "{}{}",
-            self.kind.label(),
-            if self.paused { " paused" } else { "" }
-        );
-        match self.total {
-            Some(count) => format!("{label} {count}"),
-            None => format!("{label} ?"),
+    fn label_count(&self, omit_full: bool) -> String {
+        let count = self
+            .total
+            .map_or_else(|| "?".into(), |count| count.to_string());
+        let paused = if self.paused { "paused " } else { "" };
+        if omit_full && self.kind == ResetKind::Full {
+            format!("{paused}{count}")
+        } else {
+            format!("{} {paused}{count}", self.kind.label())
         }
     }
 }
@@ -60,7 +60,7 @@ pub(super) fn format_resets(
     let groups: Vec<_> = summarize(resets, now)
         .into_iter()
         .map(|group| {
-            let mut text = group.label_count();
+            let mut text = group.label_count(false);
             if group.total.is_some_and(|count| count > 0) {
                 let deadlines: Vec<_> = group
                     .deadlines
@@ -95,7 +95,7 @@ pub(super) fn format_resets_tui(
 ) -> Vec<TuiResetLine> {
     let mut lines = Vec::new();
     for group in summarize(resets, now) {
-        lines.push(TuiResetLine::Summary(group.label_count()));
+        lines.push(TuiResetLine::Summary(group.label_count(false)));
         if group.total.is_some_and(|count| count > 0) {
             for (expiry, count) in group.deadlines {
                 lines.push(TuiResetLine::Deadline {
@@ -112,7 +112,8 @@ pub(super) fn format_resets_tui(
 }
 
 /// statusline は種類ごとの残回数と、行全体で最も近い有効期限だけを表示する。
-/// 表示する種類が無ければ None を返し、`R:` ごと省く。
+/// 完全リセットは回数だけにし、それ以外は種類を残す。
+/// 表示する種類が無ければ None を返し、`↻` ごと省く。
 pub(super) fn format_resets_compact(
     resets: &[ManualResetOut],
     now: DateTime<Utc>,
@@ -123,7 +124,7 @@ pub(super) fn format_resets_compact(
     }
     let counts = groups
         .iter()
-        .map(ResetGroup::label_count)
+        .map(|group| group.label_count(true))
         .collect::<Vec<_>>()
         .join("; ");
     // 利用可能な付与分を優先し、それがなければ一時停止中の期限を残す。
@@ -375,7 +376,7 @@ mod tests {
         assert_eq!(
             compact(&resets, now),
             Some(format!(
-                "full 3; 5h 1 ({})",
+                "3; 5h 1 ({})",
                 format_deadline(Some(earliest), now)
             ))
         );
@@ -384,7 +385,7 @@ mod tests {
         let next = parse_utc("2026-06-18T04:00:00Z").unwrap();
         assert_eq!(
             compact(&resets, after),
-            Some(format!("full 3 ({})", format_deadline(Some(next), after)))
+            Some(format!("3 ({})", format_deadline(Some(next), after)))
         );
     }
 
@@ -399,18 +400,15 @@ mod tests {
         ];
         assert_eq!(
             compact(&resets, now),
-            Some(format!(
-                "full 2; 5h ? ({})",
-                format_deadline(Some(expiry), now)
-            ))
+            Some(format!("2; 5h ? ({})", format_deadline(Some(expiry), now)))
         );
         assert_eq!(
             compact(&[reset(ResetKind::Full, Some(2), Some("invalid"))], now).as_deref(),
-            Some("full 2 (?)")
+            Some("2 (?)")
         );
         assert_eq!(
             compact(&[reset(ResetKind::Full, None, None)], now).as_deref(),
-            Some("full ?")
+            Some("?")
         );
     }
 
@@ -425,20 +423,20 @@ mod tests {
         assert_eq!(
             compact(&[held.clone(), available], now),
             Some(format!(
-                "full paused 1; 5h 2 ({})",
+                "paused 1; 5h 2 ({})",
                 format_deadline(Some(expiry), now)
             ))
         );
         assert_eq!(
             compact(&[held.clone()], now),
             Some(format!(
-                "full paused 1 ({})",
+                "paused 1 ({})",
                 format_deadline(Some(held_expiry), now)
             ))
         );
         assert_eq!(
             compact(&[held, reset(ResetKind::FiveHour, Some(1), None)], now).as_deref(),
-            Some("full paused 1; 5h 1 (?)")
+            Some("paused 1; 5h 1 (?)")
         );
     }
 }

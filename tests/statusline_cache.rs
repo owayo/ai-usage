@@ -184,7 +184,7 @@ fn cached_resets_show_count_and_expiry_without_credentials_or_network() {
     ]);
     std::fs::write(&path, report.to_string()).unwrap();
     let output = cache.render(&["--only", "codex"]);
-    assert!(output.contains("R:full 5; 5h ? (2099/06/"), "{output}");
+    assert!(output.contains("↻ 5; 5h ? (2099/06/"), "{output}");
     assert_eq!(output.matches("2099/").count(), 1, "{output}");
     assert!(!output.contains('@'), "{output}");
     assert!(!output.contains("2000/"));

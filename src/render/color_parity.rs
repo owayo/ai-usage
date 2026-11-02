@@ -140,6 +140,8 @@ fn shared_text_has_the_same_color_in_the_statusline_and_the_tui() {
     }));
     let (statusline, tui) = render_both(&claude, now);
     let weekly_date = local(weekly_reset);
+    // statusline は日付と時刻の間に曜日が入るため、共通部分をそれぞれ比べる。
+    let (weekly_day, weekly_time) = weekly_date.split_once(' ').unwrap();
     let manual_date = local(manual_expiry);
     for (text, nth) in [
         ("Claude", 0),
@@ -153,8 +155,8 @@ fn shared_text_has_the_same_color_in_the_statusline_and_the_tui() {
         ("░", 1),
         (" 62%", 0),
         (" 85%", 0),
-        (weekly_date.as_str(), 0),
-        ("full 1", 0),
+        (weekly_day, 0),
+        (weekly_time, 0),
         (manual_date.as_str(), 0),
     ] {
         assert_eq!(
@@ -163,6 +165,8 @@ fn shared_text_has_the_same_color_in_the_statusline_and_the_tui() {
             "{text:?} ({nth})"
         );
     }
+    // 完全リセットの種類名は statusline で省くが、件数の色は同じ。
+    assert_eq!(color_of(&statusline, "↻ 1", 0), color_of(&tui, "full 1", 0));
     // 残り時間は表記が違う (`40m` / `40m`、`2d05h` / `2d 5h`) ので、それぞれの表記で比べる。
     assert_eq!(color_of(&statusline, "40m", 0), color_of(&tui, "40m", 0));
     assert_eq!(

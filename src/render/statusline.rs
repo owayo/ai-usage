@@ -1,6 +1,6 @@
 //! compact / colored statusline 出力(1 account 1 行)。
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Datelike, Local, Utc};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -25,8 +25,8 @@ const PIXELLAB_LOGO: &str = "\u{100400}"; // PixelLab のドラゴン。
 /// account 名 / model-group 名の欄幅(末尾の区切り 1 桁を含む)。最長の想定値
 /// "Claude&GPT"(10 桁)がちょうど収まり、その右に区切りが 1 桁残る。
 const NAME_FIELD_WIDTH: usize = 11;
-/// `--reset-at` が長期枠の後ろに付ける ` (MM/DD HH:MM)` の表示幅。
-const RESET_AT_WIDTH: usize = 14;
+/// `--reset-at` が長期枠の後ろに付ける ` (MM/DD 曜 HH:MM)` の表示幅 (曜日は2セル)。
+const RESET_AT_WIDTH: usize = 17;
 
 /// statusline レンダリングの表示オプション。CLI flag 群を 1 つに束ね、
 /// レンダラー間の引数爆発(clippy::too_many_arguments)を避ける。
@@ -87,12 +87,12 @@ pub(super) fn render_row(
             &format!("  24h LIMIT {} ({age} ago)", observation.model),
         );
     }
-    // 残っている手動リセットが無い行 (0 回だけ・失効済みだけ) には `R:` を付けない。
+    // 残っている手動リセットが無い行 (0 回だけ・失効済みだけ) には `↻` を付けない。
     if a.ok
         && let Some(resets) = &a.manual_resets
         && let Some(resets) = format_resets_compact(resets, now)
     {
-        rendered += &paint(opts.color, LABEL, &format!("  R:{}", resets.counts));
+        rendered += &paint(opts.color, LABEL, &format!("  ↻ {}", resets.counts));
         if let Some(deadline) = resets.deadline {
             rendered += &paint(opts.color, LABEL, " (");
             rendered += &paint(
@@ -322,16 +322,23 @@ fn window_seg(
                 palette::reset_countdown(rem, th),
                 &format!("{countdown:<6}"),
             );
-            // --reset-at: 長期枠の残り時間の後ろに (MM/DD HH:MM) を local 時刻で併記する。
+            // --reset-at: 長期枠の残り時間の後ろに (MM/DD 曜 HH:MM) を local 時刻で併記する。
             // 短期枠は呼び出し元で show_reset_at=false 固定。リセット済みの枠には付けない。
             if show_reset_at
                 && rem.is_some_and(|sec| sec > 0)
                 && let Some(r) = reset
             {
+                let local = r.with_timezone(&Local);
+                let weekday = ["月", "火", "水", "木", "金", "土", "日"]
+                    [local.weekday().num_days_from_monday() as usize];
                 s += &paint(
                     opts.color,
                     MUTED,
-                    &format!(" ({})", r.with_timezone(&Local).format("%m/%d %H:%M")),
+                    &format!(
+                        " ({} {weekday} {})",
+                        local.format("%m/%d"),
+                        local.format("%H:%M")
+                    ),
                 );
                 reset_at_shown = true;
             }
@@ -383,7 +390,7 @@ fn compact_dur(sec: i64) -> String {
     // 59s left は 0m ではなく 1m と表示するため切り上げる。下位 unit は zero-pad し、
     // digit position を揃える(3h07m / 4d03h)。window_seg は結果を幅 6 に pad する。
     // 1w window の `XXhYYm`(例: `12h18m`)に十分な幅で、`--reset-at` の trailing
-    // `(MM/DD HH:MM)` も行間で揃う。
+    // `(MM/DD 曜 HH:MM)` も行間で揃う。
     let minutes = (sec + 59) / 60;
     if minutes < 60 {
         format!("{minutes}m")
@@ -400,6 +407,8 @@ fn compact_dur(sec: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
+
     use super::super::reset::{MONTHLY_TH, WEEK_TH};
     use super::*;
     use crate::model::{ResetKind, WindowKind};
@@ -471,7 +480,7 @@ mod tests {
         let tick = chrono::Duration::nanoseconds(1);
         let mut opts = plain_opts();
         opts.color = true;
-        // 期限ちょうどと過ぎた付与は失効扱いで、`R:` ごと出さない (None)。
+        // 期限ちょうどと過ぎた付与は失効扱いで、`↻` ごと出さない (None)。
         for (remaining, red) in [
             (Some(week - tick), Some(true)),
             (Some(week), Some(false)),
@@ -485,10 +494,10 @@ mod tests {
             let account = manual_reset_account(expiry);
             let line = render_row(&account, None, false, &opts, now);
             let Some(red) = red else {
-                assert!(!line.contains("R:"), "remaining={remaining:?}: {line:?}");
+                assert!(!line.contains("↻ "), "remaining={remaining:?}: {line:?}");
                 continue;
             };
-            let suffix = line.rsplit_once("R:").unwrap().1;
+            let suffix = line.rsplit_once("↻ ").unwrap().1;
             assert_eq!(
                 suffix.matches("\x1b[38;5;196m").count(),
                 usize::from(red),
@@ -505,7 +514,7 @@ mod tests {
                     "{suffix:?}"
                 );
                 assert!(suffix.ends_with("\x1b[38;5;245m)\x1b[0m"), "{suffix:?}");
-                assert!(suffix.starts_with("full 1\x1b[0m"), "{suffix:?}");
+                assert!(suffix.starts_with("1\x1b[0m"), "{suffix:?}");
             }
         }
     }
@@ -530,7 +539,7 @@ mod tests {
             let mut opts = plain_opts();
             opts.reset_at = reset_at;
             let line = render_row(&account, None, false, &opts, now);
-            line.split_once("R:").unwrap().0.width()
+            line.split_once("↻ ").unwrap().0.width()
         };
         let five_hour = || window(WindowKind::FiveHour, Some("2026-06-15T03:00:00Z"));
         let dated = || window(WindowKind::Weekly, Some("2026-06-17T00:00:00Z"));
@@ -564,14 +573,14 @@ mod tests {
         failed.ok = false;
         failed.error = Some("fetch failed".into());
         let line = render_row(&failed, None, false, &plain_opts(), now);
-        assert!(!line.contains("R:"), "{line:?}");
+        assert!(!line.contains("↻ "), "{line:?}");
 
         let mut without = manual_reset_account(None);
         without.manual_resets = None;
         let line = render_row(&without, None, false, &plain_opts(), now);
-        assert!(!line.contains("R:"), "{line:?}");
+        assert!(!line.contains("↻ "), "{line:?}");
 
-        // 残りが 0 回の付与と、描画の時点で失効した付与だけなら `R:` も前の空白も付けない。
+        // 残りが 0 回の付与と、描画の時点で失効した付与だけなら `↻` も前の空白も付けない。
         let reset = |remaining, expires_at: Option<DateTime<Utc>>| ManualResetOut {
             kind: ResetKind::Full,
             remaining,
@@ -589,7 +598,7 @@ mod tests {
         let mut unknown = manual_reset_account(None);
         unknown.manual_resets = Some(vec![reset(None, None)]);
         let line = render_row(&unknown, None, false, &plain_opts(), now);
-        assert!(line.ends_with("  R:full ?"), "{line:?}");
+        assert!(line.ends_with("  ↻ ?"), "{line:?}");
     }
 
     #[test]
@@ -598,7 +607,7 @@ mod tests {
         let account = manual_reset_account(Some(now + chrono::Duration::days(1)));
         let line = render_row(&account, None, false, &plain_opts(), now);
         assert!(!line.contains('\x1b'), "{line:?}");
-        assert!(line.contains("R:full 1 ("), "{line}");
+        assert!(line.contains("↻ 1 ("), "{line}");
     }
 
     #[test]
@@ -639,26 +648,37 @@ mod tests {
 
     #[test]
     fn window_seg_appends_reset_at_only_when_enabled() {
-        // 未来のリセット時刻 + show_reset_at=true → 末尾に "(MM/DD HH:MM)" が付く。
-        // ローカル TZ 依存の具体値は検証せず、括弧の有無で機能を確認。
-        let now = fixed_utc("2026-06-15T00:00:00Z");
+        // 曜日はローカルの日付から求める。日付境界に近い時刻で月〜日を確認する。
+        let now = fixed_utc("2026-11-01T00:00:00Z");
         let opts = plain_opts();
-        let w = WindowOut {
-            kind: Some(WindowKind::Weekly),
-            used_percent: Some(54.0),
-            resets_at: Some("2026-06-17T16:10:00Z".to_string()),
-            resets_in_seconds: Some(2 * 86400),
-        };
-        let with_date = window_seg(&opts, "1w", Some(&w), now, WEEK_TH, true, 16);
-        assert!(
-            with_date.contains('(') && with_date.ends_with(')'),
-            "expected date suffix in {with_date:?}"
-        );
-        let without = window_seg(&opts, "1w", Some(&w), now, WEEK_TH, false, 16);
-        assert!(
-            !without.contains('('),
-            "did not expect date suffix in {without:?}"
-        );
+        for (day, weekday) in [
+            (2, "月"),
+            (3, "火"),
+            (4, "水"),
+            (5, "木"),
+            (6, "金"),
+            (7, "土"),
+            (8, "日"),
+        ] {
+            let reset = Local
+                .with_ymd_and_hms(2026, 11, day, 0, 10, 0)
+                .single()
+                .unwrap()
+                .with_timezone(&Utc);
+            let w = WindowOut {
+                kind: Some(WindowKind::Weekly),
+                used_percent: Some(54.0),
+                resets_at: Some(reset.to_rfc3339()),
+                resets_in_seconds: None,
+            };
+            let with_date = window_seg(&opts, "1w", Some(&w), now, WEEK_TH, true, 16);
+            let without = window_seg(&opts, "1w", Some(&w), now, WEEK_TH, false, 16);
+            assert_eq!(
+                with_date,
+                format!("{without} (11/{day:02} {weekday} 00:10)")
+            );
+            assert_eq!(with_date.width() - without.width(), RESET_AT_WIDTH);
+        }
     }
 
     #[test]
@@ -839,6 +859,9 @@ mod tests {
         opts.reset_at = true;
         let local =
             |time: DateTime<Utc>| time.with_timezone(&Local).format("%m/%d %H:%M").to_string();
+        let weekly_local = weekly_reset.with_timezone(&Local);
+        let weekday = ["月", "火", "水", "木", "金", "土", "日"]
+            [weekly_local.weekday().num_days_from_monday() as usize];
         let expected = format!(
             concat!(
                 "  \x1b[38;2;217;119;87mClaude \x1b[0m",
@@ -853,15 +876,17 @@ mod tests {
                 "\x1b[38;5;208m██████████████\x1b[0m\x1b[38;5;242m░░\x1b[0m",
                 " \x1b[1;38;5;208m 85%\x1b[0m",
                 "  \x1b[38;5;178m2d05h \x1b[0m",
-                "\x1b[38;5;242m ({weekly_reset})\x1b[0m",
+                "\x1b[38;5;242m ({weekly_day} {weekday} {weekly_time})\x1b[0m",
                 "\x1b[38;5;196m  24h LIMIT test-model (3h ago)\x1b[0m",
                 // 手動リセット: 件数と括弧は LABEL、7 日未満で切れる期限だけ赤。0 回の 5h は出さない。
-                "\x1b[38;5;245m  R:full 1\x1b[0m",
+                "\x1b[38;5;245m  ↻ 1\x1b[0m",
                 "\x1b[38;5;245m (\x1b[0m",
                 "\x1b[38;5;196m{reset_expiry}\x1b[0m",
                 "\x1b[38;5;245m)\x1b[0m",
             ),
-            weekly_reset = local(weekly_reset),
+            weekly_day = weekly_local.format("%m/%d"),
+            weekday = weekday,
+            weekly_time = weekly_local.format("%H:%M"),
             reset_expiry = local(reset_expiry),
         );
         assert_eq!(render_row(&account, None, false, &opts, now), expected);
@@ -905,7 +930,7 @@ mod tests {
                 " \x1b[38;5;35m  0%\x1b[0m",
                 "  \x1b[38;5;242m--    \x1b[0m",
                 // 7 日以上先の期限は LABEL のまま。同じ色が続いても区間ごとに閉じる。
-                "\x1b[38;5;245m  R:full 1\x1b[0m",
+                "\x1b[38;5;245m  ↻ 1\x1b[0m",
                 "\x1b[38;5;245m (\x1b[0m",
                 "\x1b[38;5;245m{reset_expiry}\x1b[0m",
                 "\x1b[38;5;245m)\x1b[0m",
@@ -975,8 +1000,8 @@ mod tests {
 
     #[test]
     fn colored_rows_without_a_reset_date_match_golden_bytes() {
-        // `--reset-at` で日時を出せない行 (取得の失敗・短期枠だけ) も 14 桁を空け、
-        // 後ろの `R:` の列を揃える。期限が不明な手動リセットは `(?)` を LABEL で出す。
+        // `--reset-at` で日時を出せない行 (取得の失敗・短期枠だけ) も 17 桁を空け、
+        // 後ろの `↻` の列を揃える。期限が不明な手動リセットは `(?)` を LABEL で出す。
         let now = fixed_utc("2026-06-15T00:00:00Z");
         let mut opts = plain_opts();
         opts.color = true;
@@ -1020,7 +1045,7 @@ mod tests {
                     "\x1b[38;5;35m███████\x1b[0m\x1b[38;5;242m{free}\x1b[0m",
                     " \x1b[38;5;35m 20%\x1b[0m",
                     "  \x1b[38;5;178m2h00m \x1b[0m{pad}",
-                    "\x1b[38;5;245m  R:full 1\x1b[0m",
+                    "\x1b[38;5;245m  ↻ 1\x1b[0m",
                     "\x1b[38;5;245m (\x1b[0m",
                     "\x1b[38;5;245m?\x1b[0m",
                     "\x1b[38;5;245m)\x1b[0m",

@@ -150,7 +150,7 @@ struct Cli {
     compact: bool,
 
     /// statusline の長期枠 countdown 後に、local time の絶対リセット時刻
-    /// `(MM/DD HH:MM)` を付ける。`--statusline` rendering にのみ影響する。
+    /// `(MM/DD 曜 HH:MM)` を付ける。`--statusline` rendering にのみ影響する。
     #[arg(long)]
     reset_at: bool,
 
