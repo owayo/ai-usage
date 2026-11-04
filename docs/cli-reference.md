@@ -32,8 +32,9 @@ Every command and option of `ai-usage`. The everyday examples are in the [README
 | `--statusline --compact` | Half-width gauge for narrow panes |
 | `--statusline --reset-at` | Append the long-window reset date, Japanese weekday, and local time, e.g. `(11/03 火 09:00)` |
 | `--statusline-hide <PROVIDERS>` | Comma-separated providers to skip in statusline only (`--json` / table unaffected). E.g. `--statusline-hide antigravity,codex` |
+| `--sort provider` | Keep the fetch order in the table, JSON, and TUI; in the statusline, order rows by provider (Claude, Codex, …), then by profile name. Default when `--sort` is omitted, except with `--tui` |
 | `--sort weekly-usage` | Rank rows by long-window utilization (closest to the cap first) |
-| `--sort weekly-reset` | Rank rows by long-window reset time (soonest first) |
+| `--sort weekly-reset` | Rank rows by long-window reset time (soonest first); rows with no known reset time or a failed fetch go last. Default with `--tui` when `--sort` is omitted, including `--tui --input` |
 | `--no-color` | Disable ANSI colors. Colors are also suppressed when `NO_COLOR` holds a non-empty value (per [no-color.org](https://no-color.org/)) or `TERM=dumb` |
 | `--input <PATH>` | With `--statusline` or `--tui`, render a cached `--json` file without accessing Chrome, Keychain, or the network. TUI rereads it every minute; its disk panel still reads this Mac's volumes live |
 

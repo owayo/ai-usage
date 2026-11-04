@@ -32,8 +32,9 @@
 | `--statusline --compact` | 狭いペイン向けにゲージ幅を半分にする |
 | `--statusline --reset-at` | 長期枠リセットの日時と曜日 (例: `(11/03 火 09:00)`) をローカル時間で末尾に併記 |
 | `--statusline-hide <PROVIDERS>` | statusline でのみ非表示にする provider (comma 区切り)。`--json` / table には影響なし。例: `--statusline-hide antigravity,codex` |
+| `--sort provider` | テーブル・JSON・TUI は取得順。statusline はプロバイダ順 (Claude、Codex、…) で、同じプロバイダの中はプロファイル名順。`--tui` 以外で `--sort` を省いたときの既定 |
 | `--sort weekly-usage` | 長期枠の使用率が高い順 (リミットに近いアカウントを上に) |
-| `--sort weekly-reset` | 長期枠のリセット時刻が近い順 (リセット待ちが短いアカウントを上に) |
+| `--sort weekly-reset` | 長期枠のリセット時刻が近い順 (リセット待ちが短いアカウントを上に)。リセット時刻が分からない行と取得に失敗した行は末尾。`--tui` で `--sort` を省いたときの既定 (`--tui --input` を含む) |
 | `--no-color` | ANSI カラーを無効化 (`NO_COLOR` 環境変数に空でない値が入っている場合 ([no-color.org](https://no-color.org/) の仕様) または `TERM=dumb` でも無効になります) |
 | `--input <PATH>` | `--statusline` または `--tui` と併用し、キャッシュ済み `--json` ファイルから描画。TUIでは1分ごとに読み直す。Chrome・Keychain・ネットワークには触れない。TUI のディスク欄だけは、この Mac のボリュームを直接読む |
 

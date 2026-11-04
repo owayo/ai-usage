@@ -41,7 +41,7 @@ It reads each Chrome profile's session straight from the browser, so it can repo
 - **Manual Resets**: Claude and Codex rows show how many manual usage resets remain and when each grant expires — the table and the TUI list every expiry, while the statusline shows the totals and the nearest date. The statusline and the TUI show a date in red once fewer than seven days remain. Kinds with no resets left are hidden, so a row with none left shows no reset entry. A count that could not be fetched reads `?`, and expired grants drop out even when rendering an older cache
 - **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
 - **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars. Labels are padded by display width and truncated at grapheme boundaries, preserving emoji and combining characters
-- **Interactive Dashboard**: `--tui` groups quotas and manual resets by account, with a disk panel at the bottom showing the startup disk's used, purgeable, and free space. Short terminals show the visible part of each account; reset countdowns of 1–59 seconds show `1m`
+- **Interactive Dashboard**: `--tui` groups quotas and manual resets by account, soonest long-window reset first, with a disk panel at the bottom showing the startup disk's used, purgeable, and free space. Short terminals show the visible part of each account; reset countdowns of 1–59 seconds show `1m`
 - **Disk Output**: `--disk` prints the same disk rows on their own, one volume per line, and `--disk --json` gives the values in bytes for scripts. It never touches Chrome, Keychain, the network, or the usage cache
 - **JSON Output**: Machine-readable output for scripting and dashboards
 - **Zero Config**: Auto-discovers all signed-in profiles by default; optional `~/.config/ai-usage/config.toml` for pinning
@@ -142,7 +142,8 @@ ai-usage --only grok
 ai-usage --json
 
 # Interactive terminal dashboard
-ai-usage --tui
+ai-usage --tui                     # soonest long-window reset first
+ai-usage --tui --sort provider     # fetch order, same as the table
 ai-usage --tui --only codex
 ai-usage --tui --input usage.json  # browse saved JSON
 
@@ -158,12 +159,14 @@ ai-usage --disk --mount / --mount /Volumes/Archive
 
 # Sort by urgency
 ai-usage --sort weekly-usage      # closest to the cap first
-ai-usage --sort weekly-reset      # soonest reset first
+ai-usage --sort weekly-reset      # soonest reset first (default for --tui)
 ```
 
 The TUI groups quota bars under each account heading, with each window labeled `5h`, `1d`, `1w`, or `1m` and its reset countdown beside it. It shares the statusline's [color rules](#colors). Manual resets include each grant's expiry. Use `↑` / `↓` or `j` / `k` to scroll, and `q` / `Esc` / `Ctrl+C` to quit. Usage refreshes every minute. `--tui --input <PATH>` rereads the saved `--json` file every minute without network access. When the Grok CLI observed a model-specific free limit rejection within the last 24 hours, the TUI shows its model, observation age, and token counts separately from the weekly credit window. This observation is not a measurement of the current remaining quota.
 
-The TUI also shows each quota window's absolute reset date and time. If a refresh returns fewer accounts, the displayed scroll position stays within the new list. Fetch warnings appear in the dashboard header.
+Without `--sort`, the TUI (including `--tui --input`) orders accounts by `weekly-reset`. The account whose long window (weekly or monthly) resets soonest comes first, and accounts with no known reset time or a failed fetch come last. `--sort provider` restores the fetch order, the same order as the table. The account list title shows the order in use, for example `Accounts · from 1/5 · sort: weekly-reset`.
+
+The TUI also shows each quota window's absolute reset date and time. A refresh can reorder the accounts; for example, an account whose weekly limit just reset moves down. While the list is scrolled down, the account at the top of the view stays at the top. If the list is at the very top, it stays there, where the default order puts the soonest reset. If the account that was at the top is gone after a refresh, the displayed scroll position stays within the new list. Fetch warnings appear in the dashboard header.
 
 Below the accounts, a disk panel shows the startup disk (for example `Macintosh HD`) followed by any volumes listed in `[tui].disk_mounts`. Each bar splits used (`█`), purgeable (`▒`), and free (`░`) space; available space and the decimal units match Finder. Each volume is reread in the background 30 seconds after its previous read. With `--input`, disk values are still read live from this Mac. Hide the panel with `--no-disk` or by setting `[tui].disk` to `false`. See [Disk usage](docs/architecture.md#disk-usage) for how the values are measured and displayed.
 
