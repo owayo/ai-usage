@@ -23,7 +23,7 @@ shows this Mac's disk usage at the bottom, and `--disk` prints it on its own.
 | `src/claude.rs` / `src/codex.rs` / `src/antigravity.rs` / `src/pixellab.rs` / `src/grok.rs` | Per-provider usage fetchers (Claude/Codex also parse manual resets). |
 | `src/model.rs`    | `Provider` / `Usage` / `Window` / `WindowKind` / `ManualReset` / `ResetKind` data model. |
 | `src/config.rs`   | `~/.config/ai-usage/config.toml` (profiles, global provider exclusions, Antigravity/Grok tables, `[tui]` disk settings), `BrowserWants` set operations, and `expand_home` for configured paths. |
-| `src/sort.rs`     | `SortKey` (`--sort`), shared by CLI and renderers. |
+| `src/sort.rs`     | `SortKey` (`--sort`) and its value names (`as_arg`), shared by CLI and renderers. The per-mode default (`weekly-reset` only for `--tui`) is resolved by `Cli::sort_key` in `lib.rs`. |
 | `src/report.rs`   | JSON DTO (shared by `--json` output and `--input` cache). |
 | `src/cache.rs` | Per-source usage cache (120 s by default), credential fingerprints, process locks, and atomic writes. |
 | `src/diagnostics.rs` | Warning delivery: stderr for normal commands, a shared queue while the TUI draws. |
@@ -214,10 +214,23 @@ segment's color, and `render/color_parity.rs` renders the same accounts through 
 statusline and the TUI to confirm that shared text carries the same color. The disk rows
 get the same check against `--disk` in `render/tui/disk.rs`.
 
+Sort coverage pins the per-mode `--sort` default (`weekly-reset` only for `--tui`, with or
+without `--input`; an explicit value wins in every mode; the field stays `None` when the
+option is omitted) in `lib.rs`, and `SortKey::as_arg` against clap's value names in
+`sort.rs`. `render/tui.rs` checks that the TUI lists accounts in the same order as the
+statusline's `sorted_refs` call (monthly windows ranked as long windows, rows without a
+reset time or with a failed fetch last, `--sort provider` keeping the fetch order), that
+the list title names the order, and that a refresh keeps the account at the top while
+scrolled (the top position stays at the top, a vanished account clamps the position, and
+accounts sharing a Chrome profile name are told apart by `profile_email`).
+
 ## 保守時に維持する動作
 
 - PixelLab の `imageGenerated` が欠落・null・数値以外の場合は、使用率を `None` とする。生成上限が分かる月次枠とリセット時刻は残し、実測の0%と区別する。
 - TUI の更新で行数が減った場合は、リストと `from X/Y` の表示に使うスクロール位置を現在の行数に収める。
+- `--sort` を省いた `--tui` (`--input` 付きも) は、statusline の呼び出しと同じ `weekly-reset` (長期枠の期限が近い順) で並べる。table / JSON / statusline の既定は `provider` のまま変えない (table / JSON は外部のツールが行の順に依存しうる)。明示した `--sort` はどのモードでも優先し、TUI の `provider` は取得順にする。既定は `Cli::sort_key` の1か所で解決し、`--sort` に clap の固定の既定値を付けない。付けると省略を見分けられず、TUI の既定が効かなくなる。
+- TUI の一覧のタイトルに、今の並び順を `--sort` の値の名前で出す (` Accounts · from 1/5 · sort: weekly-reset `)。名前は `SortKey::as_arg` から取り、clap の値の名前と一致することをテストで確かめる。
+- TUI の自動更新で並びが変わったとき (長期枠がリセットされた行が後ろへ動くなど) は、途中までスクロールしていれば、一覧の先頭に出していたアカウントを新しい並びでも先頭に保つ (`App::replace_report`)。先頭 (位置0) にいるときは先頭のまま、期限が最も近い行を見せる。アカウントは provider・profile・profile_email・label・group_label で照合する (Chrome の表示名は重なりうる)。見つからなければ位置を新しい行数に収める。
 - TUI のアカウントは行に展開して描画し、表示領域より高いアカウントも見える部分を残す。スクロールと `from X/Y` はアカウント単位を維持する。
 - TUI の残り1〜59秒は `1m` と表示し、期限前の利用枠を `0m` にしない。
 - Keychain や Cookie DB の読み込み失敗は `cache::CredentialError` として返し、共有キャッシュへ保存しない。直後の再実行でも鍵の取得と縮退判定をやり直す。
@@ -240,7 +253,7 @@ get the same check against `--disk` in `render/tui/disk.rs`.
 - Claude の取得側で、付与が無いときに0回を補うのは `full` だけにする (`--json` に確定の0回を残すため)。`5h` は、5時間枠だけを回復する付与が届いたときだけ入れる。
 - TUI と statusline の利用枠のリセット日時は、`render/reset.rs` の同じ関数で日本語の曜日を付ける。TUI は別年の日時に年も残す。手動リセットは両方で `full` を省き、共通パレットのティールの `↻` を使う。`5h` / `1w` などの種類と `paused` は省かず、TUI は付与ごとの期限を下の行に残し、`1@12/01 火 04:49` のように括弧なしの曜日を付ける。
 - 手動リセットの期限の日時は、statusline と TUI のどちらも残り7日未満だけ赤にし、ちょうど7日は通常色のままにする。TUI は期限をすべて並べるため、日時ごとに判定する。
-- TUI は現在時刻を1回の描画につき1度だけ取り、並べ替え (`--sort weekly-reset`) と全アカウントの残り時間・期限の色に同じ時刻を使う。行ごとに取り直すと、期限の境界で行によって判定が食い違う。
+- TUI は現在時刻を1回の描画につき1度だけ取り、並べ替え (既定の `weekly-reset`) と全アカウントの残り時間・期限の色に同じ時刻を使う。行ごとに取り直すと、期限の境界で行によって判定が食い違う。
 - TUI のディスク欄は、描画と切り離した `std::thread` の切り離しスレッドで読む。パージ可能な量の問い合わせは1回40〜120msかかり、戻らないこともある。`tokio::task::spawn_blocking` は終了時に作業の完了を待つため使わない。2秒を過ぎた取得は `no response` の表示に切り替えるだけで打ち切らず、同じボリュームの次の取得は前回が戻ってから30秒後に始める。
 - 追加ボリューム (`[tui] disk_mounts`) は、`getfsstat(MNT_NOWAIT)` のマウント表でマウントポイントかつローカルだと確かめてから問い合わせる。ネットワークボリュームには問い合わせない。抜いたディスクやネットワークボリュームは古い値を出さず `unavailable` にする。
 - ディスクの使用率は Finder と同じく `total − 重要な用途に使える容量` で数え、表示する%と使用中の部分の色に同じ値を使う。重要な用途の容量が0・欠落・総容量超えのときは通常の空きで代え、パージ可能な量は不明として扱う (0にしない)。

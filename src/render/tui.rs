@@ -56,7 +56,7 @@ struct App {
 }
 
 impl App {
-    /// 描画する順の行。`--sort weekly-reset` は残り時間で並べるので、色と同じ時刻を渡す。
+    /// 描画する順の行。TUI の既定の `weekly-reset` は残り時間で並べるので、色と同じ時刻を渡す。
     fn rows(&self, now: DateTime<Utc>) -> Vec<&AccountOut> {
         self.report
             .as_ref()
@@ -75,6 +75,50 @@ impl App {
         let last = self.len().saturating_sub(1);
         self.scroll = self.scroll.min(last).saturating_add_signed(delta).min(last);
     }
+
+    /// 取得結果を差し替える。期限順では、長期枠がリセットされた行などが更新で後ろへ動く。
+    /// 途中までスクロールしているときは、一覧の先頭に出していたアカウントを新しい並びでも
+    /// 先頭に保つ。先頭 (位置0) にいるときは、期限が最も近い行を見せるため先頭のままにする。
+    fn replace_report(&mut self, report: Report, now: DateTime<Utc>) {
+        let anchor = if self.scroll == 0 {
+            None
+        } else {
+            self.rows(now)
+                .get(self.scroll)
+                .map(|account| account_key(account))
+        };
+        self.report = Some(report);
+        if let Some(anchor) = anchor
+            && let Some(index) = self
+                .rows(now)
+                .iter()
+                .position(|account| account_key(account) == anchor)
+        {
+            self.scroll = index;
+        }
+        // 先頭のアカウントが更新で消えた場合も、位置は新しい行数に収める。
+        self.move_scroll(0);
+    }
+}
+
+/// 更新の前後で同じアカウントを探すための識別子。Chrome の表示名は重なりうるので、
+/// プロファイルのメールアドレス、設定のラベル、Antigravity のモデルグループも合わせて照合する。
+type AccountKey = (
+    Provider,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+fn account_key(account: &AccountOut) -> AccountKey {
+    (
+        account.provider,
+        account.profile.clone(),
+        account.profile_email.clone(),
+        account.label.clone(),
+        account.group_label.clone(),
+    )
 }
 
 /// `--tui` のメインループ。通信が終わる前にも取得中画面を表示する。
@@ -142,8 +186,7 @@ pub async fn run(
                 app.loading = false;
                 match result {
                     Ok(report) => {
-                        app.report = Some(report);
-                        app.move_scroll(0);
+                        app.replace_report(report, Utc::now());
                         app.error = None;
                     }
                     Err(error) => app.error = Some(format!("{error:#}")),
@@ -249,10 +292,12 @@ fn draw(frame: &mut Frame, app: &App) {
         .flat_map(|account| account_lines(account, app.color, chunks[1].width, now))
         .collect();
     frame.render_widget(
+        // 既定の並び順はモードで違う (TUI だけ weekly-reset) ため、今の順を `--sort` の値で示す。
         Paragraph::new(lines).block(Block::bordered().title(format!(
-            " Accounts · from {}/{} ",
+            " Accounts · from {}/{} · sort: {} ",
             if rows.is_empty() { 0 } else { scroll + 1 },
-            rows.len()
+            rows.len(),
+            app.sort.as_arg()
         ))),
         chunks[1],
     );
@@ -624,6 +669,197 @@ mod tests {
                 "{screen}"
             );
         }
+    }
+
+    /// 長期枠の期限だけを持つアカウントの一覧。`(profile, resets_at)` を取得順に並べる。
+    fn reset_report(accounts: &[(&str, &str)]) -> Report {
+        Report {
+            generated_at: "2026-10-10T00:00:00Z".into(),
+            accounts: accounts
+                .iter()
+                .map(|(profile, resets_at)| {
+                    account(serde_json::json!({
+                        "profile": profile,
+                        "weekly": {"kind":"weekly","used_percent":50.0,
+                                   "resets_at":resets_at,"resets_in_seconds":null}
+                    }))
+                })
+                .collect(),
+        }
+    }
+
+    fn sorted_app(sort: SortKey, report: Report) -> App {
+        App {
+            warnings: Vec::new(),
+            report: Some(report),
+            error: None,
+            loading: false,
+            scroll: 0,
+            sort,
+            color: false,
+            disk: None,
+        }
+    }
+
+    fn order(app: &App, now: DateTime<Utc>) -> Vec<&str> {
+        app.rows(now)
+            .iter()
+            .map(|account| account.profile.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn weekly_reset_lists_the_soonest_long_window_reset_first_like_the_statusline() {
+        // 取得順は期限順と違う。月次枠も長期枠の期限として並び、期限の無い行と取得に失敗した行は末尾。
+        let window = |kind: &str, resets_at: Option<&str>| {
+            serde_json::json!({"kind":kind,"used_percent":10.0,
+                               "resets_at":resets_at,"resets_in_seconds":null})
+        };
+        let report = Report {
+            generated_at: "2026-10-10T00:00:00Z".into(),
+            accounts: vec![
+                account(serde_json::json!({"profile":"Echo", "ok":false, "error":"fetch failed"})),
+                account(serde_json::json!({"profile":"Bravo", "provider":"codex",
+                    "weekly":window("weekly", Some("2099-01-03T00:00:00Z"))})),
+                account(serde_json::json!({"profile":"Alpha", "weekly":window("weekly", None)})),
+                account(
+                    serde_json::json!({"profile":"Charlie", "provider":"pixellab",
+                    "weekly":window("monthly", Some("2099-01-02T00:00:00Z"))}),
+                ),
+                account(serde_json::json!({"profile":"Delta",
+                    "weekly":window("weekly", Some("2099-01-01T00:00:00Z"))})),
+            ],
+        };
+        let now = Utc.with_ymd_and_hms(2098, 12, 31, 0, 0, 0).unwrap();
+        let statusline: Vec<String> = sorted_refs(
+            &report.accounts,
+            SortKey::WeeklyReset,
+            now,
+            Some(crate::render::sort::statusline_default_cmp),
+        )
+        .iter()
+        .map(|account| account.profile.clone())
+        .collect();
+        let mut app = sorted_app(SortKey::WeeklyReset, report);
+        assert_eq!(
+            order(&app, now),
+            ["Delta", "Charlie", "Bravo", "Alpha", "Echo"]
+        );
+        assert_eq!(order(&app, now), statusline);
+
+        let lines = screen_lines(&app, 80, 30);
+        let screen = lines.join("\n");
+        assert!(
+            screen.contains("Accounts · from 1/5 · sort: weekly-reset"),
+            "{screen}"
+        );
+        let row = |name: &str| {
+            lines
+                .iter()
+                .position(|line| line.contains(name))
+                .unwrap_or_else(|| panic!("{name} が無い:\n{screen}"))
+        };
+        assert!(
+            row("Delta") < row("Charlie")
+                && row("Charlie") < row("Bravo")
+                && row("Bravo") < row("Alpha")
+                && row("Alpha") < row("Echo"),
+            "{screen}"
+        );
+
+        // `--sort provider` を明示したときは取得順のまま。
+        app.sort = SortKey::Provider;
+        assert_eq!(
+            order(&app, now),
+            ["Echo", "Bravo", "Alpha", "Charlie", "Delta"]
+        );
+        let screen = screen_lines(&app, 80, 30).join("\n");
+        assert!(
+            screen.contains("Accounts · from 1/5 · sort: provider"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn refresh_keeps_the_account_at_the_top_while_scrolled() {
+        let now = Utc.with_ymd_and_hms(2098, 12, 31, 0, 0, 0).unwrap();
+        let before = || {
+            reset_report(&[
+                ("A", "2099-01-01T00:00:00Z"),
+                ("B", "2099-01-02T00:00:00Z"),
+                ("C", "2099-01-03T00:00:00Z"),
+                ("D", "2099-01-04T00:00:00Z"),
+            ])
+        };
+        // A の長期枠がリセットされ、次の期限が最も遠くなる。
+        let after = || {
+            reset_report(&[
+                ("A", "2099-01-08T00:00:00Z"),
+                ("B", "2099-01-02T00:00:00Z"),
+                ("C", "2099-01-03T00:00:00Z"),
+                ("D", "2099-01-04T00:00:00Z"),
+            ])
+        };
+
+        // C を先頭に表示していれば、並びが変わっても C を先頭に保つ。
+        let mut app = sorted_app(SortKey::WeeklyReset, before());
+        app.scroll = 2;
+        app.replace_report(after(), now);
+        assert_eq!(order(&app, now), ["B", "C", "D", "A"]);
+        assert_eq!(app.scroll, 1);
+        let screen = screen_lines(&app, 80, 30).join("\n");
+        assert!(screen.contains("from 2/4"), "{screen}");
+
+        // 先頭にいるときは先頭のまま、期限が最も近い行を見せる。
+        let mut app = sorted_app(SortKey::WeeklyReset, before());
+        app.replace_report(after(), now);
+        assert_eq!(app.scroll, 0);
+        assert_eq!(order(&app, now)[0], "B");
+
+        // 先頭のアカウントが消えたら、位置を新しい行数に収める。
+        let mut app = sorted_app(SortKey::WeeklyReset, before());
+        app.scroll = 3;
+        app.replace_report(
+            reset_report(&[("A", "2099-01-01T00:00:00Z"), ("B", "2099-01-02T00:00:00Z")]),
+            now,
+        );
+        assert_eq!(app.scroll, 1);
+        app.replace_report(reset_report(&[]), now);
+        assert_eq!(app.scroll, 0);
+    }
+
+    #[test]
+    fn refresh_tells_apart_accounts_that_share_a_profile_name() {
+        // 表示名が同じ Chrome プロファイルは、プロファイルのメールアドレスで見分ける。
+        let now = Utc.with_ymd_and_hms(2098, 12, 31, 0, 0, 0).unwrap();
+        let weekly = |resets_at: &str| {
+            serde_json::json!({"kind":"weekly","used_percent":50.0,
+                               "resets_at":resets_at,"resets_in_seconds":null})
+        };
+        let report = |first_work_reset: &str| Report {
+            generated_at: "2026-10-10T00:00:00Z".into(),
+            accounts: vec![
+                account(serde_json::json!({"profile":"Home",
+                    "weekly":weekly("2099-01-01T00:00:00Z")})),
+                account(
+                    serde_json::json!({"profile":"Work", "profile_email":"a@example.com",
+                    "weekly":weekly(first_work_reset)}),
+                ),
+                account(
+                    serde_json::json!({"profile":"Work", "profile_email":"b@example.com",
+                    "weekly":weekly("2099-01-03T00:00:00Z")}),
+                ),
+            ],
+        };
+        let mut app = sorted_app(SortKey::WeeklyReset, report("2099-01-02T00:00:00Z"));
+        app.scroll = 1;
+        app.replace_report(report("2099-01-09T00:00:00Z"), now);
+        let top = app.rows(now)[app.scroll];
+        assert_eq!(
+            (top.profile.as_str(), top.profile_email.as_deref()),
+            ("Work", Some("a@example.com"))
+        );
+        assert_eq!(app.scroll, 2);
     }
 
     #[test]

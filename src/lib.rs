@@ -154,18 +154,32 @@ struct Cli {
     #[arg(long)]
     reset_at: bool,
 
-    /// 行の並び順。default は `provider`(プロバイダ順 — 既存挙動を維持)。
+    /// 行の並び順。省略時は `--tui` が `weekly-reset`、それ以外は `provider`。
+    /// `provider` はプロバイダ順 (table / JSON / TUI は取得順、statusline は Claude → Codex → …)。
     /// `weekly-usage` は長期枠の使用率が高い順、`weekly-reset` は長期枠のリセット
-    /// 時刻が近い順(オプション名は互換性のため維持)。データ無し/取得失敗の行は常に末尾。table/json/
-    /// statusline すべてに適用される。
-    #[arg(long, value_enum, default_value_t = SortKey::Provider)]
-    sort: SortKey,
+    /// 時刻が近い順(オプション名は互換性のため維持)。データ無し/取得失敗の行は常に末尾。
+    /// 指定した値は table / JSON / statusline / TUI のすべてで優先する。
+    #[arg(long, value_enum)]
+    sort: Option<SortKey>,
 
     /// `--statusline` 描画時に隠す provider(comma-separated: claude,codex,antigravity,
     /// pixellab,grok)。fetch と `--json` / table には影響しない。指定すると config の
     /// `[statusline] hide` を上書きする。
     #[arg(long, value_delimiter = ',', value_name = "PROVIDERS")]
     statusline_hide: Vec<ProviderArg>,
+}
+
+impl Cli {
+    /// 行の並び順。`--sort` を省いた TUI は、statusline の呼び出し (`--sort weekly-reset`) と
+    /// 同じく長期枠の期限が近い順にする。ほかのモードの省略時は `provider` のまま変えない。
+    /// table / JSON は外部のツールが行の順に依存しうるし、statusline は呼び出し側が順を明示する。
+    fn sort_key(&self) -> SortKey {
+        self.sort.unwrap_or(if self.tui {
+            SortKey::WeeklyReset
+        } else {
+            SortKey::Provider
+        })
+    }
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -1156,7 +1170,7 @@ fn render_cached_statusline(
     let mut report: report::Report = serde_json::from_str(&data)
         .with_context(|| format!("failed to parse statusline cache {}", path.display()))?;
     filter_cached_report(&mut report, cli, excluded);
-    render::statusline(&report, active, cli.sort, &statusline_opts(cli, cfg))?;
+    render::statusline(&report, active, cli.sort_key(), &statusline_opts(cli, cfg))?;
     Ok(())
 }
 
@@ -1171,13 +1185,13 @@ fn render_reports(
         render::statusline(
             &report::Report::build(reports),
             active,
-            cli.sort,
+            cli.sort_key(),
             &statusline_opts(cli, cfg),
         )
     } else if cli.json {
-        render::json(&report::Report::build(reports), cli.sort)
+        render::json(&report::Report::build(reports), cli.sort_key())
     } else {
-        render::table(reports, cli.sort, color_enabled(cli.no_color))
+        render::table(reports, cli.sort_key(), color_enabled(cli.no_color))
     }
 }
 
@@ -1249,7 +1263,7 @@ async fn run(cli: Cli) -> Result<()> {
         return render::tui(
             Some(initial),
             Some(refresh),
-            cli.sort,
+            cli.sort_key(),
             color_enabled(cli.no_color),
             diagnostics,
             disk_targets(&cli, &cfg),
@@ -1271,7 +1285,7 @@ async fn run(cli: Cli) -> Result<()> {
             return render::tui(
                 Some(report::Report::build(&[])),
                 None,
-                cli.sort,
+                cli.sort_key(),
                 color_enabled(cli.no_color),
                 diagnostics,
                 disk_targets(&cli, &cfg),
@@ -1347,7 +1361,7 @@ async fn run(cli: Cli) -> Result<()> {
         return render::tui(
             None,
             Some(refresh),
-            cli.sort,
+            cli.sort_key(),
             color_enabled(cli.no_color),
             diagnostics,
             disk_targets(&cli, &cfg),
@@ -1916,6 +1930,38 @@ mod tests {
         // `--no-disk` は設定で有効にしていても優先する。
         let no_disk = Cli::parse_from(["ai-usage", "--tui", "--no-disk"]);
         assert!(disk_targets(&no_disk, &tui(Some(true))).is_empty());
+    }
+
+    #[test]
+    fn omitted_sort_is_the_soonest_reset_only_in_the_tui() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once("ai-usage").chain(args.iter().copied())).unwrap()
+        };
+        // 省略は None のまま持つ。clap の固定の既定値を戻すと、TUI の既定が効かなくなる。
+        assert!(parse(&["--tui"]).sort.is_none());
+        for (args, expected) in [
+            (&[][..], SortKey::Provider),
+            (&["--json"], SortKey::Provider),
+            (&["--statusline"], SortKey::Provider),
+            (
+                &["--statusline", "--input", "usage.json"],
+                SortKey::Provider,
+            ),
+            (&["--tui"], SortKey::WeeklyReset),
+            (&["--tui", "--input", "usage.json"], SortKey::WeeklyReset),
+            // 明示した値はどのモードでも優先する。
+            (&["--tui", "--sort", "provider"], SortKey::Provider),
+            (&["--tui", "--sort", "weekly-usage"], SortKey::WeeklyUsage),
+            (&["--tui", "--sort", "weekly-reset"], SortKey::WeeklyReset),
+            (&["--sort", "weekly-reset"], SortKey::WeeklyReset),
+            (&["--json", "--sort", "weekly-usage"], SortKey::WeeklyUsage),
+            (
+                &["--statusline", "--sort", "weekly-reset"],
+                SortKey::WeeklyReset,
+            ),
+        ] {
+            assert_eq!(parse(args).sort_key(), expected, "{args:?}");
+        }
     }
 
     #[test]
