@@ -225,8 +225,10 @@ statusline row without windows spans both slots (with and without `--compact` /
 `--reset-at`), puts the refusal right after `usage unknown`, and keeps the `↻` column of
 failed rows (`render/statusline.rs`, golden bytes included). The refusal record uses
 `REFUSAL` (178) and never `ALERT` in the TUI spans, the statusline golden lines, and
-`render/color_parity.rs`; the table keeps a real short window and adds the record on a
-second line; a record older than 24 hours disappears while the usage stays unknown.
+`render/color_parity.rs`; the table paints the record yellow, keeps a real short window
+and adds the record on a second line of an uncolored cell (checked on styled output, so a
+90% window cannot turn the record red); a record older than 24 hours disappears while the
+usage stays unknown.
 
 Sort coverage pins the per-mode `--sort` default (`weekly-reset` only for `--tui`, with or
 without `--input`; an explicit value wins in every mode; the field stays `None` when the
@@ -262,7 +264,7 @@ accounts sharing a Chrome profile name are told apart by `profile_email`).
 - Grok の `/v1/user` が `subscriptionTier: null` を返し (Free と確定)、credits の応答に `creditUsagePercent` が無いときは、長期枠を作らない (`--json` の `weekly` は `null`)。Free に効くのはモデル別の24時間のローリング枠で、credits の期間の終わりに回復するとは確かめられていない。期間だけの枠を作ると、バーは常に空で0%に見える。期間の終わりも待てば戻るリセットに見え、`--sort weekly-reset` ではリセットが近い行として上に来る。`creditUsagePercent` が明示されていれば、`0` でも枠を作る。有料のプランと、`subscriptionTier` の項目が無い応答では、使用率を `None` にした枠を期間とリセット時刻ごと残す。
 - Grok の拒否の記録 (`limit_observation`) は、現在の状態ではなく過去の出来事として出す。拒否でサーバーが返す `actual` はライブの値ではない。21時間あいた拒否のあいだに成功した要求が3件あっても、615636のまま変わらなかった。手元の要求ごとのトークン数の記録とも合わない。今の使用量と回復の時刻は、モデルへの要求を送らなければ分からない。要求は利用枠を消費するため、ai-usage は送らない。記録を `used_percent`・`resets_at`・推定の回復時刻に変換しない。拒否から24時間を過ぎて記録を出さなくなっても、そのモデルが使えるようになったとは扱わない。
 - 拒否の記録は `usage unknown` と並べて出す。TUI は2行で、`24h  usage unknown · grok-4.7 (rolling)` の次の行に `refused 2h ago (11/06 金 08:08) · server reported 615636/600000 tokens` を出す。日時はリセット日時と同じ形 (`MM/DD 曜 HH:MM`、ローカル時刻) にする。statusline は `24h grok-4.7 refused 2h ago` を、枠の無い行では `usage unknown` の直後に、枠のある行では枠の欄の後ろに足す。テーブルは短期枠の欄に `24h grok-4.7 · usage unknown · refused 2h ago` を出し、短期枠がある行では枠を隠さず同じ欄の2行目に足す。
-- 拒否の記録の色は、使用率の `Level::Caution` と同じ黄 (`render/palette.rs` の `REFUSAL`、256色の178) にする。TUI で黄にするのは `refused … ago (日時)` だけで、`usage unknown` とトークン数は `MUTED`、`24h` とモデル名は `LABEL` にする。statusline とテーブルは記録の全体を黄にする。`ALERT` の赤は取得の失敗と残り7日未満の手動リセットの期限に残し、拒否の記録には使わない。赤は、ローリング枠がもう空いているかもしれないのに「いま止められている」と読める。
+- 拒否の記録の色は、使用率の `Level::Caution` と同じ黄 (`render/palette.rs` の `REFUSAL`、256色の178) にする。TUI で黄にするのは `refused … ago (日時)` だけで、`usage unknown` とトークン数は `MUTED`、`24h` とモデル名は `LABEL` にする。statusline は記録の全体を黄にする。テーブルは comfy-table の名前付きの黄 (テーブルの使用率60〜85%と同じ `Color::Yellow`) で記録のセルを塗る。短期枠と記録が同じセルに並ぶときは、セルに色を付けない。comfy-table はセルに1色しか付けられず、付けると記録が短期枠の段階色 (90%なら赤) になるため。`ALERT` の赤は取得の失敗と残り7日未満の手動リセットの期限に残し、拒否の記録には使わない。赤は、ローリング枠がもう空いているかもしれないのに「いま止められている」と読める。
 - stdout へは `render::write_stdout` で書き、`print!` / `println!` を使わない。読み手が先に閉じた pipe (`| head`) は panic させず、`main` で終了コード 0 の正常終了にする。
 - `--reset-at` のときは、長期枠の日時を出せない行 (時刻不明・リセット済み・長期枠なし・短期枠のみ) にも同じ17桁を空け、後ろに続く `↻` の列を揃える。
 - TUI と statusline の利用枠のリセット日時は、括弧も含めて直前の残り時間と同じ色にする。同じ残り秒数と周期のしきい値から求めた `Paint` / `Style` を再利用し、日時だけ別に色を判定しない。
@@ -605,9 +607,11 @@ deadlines under seven days.
   slots, so it is not pushed to the far right:
   `  Grok   work       usage unknown  24h grok-4.7 refused 2h ago<padding>`.
   A row that has windows appends it after the window slots.
-- table: `24h grok-4.7 · usage unknown · refused 2h ago` (yellow) in the
-  Short window cell when the row has no short window; otherwise the record
-  goes on a second line of that cell and the window stays visible.
+- table: `24h grok-4.7 · usage unknown · refused 2h ago` (comfy-table's named
+  yellow) in the Short window cell when the row has no short window; otherwise
+  the record goes on a second line of that cell, the window stays visible, and
+  the cell is left uncolored, because comfy-table colors a whole cell and the
+  record would otherwise take the window's level color (red at 90%).
 
 Hiding the record after 24 hours does not mean the model is available again:
 only the history disappears, and the usage stays unknown.

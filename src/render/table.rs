@@ -143,8 +143,11 @@ fn bar_widths(has_short: bool, has_long: bool) -> (usize, usize) {
 }
 
 /// 短期枠の列。Grok のモデル別 24 時間枠で拒否された記録があれば、使用率は不明と書いて
-/// 拒否の経過時間を添える。拒否は過去の出来事なので、「いま制限中」と読める赤ではなく黄にする。
-/// 短期枠そのものがある行では枠を隠さず、記録を 2 行目に足す。
+/// 拒否の経過時間を添える。拒否は過去の出来事なので、「いま制限中」と読める赤ではなく黄
+/// (テーブルの使用率 60〜85% と同じ名前付きの黄) にする。
+/// 短期枠そのものがある行では枠を隠さず、記録を 2 行目に足す。comfy-table はセル全体に
+/// 1 色しか付けられない (行ごとの色には custom_styling 機能と追加の依存が要る) ので、
+/// このときはセルに色を付けない。付けると、記録が短期枠の段階色 (90% なら赤) になる。
 fn short_window_cell(u: &Usage, now: DateTime<Utc>, bar_width: usize, color: bool) -> Cell {
     let record = u
         .limit_observation
@@ -161,8 +164,8 @@ fn short_window_cell(u: &Usage, now: DateTime<Utc>, bar_width: usize, color: boo
         (None, short) => window_cell(short, now, bar_width, color),
         (Some(record), None) => tint(Cell::new(record), color, Color::Yellow),
         (Some(record), Some(short)) => {
-            let (text, color_code) = window_text(short, now, bar_width);
-            tint(Cell::new(format!("{text}\n{record}")), color, color_code)
+            let (text, _) = window_text(short, now, bar_width);
+            Cell::new(format!("{text}\n{record}"))
         }
     }
 }
@@ -494,6 +497,46 @@ mod tests {
             "{cell}"
         );
         assert_eq!(record, "24h grok-test · usage unknown · refused 2h ago");
+
+        // 色を付けて描いたとき、記録は黄。短期枠と同じセルに並ぶときはセルに色を付けず、
+        // 記録が短期枠の段階色 (90% の赤) にならない。
+        let render = |short: Option<Window>| {
+            let usage = Usage {
+                plan: Some("Free".into()),
+                short,
+                limit_observation: Some(refusal(141)),
+                ..Usage::default()
+            };
+            let row = AccountReport {
+                profile_name: "Grok".into(),
+                profile_email: None,
+                label: None,
+                provider: Provider::Grok,
+                group_label: None,
+                usage: Ok(usage),
+            };
+            let mut table = build_table(&[row], SortKey::Provider, true, now);
+            table.enforce_styling();
+            table.to_string()
+        };
+        // comfy-table はセルの左右の余白ごと色で囲む。
+        let alone = render(None);
+        assert!(
+            alone.contains("\x1b[38;5;11m 24h grok-test · usage unknown"),
+            "{alone:?}"
+        );
+        let combined = render(Some(Window {
+            kind: crate::model::WindowKind::Daily,
+            used_percent: Some(90.0),
+            resets_at: Some(now + Duration::hours(3)),
+        }));
+        assert!(
+            combined.contains("24h grok-test · usage unknown"),
+            "{combined:?}"
+        );
+        assert!(!combined.contains("m 24h grok-test"), "{combined:?}");
+        assert!(!combined.contains("m 1d "), "{combined:?}");
+        assert!(!combined.contains("\x1b[38;5;9m"), "{combined:?}");
 
         // 24 時間を過ぎた記録は出さない (使えるようになったとは書かない)。
         usage.short = None;
