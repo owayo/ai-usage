@@ -5,12 +5,12 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::manual_resets::format_resets_compact;
-use super::palette::{self, ACTIVE, ALERT, Fg, LABEL, Level, MUTED, Paint};
+use super::palette::{self, ACTIVE, Fg, LABEL, Level, MUTED, Paint};
 use super::reset::{FIVE_H_TH, format_reset_at, legacy_long_window_thresholds, window_thresholds};
 use super::sort::{sorted_refs, statusline_default_cmp};
 use super::{
     ActiveTarget, display_name, legacy_long_window_label, limit_observation_age, parse_utc,
-    preferred_email, resolve_active, window_label,
+    preferred_email, resolve_active, unknown_usage, window_label,
 };
 use crate::SortKey;
 use crate::model::Provider;
@@ -77,15 +77,18 @@ pub(super) fn render_row(
     now: DateTime<Utc>,
 ) -> String {
     let mut rendered = render_identity(a, row_email, active, opts);
-    rendered += &render_windows(a, opts, now);
-    if let Some(observation) = a.limit_observation.as_ref()
-        && let Some(age) = limit_observation_age(observation, now)
+    // 24 時間枠で拒否された記録は過去の出来事。「いま制限中」と読める ALERT の赤ではなく
+    // REFUSAL の黄で、いつ拒否されたかだけを書く。現在の使用率は窓の欄が `usage unknown` と示す。
+    let refusal = a.limit_observation.as_ref().and_then(|observation| {
+        let age = limit_observation_age(observation, now)?;
+        Some(format!("24h {} refused {age} ago", observation.model))
+    });
+    rendered += &render_windows(a, opts, now, refusal.as_deref());
+    // 枠のある行では、窓の欄の後ろに記録を足す (枠の無い行は窓の欄の中に書いてある)。
+    if let Some(refusal) = refusal.as_deref()
+        && !has_no_window(a)
     {
-        rendered += &paint(
-            opts.color,
-            ALERT,
-            &format!("  24h LIMIT {} ({age} ago)", observation.model),
-        );
+        rendered += &paint(opts.color, palette::REFUSAL, &format!("  {refusal}"));
     }
     // 残っている手動リセットが無い行 (0 回だけ・失効済みだけ) には `↻` を付けない。
     if a.ok
@@ -187,8 +190,19 @@ pub(super) fn pad_display(s: &str, field_width: usize) -> String {
     out
 }
 
+/// 取得には成功したが枠が 1 つも無い行 (使用率を返さない Grok Free など)。
+fn has_no_window(account: &AccountOut) -> bool {
+    account.ok && account.short.is_none() && account.long.is_none()
+}
+
 /// quota の空表示・単一枠・二枠表示を選び、statusline 後半を組み立てる。
-fn render_windows(account: &AccountOut, opts: &StatuslineOpts, now: DateTime<Utc>) -> String {
+/// `refusal` は Grok の拒否の記録で、枠の無い行だけがここに書く。
+fn render_windows(
+    account: &AccountOut,
+    opts: &StatuslineOpts,
+    now: DateTime<Utc>,
+    refusal: Option<&str>,
+) -> String {
     // 長期(right)スロットのラベルはプロバイダーごとのリセット周期に合わせる。
     // PixelLab / Grok は月次枠なので "1m"、それ以外は従来どおり "1w"。
     let short_label = window_label(account.short.as_ref().and_then(|window| window.kind), "5h");
@@ -213,6 +227,22 @@ fn render_windows(account: &AccountOut, opts: &StatuslineOpts, now: DateTime<Utc
             opts.reset_at,
             gauge_width,
         );
+        return rendered;
+    }
+    // 枠が 1 つも無い行は、空の gauge を 2 本描かず、2 スロットぶんの幅に `usage unknown` と書く。
+    // 拒否の記録はすぐ後ろに続け、右端まで離さない。`--reset-at` の日時の欄も含めた幅まで空けて、
+    // 後ろに続く `↻` の列を行間で揃える。
+    // 1 スロット = ラベル 3 + gauge + 1 + 使用率 4 + 2 + 残り時間 6、区切りは 3 桁。
+    if has_no_window(account) {
+        let width = 2 * gauge_width + 35 + if opts.reset_at { RESET_AT_WIDTH } else { 0 };
+        let Some(refusal) = refusal else {
+            return paint(opts.color, MUTED, &unknown_usage(width));
+        };
+        let refusal = format!("  {refusal}");
+        rendered += &paint(opts.color, MUTED, super::UNKNOWN_USAGE);
+        rendered += &paint(opts.color, palette::REFUSAL, &refusal);
+        let used = super::UNKNOWN_USAGE.len() + refusal.width();
+        rendered += &" ".repeat(width.saturating_sub(used));
         return rendered;
     }
     // quota が短期 / 長期どちらか 1 枠だけなら、空スロットを巻き取って横長表示する。
@@ -302,10 +332,10 @@ fn window_seg(
                         &format!("{:>3}%", percent.round() as i64),
                     );
                 }
+                // 消灯した gauge と `--%` は実測の 0% と見分けにくい。gauge・区切り・使用率の
+                // 欄 (gauge + 1 + 4 桁) を 1 区間の `usage unknown` で埋め、残り時間の列は揃える。
                 None => {
-                    s += &paint(opts.color, MUTED, &"░".repeat(gauge_width));
-                    s += " ";
-                    s += &paint(opts.color, MUTED, " --%");
+                    s += &paint(opts.color, MUTED, &unknown_usage(gauge_width + 5));
                 }
             }
             s += "  ";
@@ -399,6 +429,7 @@ fn compact_dur(sec: i64) -> String {
 mod tests {
     use chrono::{Datelike, TimeZone};
 
+    use super::super::palette::{ALERT, REFUSAL};
     use super::super::reset::{MONTHLY_TH, WEEK_TH};
     use super::*;
     use crate::model::{ResetKind, WindowKind};
@@ -456,11 +487,69 @@ mod tests {
             resets_in_seconds: None,
         };
         let rendered = window_seg(&plain_opts(), "1w", Some(&window), now, WEEK_TH, false, 8);
+        // 消灯した gauge と `--%` ではなく、gauge と使用率の欄 (8 + 1 + 4 = 13 桁) に不明と書く。
+        assert_eq!(rendered, "1w usage unknown  5d00h ");
         assert!(
-            rendered.contains("--%") && rendered.contains("5d"),
+            !rendered.contains('%') && !rendered.contains('░'),
             "{rendered}"
         );
-        assert!(!rendered.contains("0%"), "{rendered}");
+        let wide = window_seg(&plain_opts(), "1w", Some(&window), now, WEEK_TH, false, 16);
+        assert_eq!(wide, format!("1w {:<21}  5d00h ", "usage unknown"));
+        // 使用率が分かる枠と同じ幅なので、後ろの列がずれない。
+        let mut known = window;
+        known.used_percent = Some(42.0);
+        let known = window_seg(&plain_opts(), "1w", Some(&known), now, WEEK_TH, false, 8);
+        assert_eq!(rendered.width(), known.width());
+    }
+
+    #[test]
+    fn row_without_any_window_says_usage_unknown_across_both_slots() {
+        // 取得には成功したが枠が 1 つも無い行 (Grok Free など) に、空の gauge を 2 本描かない。
+        let now = fixed_utc("2026-10-10T00:00:00Z");
+        let without_windows = |ok| {
+            let mut account = manual_reset_account(None);
+            account.provider = Provider::Grok;
+            account.manual_resets = None;
+            account.ok = ok;
+            account
+        };
+        let account = without_windows(true);
+        let failed = without_windows(false);
+        let refusal = Some("24h grok-test refused 2h ago");
+        for compact in [false, true] {
+            let mut opts = plain_opts();
+            opts.compact = compact;
+            let windows = render_windows(&account, &opts, now, None);
+            // 2 スロットと同じ幅 (2 * gauge + 35)。
+            let gauge = if compact { 8 } else { 16 };
+            assert_eq!(
+                windows,
+                format!("{:<w$}", "usage unknown", w = 2 * gauge + 35)
+            );
+            assert!(
+                !windows.contains('░') && !windows.contains("--"),
+                "{windows}"
+            );
+            // 拒否の記録は `usage unknown` のすぐ後ろに続け、幅は変えない。
+            let with_refusal = render_windows(&account, &opts, now, refusal);
+            assert!(
+                with_refusal.starts_with("usage unknown  24h grok-test refused 2h ago"),
+                "{with_refusal:?}"
+            );
+            assert_eq!(with_refusal.width(), windows.width());
+            // 取得に失敗した行と同じ幅なので、`↻` の列が揃う。
+            let failed_width =
+                |opts: &StatuslineOpts| render_windows(&failed, opts, now, None).width();
+            assert_eq!(windows.width(), failed_width(&opts));
+            // `--reset-at` では日時の欄も空ける。
+            opts.reset_at = true;
+            for refusal in [None, refusal] {
+                assert_eq!(
+                    render_windows(&account, &opts, now, refusal).width(),
+                    failed_width(&opts)
+                );
+            }
+        }
     }
 
     #[test]
@@ -785,7 +874,7 @@ mod tests {
         let mut opts = plain_opts();
         opts.color = true;
 
-        let rendered = render_windows(&account, &opts, now);
+        let rendered = render_windows(&account, &opts, now, None);
         assert!(rendered.contains("1m "), "月次ラベルがない: {rendered:?}");
         assert!(
             rendered.contains("\x1b[38;5;196m2d00h "),
@@ -870,7 +959,8 @@ mod tests {
                 " \x1b[1;38;5;208m 85%\x1b[0m",
                 "  \x1b[38;5;178m2d05h \x1b[0m",
                 "\x1b[38;5;178m ({weekly_day} {weekday} {weekly_time})\x1b[0m",
-                "\x1b[38;5;196m  24h LIMIT test-model (3h ago)\x1b[0m",
+                // 24 時間枠で拒否された記録は履歴。赤ではなく REFUSAL の黄で書く。
+                "\x1b[38;5;178m  24h test-model refused 3h ago\x1b[0m",
                 // 手動リセット: 件数と括弧は LABEL、7 日未満で切れる期限だけ赤。0 回の 5h は出さない。
                 "\x1b[38;5;73m  ↻ \x1b[0m\x1b[38;5;245m1\x1b[0m",
                 "\x1b[38;5;245m (\x1b[0m",
@@ -977,16 +1067,57 @@ mod tests {
             limit_observation: None,
             error: None,
         };
-        // 長期枠だけの行は 2 枠ぶんの幅 (2 * 8 + 19 = 35) の gauge にまとめる。
+        // 長期枠だけの行は 2 枠ぶんの幅 (2 * 8 + 19 = 35) の gauge にまとめる。使用率が不明なら
+        // gauge・区切り・使用率の 40 桁を、1 区間の MUTED の `usage unknown` で埋める。
         assert_eq!(
             render_row(&unknown, None, false, &opts, now),
-            concat!(
-                "  \x1b[38;2;255;255;255mGrok   \x1b[0m",
-                "\x1b[38;5;245mGrok       \x1b[0m",
-                "\x1b[38;5;245m1m \x1b[0m",
-                "\x1b[38;5;242m░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\x1b[0m",
-                " \x1b[38;5;242m --%\x1b[0m",
-                "  \x1b[38;5;35m20d03h\x1b[0m",
+            format!(
+                concat!(
+                    "  \x1b[38;2;255;255;255mGrok   \x1b[0m",
+                    "\x1b[38;5;245mGrok       \x1b[0m",
+                    "\x1b[38;5;245m1m \x1b[0m",
+                    "\x1b[38;5;242musage unknown{pad}\x1b[0m",
+                    "  \x1b[38;5;35m20d03h\x1b[0m",
+                ),
+                pad = " ".repeat(40 - "usage unknown".len()),
+            )
+        );
+
+        // 枠が 1 つも無い成功行 (使用率を返さない Grok Free) と、その拒否の記録。
+        // `usage unknown` (MUTED) のすぐ後ろに拒否 (REFUSAL の黄) を続け、2 枠ぶん
+        // (2 * 8 + 35 = 51 桁) まで空白で埋める。色の区間はそれぞれ閉じ、空白には色を付けない。
+        let mut free = unknown;
+        free.long = None;
+        free.limit_observation = Some(LimitObservationOut {
+            model: "grok-test".into(),
+            observed_at: "2026-06-14T22:00:00Z".into(),
+            used_tokens: 615_636,
+            limit_tokens: 600_000,
+        });
+        assert_eq!(
+            render_row(&free, None, false, &opts, now),
+            format!(
+                concat!(
+                    "  \x1b[38;2;255;255;255mGrok   \x1b[0m",
+                    "\x1b[38;5;245mGrok       \x1b[0m",
+                    "\x1b[38;5;242musage unknown\x1b[0m",
+                    "\x1b[38;5;178m  24h grok-test refused 2h ago\x1b[0m{pad}",
+                ),
+                pad =
+                    " ".repeat(51 - "usage unknown".len() - "  24h grok-test refused 2h ago".len()),
+            )
+        );
+        // 記録が 24 時間を過ぎたら出さない。使用率は不明のまま (使えるようになったとは書かない)。
+        free.limit_observation.as_mut().unwrap().observed_at = "2026-06-13T23:00:00Z".into();
+        assert_eq!(
+            render_row(&free, None, false, &opts, now),
+            format!(
+                concat!(
+                    "  \x1b[38;2;255;255;255mGrok   \x1b[0m",
+                    "\x1b[38;5;245mGrok       \x1b[0m",
+                    "\x1b[38;5;242musage unknown{pad}\x1b[0m",
+                ),
+                pad = " ".repeat(51 - "usage unknown".len()),
             )
         );
     }
@@ -1055,6 +1186,7 @@ mod tests {
         assert_eq!(sgr(LABEL), "38;5;245");
         assert_eq!(sgr(MUTED), "38;5;242");
         assert_eq!(sgr(ALERT), "38;5;196");
+        assert_eq!(sgr(REFUSAL), "38;5;178");
         assert_eq!(sgr(ACTIVE), "1;38;5;196");
         assert_eq!(sgr(palette::marker(Provider::Codex)), "38;2;255;255;255");
         assert_eq!(sgr(palette::marker(Provider::Claude)), "38;2;217;119;87");

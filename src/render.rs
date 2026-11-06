@@ -30,7 +30,25 @@ use crate::SortKey;
 use crate::model::{Provider, WindowKind};
 use crate::report::{AccountOut, LimitObservationOut, Report};
 
+/// 使用率が不明な窓に、バーと `--%` の代わりに出す文字。
+const UNKNOWN_USAGE: &str = "usage unknown";
+
+/// 使用率が不明なときの表示を、バーと使用率が占めるはずだった `slot` 桁に左寄せで収める。
+/// 消灯したバーは実測の 0% と見分けられないので、不明であることを文字で書く。
+/// 13 桁に満たない狭い欄では `unknown` に縮める。
+fn unknown_usage(slot: usize) -> String {
+    let text = if slot >= UNKNOWN_USAGE.len() {
+        UNKNOWN_USAGE
+    } else {
+        "unknown"
+    };
+    format!("{text:<slot$}")
+}
+
 /// 会話時に観測した制限の経過時間。24時間枠を過ぎた記録は表示しない。
+///
+/// 記録を出さなくなっても、その枠が使えるようになったとは限らない。表示から消えるのは
+/// 履歴だけで、現在の使用率は不明のまま。
 fn limit_observation_age(observation: &LimitObservationOut, now: DateTime<Utc>) -> Option<String> {
     let observed = parse_utc(&observation.observed_at)?;
     let age = (now - observed).num_seconds();
@@ -218,6 +236,24 @@ pub fn json(report: &Report, sort: SortKey) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_usage_fills_the_slot_and_never_looks_like_a_bar() {
+        // TUI の 12 セルのバー + 2 + `--%` の 4 桁、statusline の 8 / 16 セル + 1 + 4 桁。
+        for slot in [18, 13, 21] {
+            let text = unknown_usage(slot);
+            assert_eq!(text.len(), slot, "{text:?}");
+            assert!(text.starts_with("usage unknown"), "{text:?}");
+        }
+        // 狭い欄では縮めるが、幅は保つ。
+        assert_eq!(unknown_usage(11), "unknown    ");
+        // 欄より長い文字は切り詰めない (表示が欠けて読めなくなるより、はみ出す方がまし)。
+        assert_eq!(unknown_usage(3), "unknown");
+        for slot in [3, 11, 13, 18] {
+            let text = unknown_usage(slot);
+            assert!(!text.contains('░') && !text.contains('%'), "{text:?}");
+        }
+    }
 
     #[test]
     fn old_limit_observation_disappears_from_cached_views() {

@@ -214,6 +214,20 @@ segment's color, and `render/color_parity.rs` renders the same accounts through 
 statusline and the TUI to confirm that shared text carries the same color. The disk rows
 get the same check against `--disk` in `render/tui/disk.rs`.
 
+Unknown-usage and Grok Free coverage: `build_usage` drops the period-only window only
+when `subscriptionTier` is an explicit `null` and `creditUsagePercent` is absent (an
+explicit `0` is kept; a paid tier or a missing tier field keeps the unknown window), using
+the real Free credits shape (`grok.rs`). `usage unknown` fills the bar-and-percentage
+width, shrinks to `unknown` below 13 cells, and never contains `░` or `%` (`render.rs`);
+the TUI keeps `reset` in the same column as a row with a bar, and the table writes
+`1w usage unknown  · in 5d 0h` (`render/tui.rs`, `render/table.rs`). A successful
+statusline row without windows spans both slots (with and without `--compact` /
+`--reset-at`), puts the refusal right after `usage unknown`, and keeps the `↻` column of
+failed rows (`render/statusline.rs`, golden bytes included). The refusal record uses
+`REFUSAL` (178) and never `ALERT` in the TUI spans, the statusline golden lines, and
+`render/color_parity.rs`; the table keeps a real short window and adds the record on a
+second line; a record older than 24 hours disappears while the usage stays unknown.
+
 Sort coverage pins the per-mode `--sort` default (`weekly-reset` only for `--tui`, with or
 without `--input`; an explicit value wins in every mode; the field stays `None` when the
 option is omitted) in `lib.rs`, and `SortKey::as_arg` against clap's value names in
@@ -227,6 +241,8 @@ accounts sharing a Chrome profile name are told apart by `profile_email`).
 ## 保守時に維持する動作
 
 - PixelLab の `imageGenerated` が欠落・null・数値以外の場合は、使用率を `None` とする。生成上限が分かる月次枠とリセット時刻は残し、実測の0%と区別する。
+- 使用率が不明な枠 (`used_percent` が `None`) は、TUI・statusline・テーブルのどれでも空のバーや `--%` で描かず、`usage unknown` と書く (statusline は `1w usage unknown        5d03h`、テーブルは `1w usage unknown  · in 5d`)。空のバーは実測の0%と見分けられない。TUI と statusline では、バーと使用率の幅まで空白で埋め、後ろの `reset …` や残り時間の位置を揃える。TUI の欄が13セルに満たない狭い端末では `unknown` に縮める。文字は、TUI と statusline では `MUTED`、テーブルでは暗い灰色にする。
+- 枠が1つも無いまま取得に成功した行は、statusline で2つの枠の欄をまとめて1つの `usage unknown` にし、空のゲージ2つと `--` を並べない。Grok の拒否の記録があれば `usage unknown` のすぐ後ろに続け (`usage unknown  24h grok-4.7 refused 2h ago`)、右端まで離さない。後ろの `↻` が他の行と同じ列から始まるよう、2枠分の幅 (`--reset-at` では日時の17桁も含む) まで空白で埋める。TUI の `No usage quota reported` とテーブルの `—` は変えない。
 - TUI の更新で行数が減った場合は、リストと `from X/Y` の表示に使うスクロール位置を現在の行数に収める。
 - `--sort` を省いた `--tui` (`--input` 付きも) は、statusline の呼び出しと同じ `weekly-reset` (長期枠の期限が近い順) で並べる。table / JSON / statusline の既定は `provider` のまま変えない (table / JSON は外部のツールが行の順に依存しうる)。明示した `--sort` はどのモードでも優先し、TUI の `provider` は取得順にする。既定は `Cli::sort_key` の1か所で解決し、`--sort` に clap の固定の既定値を付けない。付けると省略を見分けられず、TUI の既定が効かなくなる。
 - TUI の一覧のタイトルに、今の並び順を `--sort` の値の名前で出す (` Accounts · from 1/5 · sort: weekly-reset `)。名前は `SortKey::as_arg` から取り、clap の値の名前と一致することをテストで確かめる。
@@ -243,6 +259,10 @@ accounts sharing a Chrome profile name are told apart by `profile_email`).
 - 同じディレクトリのプロバイダ別の設定行は、`--profile` / `--only` を付けても各プロバイダをその行のラベルで表示する。行の受け持ちは config の `providers` だけで決め、`--only` はその後で当てる (`--only` は `providers` より優先し、どの行も挙げないプロバイダはそのディレクトリの先頭行で表示する)。
 - Antigravity の `ps` / `lsof` は非同期で待ち、各1秒の期限とキャンセル時の終了を設定する。探索を含むローカル経路全体の5秒制限も維持する。
 - Grok の認証情報は小数秒を捨てず作成時刻を比較する。
+- Grok の `/v1/user` が `subscriptionTier: null` を返し (Free と確定)、credits の応答に `creditUsagePercent` が無いときは、長期枠を作らない (`--json` の `weekly` は `null`)。Free に効くのはモデル別の24時間のローリング枠で、credits の期間の終わりに回復するとは確かめられていない。期間だけの枠を作ると、バーは常に空で0%に見える。期間の終わりも待てば戻るリセットに見え、`--sort weekly-reset` ではリセットが近い行として上に来る。`creditUsagePercent` が明示されていれば、`0` でも枠を作る。有料のプランと、`subscriptionTier` の項目が無い応答では、使用率を `None` にした枠を期間とリセット時刻ごと残す。
+- Grok の拒否の記録 (`limit_observation`) は、現在の状態ではなく過去の出来事として出す。拒否でサーバーが返す `actual` はライブの値ではない。21時間あいた拒否のあいだに成功した要求が3件あっても、615636のまま変わらなかった。手元の要求ごとのトークン数の記録とも合わない。今の使用量と回復の時刻は、モデルへの要求を送らなければ分からない。要求は利用枠を消費するため、ai-usage は送らない。記録を `used_percent`・`resets_at`・推定の回復時刻に変換しない。拒否から24時間を過ぎて記録を出さなくなっても、そのモデルが使えるようになったとは扱わない。
+- 拒否の記録は `usage unknown` と並べて出す。TUI は2行で、`24h  usage unknown · grok-4.7 (rolling)` の次の行に `refused 2h ago (11/06 金 08:08) · server reported 615636/600000 tokens` を出す。日時はリセット日時と同じ形 (`MM/DD 曜 HH:MM`、ローカル時刻) にする。statusline は `24h grok-4.7 refused 2h ago` を、枠の無い行では `usage unknown` の直後に、枠のある行では枠の欄の後ろに足す。テーブルは短期枠の欄に `24h grok-4.7 · usage unknown · refused 2h ago` を出し、短期枠がある行では枠を隠さず同じ欄の2行目に足す。
+- 拒否の記録の色は、使用率の `Level::Caution` と同じ黄 (`render/palette.rs` の `REFUSAL`、256色の178) にする。TUI で黄にするのは `refused … ago (日時)` だけで、`usage unknown` とトークン数は `MUTED`、`24h` とモデル名は `LABEL` にする。statusline とテーブルは記録の全体を黄にする。`ALERT` の赤は取得の失敗と残り7日未満の手動リセットの期限に残し、拒否の記録には使わない。赤は、ローリング枠がもう空いているかもしれないのに「いま止められている」と読める。
 - stdout へは `render::write_stdout` で書き、`print!` / `println!` を使わない。読み手が先に閉じた pipe (`| head`) は panic させず、`main` で終了コード 0 の正常終了にする。
 - `--reset-at` のときは、長期枠の日時を出せない行 (時刻不明・リセット済み・長期枠なし・短期枠のみ) にも同じ17桁を空け、後ろに続く `↻` の列を揃える。
 - TUI と statusline の利用枠のリセット日時は、括弧も含めて直前の残り時間と同じ色にする。同じ残り秒数と周期のしきい値から求めた `Paint` / `Style` を再利用し、日時だけ別に色を判定しない。
@@ -519,10 +539,18 @@ Map to `Usage`:
 
 - `long` = the actual `currentPeriod.type` (`Weekly` or `Monthly`), with
   `resets_at` from `currentPeriod.end`. Only an explicit `creditUsagePercent`
-  is a measured usage rate. If absent, `used_percent = None` and render `--%`
-  with the known period/reset. Never substitute `onDemandUsed / onDemandCap`
-  or legacy `used / monthlyLimit`: those are billing amounts, not the rate
-  limit. `short == None`, so the render layer uses the wide long-only slot.
+  (`0` included) is a measured usage rate. Never substitute
+  `onDemandUsed / onDemandCap` or legacy `used / monthlyLimit`: those are
+  billing amounts, not the rate limit. `short == None`, so the render layer
+  uses the wide long-only slot. Without `creditUsagePercent`:
+  - Free confirmed (`/v1/user` returns `subscriptionTier: null`) → no `long`
+    at all, so `--json` has `"weekly": null` for the row. A period-only
+    window draws as an always-empty bar that reads as 0% used, its end reads
+    as a reset that restores the free limit (unverified, see below), and
+    `--sort weekly-reset` ranks Grok as if it reset soon.
+  - Paid tier, or no `subscriptionTier` field in the response → keep the
+    window with `used_percent = None` (period and `resets_at` kept); the
+    renderers write `usage unknown`.
 - `short` = `None` (grok CLI does not expose a rolling short-window quota
   over REST; the 5-hour / weekly buckets that surface in the WS
   `authenticate` response are not attempted here).
@@ -538,14 +566,51 @@ will revert to the dual-slot layout automatically (see the same fallback in
 
 A free account can hit a model-specific rolling 24-hour token limit while the
 credits billing response supplies only a weekly period and no percentage.
-Neither that period nor the zero on-demand billing amounts prove 0% usage.
-The latest `shell.turn.inference_failed` event in `~/.grok/logs/unified.jsonl`
-can carry `subscription:free-usage-exhausted` and the refused request's
-`tokens (actual/limit)`. Render it as a separate, timestamped observation for
-at most 24 hours. Successful inference logs have no model name, so they cannot
-safely clear a model-specific rejection. Never treat the historical ratio as
-the live balance or the weekly percentage. Read only
-the last 1 MiB of the log, and derive its path from the chosen `auth.json`.
+Neither that period nor the zero on-demand billing amounts prove 0% usage, and
+no REST endpoint reports the live state of that limit. The only local trace is
+the latest `shell.turn.inference_failed` event in `~/.grok/logs/unified.jsonl`
+that carries `subscription:free-usage-exhausted` and the refused request's
+`tokens (actual/limit)`, e.g. `615636/600000`. While that event is at most 24
+hours old it becomes `limit_observation { model, observed_at, used_tokens,
+limit_tokens }` (the JSON shape is unchanged). It records a past refusal and
+is not a counter: the server reported exactly `615636` in refusals 21 hours
+apart, with three successful requests in between, and the local per-request
+token logs do not add up to the server's count either. Current usage and the
+recovery time could only be learned by sending a model request, which spends
+quota, so ai-usage never sends one. Never treat the historical ratio as the
+live balance, the weekly percentage, or a recovery time: it must not become
+`used_percent`, `resets_at`, or an estimated recovery. Successful inference
+logs have no model name, so they cannot safely clear a model-specific
+rejection. Read only the last 1 MiB of the log, and derive its path from the
+chosen `auth.json`.
+
+Render the record as history next to an explicit `usage unknown`, in the
+caution yellow (`REFUSAL` in `render/palette.rs`, 256-color 178), never the
+`ALERT` red: red reads as "blocked right now", while the rolling window may
+have freed up earlier. `ALERT` stays for fetch failures and manual-reset
+deadlines under seven days.
+
+- TUI: two lines. `usage unknown` and the token text are muted, the model
+  text uses the label color, `refused … ago (date)` is yellow, and the date
+  uses the reset-time format (`MM/DD 曜 HH:MM`, local time). On a row without
+  windows the record takes the place of `No usage quota reported`.
+
+  ```text
+    24h  usage unknown · grok-4.7 (rolling)
+         refused 2h ago (11/06 金 08:08) · server reported 615636/600000 tokens
+  ```
+
+- statusline: the yellow `  24h grok-4.7 refused 2h ago`. A Free row without
+  windows puts it right after `usage unknown` and pads the rest of both window
+  slots, so it is not pushed to the far right:
+  `  Grok   work       usage unknown  24h grok-4.7 refused 2h ago<padding>`.
+  A row that has windows appends it after the window slots.
+- table: `24h grok-4.7 · usage unknown · refused 2h ago` (yellow) in the
+  Short window cell when the row has no short window; otherwise the record
+  goes on a second line of that cell and the window stays visible.
+
+Hiding the record after 24 hours does not mean the model is available again:
+only the history disappears, and the usage stays unknown.
 
 ## Statusline cache
 

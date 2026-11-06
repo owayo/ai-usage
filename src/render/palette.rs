@@ -46,8 +46,11 @@ impl Paint {
 pub(super) const LABEL: Paint = Paint::indexed(245);
 /// 値の無いところ (バーの消灯部や空き、`--`) と値の古さ。
 pub(super) const MUTED: Paint = Paint::indexed(242);
-/// 24 時間枠の制限、7 日未満で切れる手動リセットの期限、取得の失敗。
+/// 7 日未満で切れる手動リセットの期限、取得の失敗。
 pub(super) const ALERT: Paint = Paint::indexed(196);
+/// Grok のモデル別 24 時間枠で拒否された記録 (`refused 2h ago`)。過去の出来事なので、
+/// 「いま制限中」と読める ALERT の赤ではなく、使用率の Caution と同じ黄にする。
+pub(super) const REFUSAL: Paint = Paint::indexed(178);
 /// statusline で、このセッションのアカウント名を示す。
 pub(super) const ACTIVE: Paint = ALERT.bold();
 /// statusline と TUI の手動リセットの印。変更系アイコンに合わせたティール。
@@ -169,6 +172,10 @@ mod tests {
         assert_eq!(MUTED, Paint::indexed(242));
         assert_eq!(ALERT, Paint::indexed(196));
         assert_eq!(MANUAL_RESET_MARKER, Paint::indexed(73));
+        // 拒否の記録は過去の出来事なので、赤ではなく使用率の Caution と同じ黄。太字にしない。
+        assert_eq!(REFUSAL, Paint::indexed(178));
+        assert_eq!(REFUSAL, Level::Caution.fill());
+        assert_ne!(REFUSAL, ALERT);
         assert_eq!(
             ACTIVE,
             Paint {

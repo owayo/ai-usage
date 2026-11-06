@@ -427,19 +427,36 @@ pub(super) fn account_lines(
         if let Some(observation) = account.limit_observation.as_ref()
             && let Some(age) = limit_observation_age(observation, now)
         {
-            // statusline の `24h LIMIT` と同じく、観測の記録全体を ALERT で塗る。
-            let alert = style(color, palette::ALERT);
-            lines.push(Line::from(Span::styled(
-                format!("  24h  LIMIT HIT  {} · seen {age} ago", observation.model),
-                alert,
-            )));
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "       {}/{} tokens at refusal",
-                    observation.used_tokens, observation.limit_tokens
+            // 拒否は過去の出来事で、現在の使用率も回復の時刻も分からない。「いま制限中」と読める
+            // ALERT の赤やバーは使わず、使用率は不明と書いたうえで、拒否の時刻とそのときサーバーが
+            // 返した数を履歴として添える。拒否の時刻の色は statusline の `refused` と同じ REFUSAL。
+            let muted = style(color, palette::MUTED);
+            lines.push(Line::from(vec![
+                Span::styled("  24h  ", label),
+                Span::styled(super::UNKNOWN_USAGE, muted),
+                Span::styled(format!(" · {} (rolling)", observation.model), label),
+            ]));
+            let refused_at = parse_utc(&observation.observed_at)
+                .map(|time| {
+                    let local = time.with_timezone(&Local);
+                    let show_year = local.year() != now.with_timezone(&Local).year();
+                    format!(" ({})", format_reset_at(local, show_year))
+                })
+                .unwrap_or_default();
+            lines.push(Line::from(vec![
+                Span::raw("       "),
+                Span::styled(
+                    format!("refused {age} ago{refused_at}"),
+                    style(color, palette::REFUSAL),
                 ),
-                alert,
-            )));
+                Span::styled(
+                    format!(
+                        " · server reported {}/{} tokens",
+                        observation.used_tokens, observation.limit_tokens
+                    ),
+                    muted,
+                ),
+            ]));
         }
     }
     if let Some(resets) = &account.manual_resets {
@@ -486,7 +503,6 @@ fn window_spans(
         .filter(|percent| percent.is_finite())
         .map(|percent| percent.clamp(0.0, 100.0));
     // 点灯部と数字は使用率の段階色、消灯部と不明な使用率は statusline と同じ MUTED。
-    let level = percent.map(Level::usage);
     let muted = style(color, palette::MUTED);
     let label = style(color, palette::LABEL);
     let reset = window.resets_at.as_deref().and_then(parse_utc);
@@ -510,12 +526,13 @@ fn window_spans(
         })
         .unwrap_or_default();
     let period_text = format!("  {:<2}", kind_label(window, provider, short));
-    let percent_text = percent.map_or(" --%".to_string(), |p| format!("{p:>3.0}%"));
+    // 使用率の欄は `100%` も ` 42%` も 4 桁。不明な行も同じ幅で計算し、reset の位置を揃える。
+    const PERCENT_WIDTH: usize = 4;
     let countdown = reset_text(window, now);
     // 枠線を除いた幅に、曜日入りの日時を残す。足りなければ reset の文字を省き、バーを縮める。
     let available = usize::from(area_width.saturating_sub(2));
     let fixed_width =
-        period_text.width() + 2 + 2 + percent_text.width() + countdown.width() + reset_at.width();
+        period_text.width() + 2 + 2 + PERCENT_WIDTH + countdown.width() + reset_at.width();
     let reset_label = if fixed_width + width + "  reset ".width() <= available {
         "  reset "
     } else {
@@ -524,29 +541,32 @@ fn window_spans(
     let width = width
         .min(available.saturating_sub(fixed_width + reset_label.width()))
         .max(1);
-    let filled = percent.map_or(0, |percent| {
-        if percent > 0.0 {
-            ((percent * width as f64 / 100.0).ceil() as usize).min(width)
-        } else {
-            0
+    let mut spans = vec![Span::styled(period_text, label), Span::raw("  ")];
+    match percent {
+        Some(percent) => {
+            let level = Level::usage(percent);
+            let filled = if percent > 0.0 {
+                ((percent * width as f64 / 100.0).ceil() as usize).min(width)
+            } else {
+                0
+            };
+            spans.extend([
+                Span::styled("█".repeat(filled), style(color, level.fill())),
+                Span::styled("░".repeat(width - filled), muted),
+                Span::raw("  "),
+                Span::styled(format!("{percent:>3.0}%"), style(color, level.text())),
+            ]);
         }
-    });
-    let mut spans = vec![
-        Span::styled(period_text, label),
-        Span::raw("  "),
-        Span::styled(
-            "█".repeat(filled),
-            level.map_or(muted, |level| style(color, level.fill())),
-        ),
-        Span::styled("░".repeat(width - filled), muted),
-        Span::raw("  "),
-        Span::styled(
-            percent_text,
-            level.map_or(muted, |level| style(color, level.text())),
-        ),
+        // 消灯したバーと `--%` は実測の 0% と見分けにくい。バーと使用率の欄を文字で埋める。
+        None => spans.push(Span::styled(
+            super::unknown_usage(width + 2 + PERCENT_WIDTH),
+            muted,
+        )),
+    }
+    spans.extend([
         Span::styled(reset_label, label),
         Span::styled(countdown, reset_style),
-    ];
+    ]);
     // リセットの日時は statusline の `--reset-at` と同じく、残り時間と同じ色にする。
     if !reset_at.is_empty() {
         spans.push(Span::styled(reset_at, reset_style));
@@ -1109,14 +1129,32 @@ mod tests {
                 assert!(!bold(span), "{span:?}");
             }
         }
-        // 使用率が不明なら、バー全体と `--%` を MUTED にする。
+        // 使用率が不明なら、バーと使用率の欄 (12 + 2 + 4 セル) を MUTED の `usage unknown` で埋める。
+        // 消灯したバーや `--%` は 0% と見分けにくいので使わない。
         let spans = window_spans(&window(None), Provider::Claude, false, true, 80, now);
-        assert_eq!(spans[2].content, "");
-        assert_eq!(spans[3].content, "░".repeat(12));
-        assert_eq!(spans[3].style.fg, Some(Color::Indexed(242)));
-        assert_eq!(spans[5].content, " --%");
-        assert_eq!(spans[5].style.fg, Some(Color::Indexed(242)));
-        assert!(!spans[5].style.add_modifier.contains(Modifier::BOLD));
+        let [label, _, unknown, reset_label, countdown, date] = &spans[..] else {
+            panic!("{spans:?}");
+        };
+        assert_eq!(label.content, "  1w");
+        assert_eq!(unknown.content, format!("{:<18}", "usage unknown"));
+        assert_eq!(fg(unknown), Some(Color::Indexed(242)));
+        assert!(!bold(unknown));
+        assert_eq!(reset_label.content, "  reset ");
+        // 期限と日時の色は、使用率が分かる行と同じ。
+        assert_eq!(fg(countdown), Some(Color::Indexed(178)));
+        assert_eq!(fg(date), Some(Color::Indexed(178)));
+        assert!(spans.iter().all(|span| !span.content.contains('░')));
+        assert!(spans.iter().all(|span| !span.content.contains('%')));
+        // reset の位置は、使用率が分かる行と同じ列に揃う。
+        let known = window_spans(&window(Some(42.0)), Provider::Claude, false, true, 80, now);
+        let column = |spans: &[Span]| {
+            spans
+                .iter()
+                .take_while(|span| span.content != "  reset ")
+                .map(|span| span.content.width())
+                .sum::<usize>()
+        };
+        assert_eq!(column(&spans), column(&known));
     }
 
     fn account(value: serde_json::Value) -> AccountOut {
@@ -1248,21 +1286,51 @@ mod tests {
             Some(Color::Indexed(242))
         );
 
-        // 24 時間枠の制限は、statusline の `24h LIMIT` と同じく記録全体を ALERT にする。
+        // 24 時間枠で拒否された記録は履歴。使用率は不明 (MUTED) と書き、拒否の時刻は REFUSAL の黄、
+        // サーバーが返した数は MUTED。「いま制限中」と読める ALERT の赤は使わない。
+        let observed = now - chrono::Duration::minutes(5);
         let limited = account(serde_json::json!({
             "provider": "grok",
-            "limit_observation": {"model":"grok-test","observed_at":at(-chrono::Duration::minutes(5)),
+            "limit_observation": {"model":"grok-test","observed_at":observed.to_rfc3339(),
                                   "used_tokens":120,"limit_tokens":100}
         }));
         let lines = account_lines(&limited, true, 80, now);
-        for text in [
-            "  24h  LIMIT HIT  grok-test · seen 5m ago",
-            "       120/100 tokens at refusal",
+        let refused = format!(
+            "refused 5m ago ({})",
+            format_reset_at(observed.with_timezone(&Local), false)
+        );
+        for (text, index) in [
+            ("  24h  ", 245),
+            ("usage unknown", 242),
+            (" · grok-test (rolling)", 245),
+            (refused.as_str(), 178),
+            (" · server reported 120/100 tokens", 242),
         ] {
-            let limit = span(&lines, text);
-            assert_eq!(limit.style.fg, Some(Color::Indexed(196)), "{text}");
-            assert!(!limit.style.add_modifier.contains(Modifier::BOLD), "{text}");
+            let record = span(&lines, text);
+            assert_eq!(record.style.fg, Some(Color::Indexed(index)), "{text}");
+            assert!(
+                !record.style.add_modifier.contains(Modifier::BOLD),
+                "{text}"
+            );
         }
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .all(|span| span.style.fg != Some(Color::Indexed(196))),
+            "{lines:#?}"
+        );
+        // 記録だけの行に `No usage quota reported` やバー・使用率は出さない。
+        let text: Vec<String> = lines.iter().map(Line::to_string).collect();
+        assert_eq!(
+            text,
+            [
+                "Grok  Home".to_string(),
+                "  24h  usage unknown · grok-test (rolling)".to_string(),
+                format!("       {refused} · server reported 120/100 tokens"),
+                String::new(),
+            ]
+        );
     }
 
     fn fg_of(lines: &[Line<'static>], text: &str) -> Option<Color> {
@@ -1403,12 +1471,13 @@ mod tests {
             resets_at: None,
             resets_in_seconds: None,
         };
+        // 80 セル以上ではバーが 12 セルあり、`usage unknown` が収まる。
         let line = Line::from(window_spans(
             &window,
             Provider::Grok,
             false,
             false,
-            60,
+            100,
             Utc::now(),
         ));
         let text = line
@@ -1416,8 +1485,23 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("1w") && text.contains("--%"), "{text}");
-        assert!(!text.contains("0%"), "{text}");
+        assert!(
+            text.contains("1w") && text.contains("usage unknown"),
+            "{text}"
+        );
+        assert!(!text.contains('%') && !text.contains('░'), "{text}");
+        // 狭い端末 (バーが 5 セル) でも、バーの代わりに不明と書く。
+        let narrow = Line::from(window_spans(
+            &window,
+            Provider::Grok,
+            false,
+            false,
+            40,
+            Utc::now(),
+        ))
+        .to_string();
+        assert!(narrow.contains("1w  unknown"), "{narrow}");
+        assert!(!narrow.contains('%') && !narrow.contains('░'), "{narrow}");
     }
 
     #[test]
@@ -1465,9 +1549,24 @@ mod tests {
             .join("\n");
         assert!(screen.contains("↻ 2"), "{screen}");
         assert_eq!(screen.matches("1@").count(), 2, "{screen}");
-        assert!(screen.contains("24h  LIMIT HIT"), "{screen}");
-        assert!(screen.contains("grok-test · seen"), "{screen}");
-        assert!(screen.contains("120/100 tokens at refusal"), "{screen}");
+        // Grok の拒否は履歴として、使用率は不明と並べて出す。`LIMIT HIT` (いま制限中) とは書かない。
+        assert!(
+            screen.contains("24h  usage unknown · grok-test (rolling)"),
+            "{screen}"
+        );
+        assert!(screen.contains("refused <1m ago ("), "{screen}");
+        assert!(
+            screen.contains("· server reported 120/100 tokens"),
+            "{screen}"
+        );
+        assert!(!screen.contains("LIMIT"), "{screen}");
+        // 拒否の記録がある Grok の行には `No usage quota reported` を重ねない
+        // (枠の無い Claude の行には出る)。
+        assert_eq!(
+            screen.matches("No usage quota reported").count(),
+            1,
+            "{screen}"
+        );
     }
 
     #[test]

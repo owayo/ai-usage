@@ -7,9 +7,9 @@ use comfy_table::{Cell, Color, ContentArrangement, Table};
 use super::manual_resets::format_resets;
 use super::palette::brand_rgb;
 use super::sort::sorted_refs;
-use super::{display_name, limit_observation_age};
+use super::{UNKNOWN_USAGE, display_name, limit_observation_age};
 use crate::SortKey;
-use crate::model::{AccountReport, Provider, Window};
+use crate::model::{AccountReport, Provider, Usage, Window};
 use crate::report::{LimitObservationOut, ManualResetOut};
 
 /// provider の brand color を comfy-table truecolor として返す(table 用)。
@@ -93,18 +93,7 @@ fn build_table(reports: &[AccountReport], sort: SortKey, color: bool, now: DateT
                         provider_color(r.provider),
                     ),
                     Cell::new(u.plan.as_deref().unwrap_or("—")),
-                    if let Some(observation) =
-                        u.limit_observation.as_ref().map(LimitObservationOut::from)
-                        && let Some(age) = limit_observation_age(&observation, now)
-                    {
-                        tint(
-                            Cell::new(format!("24h LIMIT {} · seen {age} ago", observation.model)),
-                            color,
-                            Color::Red,
-                        )
-                    } else {
-                        window_cell(&u.short, now, short_bar_width, color)
-                    },
+                    short_window_cell(u, now, short_bar_width, color),
                     window_cell(&u.long, now, long_bar_width, color),
                 ];
                 if show_resets {
@@ -153,27 +142,62 @@ fn bar_widths(has_short: bool, has_long: bool) -> (usize, usize) {
     }
 }
 
+/// 短期枠の列。Grok のモデル別 24 時間枠で拒否された記録があれば、使用率は不明と書いて
+/// 拒否の経過時間を添える。拒否は過去の出来事なので、「いま制限中」と読める赤ではなく黄にする。
+/// 短期枠そのものがある行では枠を隠さず、記録を 2 行目に足す。
+fn short_window_cell(u: &Usage, now: DateTime<Utc>, bar_width: usize, color: bool) -> Cell {
+    let record = u
+        .limit_observation
+        .as_ref()
+        .map(LimitObservationOut::from)
+        .and_then(|observation| {
+            let age = limit_observation_age(&observation, now)?;
+            Some(format!(
+                "24h {} · {UNKNOWN_USAGE} · refused {age} ago",
+                observation.model
+            ))
+        });
+    match (record, &u.short) {
+        (None, short) => window_cell(short, now, bar_width, color),
+        (Some(record), None) => tint(Cell::new(record), color, Color::Yellow),
+        (Some(record), Some(short)) => {
+            let (text, color_code) = window_text(short, now, bar_width);
+            tint(Cell::new(format!("{text}\n{record}")), color, color_code)
+        }
+    }
+}
+
 fn window_cell(w: &Option<Window>, now: DateTime<Utc>, bar_width: usize, color: bool) -> Cell {
     match w {
         // データ無し: 色なしのプレースホルダ("—")。
         None => Cell::new("—"),
         Some(w) => {
-            let reset = w
-                .resets_at
-                .map(|r| humanize(r - now))
-                .unwrap_or_else(|| "—".to_string());
-            let (bar, percent, color_code) = match w.used_percent {
-                Some(percent) => (
-                    tbar(percent, bar_width),
-                    format!("{:>3}%", percent.round() as i64),
-                    tlevel(percent),
-                ),
-                None => ("░".repeat(bar_width), " --%".to_string(), Color::DarkGrey),
-            };
-            let text = format!("{} {}  {}  · {}", w.kind.label(), bar, percent, reset);
-            tint(Cell::new(text.trim_start()), color, color_code)
+            let (text, color_code) = window_text(w, now, bar_width);
+            tint(Cell::new(text), color, color_code)
         }
     }
+}
+
+/// 1 枠ぶんの文字と色。使用率が不明な枠は、消灯したバーと `--%` (0% と見分けにくい) の
+/// 代わりに `usage unknown` と書く。
+fn window_text(w: &Window, now: DateTime<Utc>, bar_width: usize) -> (String, Color) {
+    let reset = w
+        .resets_at
+        .map(|r| humanize(r - now))
+        .unwrap_or_else(|| "—".to_string());
+    let (usage, color_code) = match w.used_percent {
+        Some(percent) => (
+            format!(
+                "{}  {:>3}%",
+                tbar(percent, bar_width),
+                percent.round() as i64
+            ),
+            tlevel(percent),
+        ),
+        None => (UNKNOWN_USAGE.to_string(), Color::DarkGrey),
+    };
+    let text = format!("{} {usage}  · {reset}", w.kind.label());
+    (text.trim_start().to_string(), color_code)
 }
 
 fn tbar(pct: f64, width: usize) -> String {
@@ -430,9 +454,54 @@ mod tests {
         let cell = window_cell(&window, now, NORMAL_BAR_WIDTH, false)
             .content()
             .to_string();
-        assert!(cell.starts_with("1w "), "{cell}");
-        assert!(cell.contains("--%") && cell.contains("in 5d"), "{cell}");
-        assert!(!cell.contains("0%"), "{cell}");
+        // 消灯したバーと `--%` は 0% と見分けにくいので、不明と文字で書く。
+        assert_eq!(cell, "1w usage unknown  · in 5d 0h");
+        assert!(!cell.contains('%') && !cell.contains('░'), "{cell}");
+    }
+
+    #[test]
+    fn grok_refusal_is_history_next_to_unknown_usage() {
+        let now = fixed_utc("2026-11-06T01:30:00Z");
+        let refusal = |minutes_ago| crate::model::LimitObservation {
+            model: "grok-test".into(),
+            observed_at: now - Duration::minutes(minutes_ago),
+            used_tokens: 615_636,
+            limit_tokens: 600_000,
+        };
+        let mut usage = Usage {
+            plan: Some("Free".into()),
+            limit_observation: Some(refusal(141)),
+            ..Usage::default()
+        };
+        let cell = short_window_cell(&usage, now, NORMAL_BAR_WIDTH, false)
+            .content()
+            .to_string();
+        assert_eq!(cell, "24h grok-test · usage unknown · refused 2h ago");
+        assert!(!cell.contains("LIMIT"), "{cell}");
+
+        // 短期枠がある行では枠を隠さず、記録を 2 行目に足す。
+        usage.short = Some(Window {
+            kind: crate::model::WindowKind::Daily,
+            used_percent: Some(30.0),
+            resets_at: Some(now + Duration::hours(3)),
+        });
+        let cell = short_window_cell(&usage, now, NORMAL_BAR_WIDTH, false)
+            .content()
+            .to_string();
+        let (window, record) = cell.split_once('\n').expect("2 行");
+        assert!(
+            window.starts_with("1d ") && window.contains("30%"),
+            "{cell}"
+        );
+        assert_eq!(record, "24h grok-test · usage unknown · refused 2h ago");
+
+        // 24 時間を過ぎた記録は出さない (使えるようになったとは書かない)。
+        usage.short = None;
+        usage.limit_observation = Some(refusal(24 * 60 + 1));
+        assert_eq!(
+            short_window_cell(&usage, now, NORMAL_BAR_WIDTH, false).content(),
+            "—"
+        );
     }
 
     #[test]

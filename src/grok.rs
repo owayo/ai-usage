@@ -70,7 +70,8 @@ pub async fn fetch(client: &Client, cfg: Option<&GrokCfg>) -> Result<Vec<UsageRo
         Err(e) => return Err(e),
     };
     // credits は請求上の monthlyLimit/used と異なり、利用枠の実際の周期を返す。
-    // 使用率が省略されることもあるが、その場合は 0% と推測せず不明として残す。
+    // 使用率が省略されることもあるが、その場合は 0% と推測せず不明として残す
+    // (Free と確定していれば窓自体を作らない。build_usage を参照)。
     // 401/403 なら auth 側の問題なので surface する。
     let billing = match get_billing(client, &auth.access).await {
         Ok(v) => Some(v),
@@ -165,6 +166,7 @@ fn is_auth_error(err: &anyhow::Error) -> bool {
 ///
 /// - plan = `subscriptionTier`(null または欠落時は "Free")。
 /// - long = credits の現行周期と、明示された使用率。使用率が無ければ不明。
+///   ただし Free と確定していて使用率が無いときは作らない(下記)。
 /// - short = None(grok CLI は短期 window を REST では露出していない)。
 fn build_usage(user: &Value, billing: Option<&Value>) -> Usage {
     let email = user
@@ -173,7 +175,14 @@ fn build_usage(user: &Value, billing: Option<&Value>) -> Usage {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let plan = plan_label(user);
-    let long = billing.and_then(billing_to_window);
+    // Free の credits 応答は週次の期間だけを返し、使用率を含まない。Free で実際に効くのは
+    // モデル別のローリング24時間枠で、この期間の終わりに回復するとは確かめられていない。
+    // 期間だけの窓は常に空のバーになり、終わりの時刻も「待てば戻る」リセットに見えるので作らない。
+    // Free の確定は明示の null だけで行い、欠落は不明として窓を残す。明示の 0% も残す。
+    let free_confirmed = matches!(user.get("subscriptionTier"), Some(Value::Null));
+    let long = billing
+        .and_then(billing_to_window)
+        .filter(|window| !(free_confirmed && window.used_percent.is_none()));
 
     Usage {
         email,
@@ -229,6 +238,11 @@ fn number_val(v: Option<&Value>) -> Option<f64> {
 /// Grok Build の直近の拒否応答を読む。週次 credits API に含まれない Free の
 /// モデル別24時間枠であり、会話を送信せず確認できる唯一の手元の観測値。
 /// 成功ログにはモデル名が無いため、別モデルの成功で拒否記録を消さない。
+///
+/// これは過去の出来事の記録で、現在の使用率でも回復時刻でもない。拒否の `actual` は
+/// ライブの値ではない (実測: 21時間あいた拒否のあいだに成功が3件あっても 615636 のまま
+/// 変わらず、手元の成功ログのトークン数の合計とも一致しない)。表示側は「使用率は不明」と
+/// 「何時に拒否されたか」に分けて描き、使用率・リセット・回復見込みに変換しない。
 fn read_limit_observation(auth_path: &Path, now: DateTime<Utc>) -> Option<LimitObservation> {
     const TAIL_BYTES: u64 = 1_048_576;
     let log_path = auth_path.parent()?.join("logs/unified.jsonl");
@@ -672,6 +686,63 @@ mod tests {
         let w = u.long.as_ref().unwrap();
         assert_eq!(w.kind, WindowKind::Weekly);
         assert_eq!(w.used_percent, Some(20.0));
+    }
+
+    /// 実際の Free の credits 応答 (2026-11 に取得したものと同じ形)。
+    fn free_credits_billing(percent: Option<f64>) -> Value {
+        let mut config = json!({
+            "currentPeriod": {
+                "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                "start": "2026-11-01T00:00:00+00:00",
+                "end": "2026-11-08T00:00:00+00:00"
+            },
+            "onDemandCap": {"val": 0},
+            "onDemandUsed": {"val": 0},
+            "isUnifiedBillingUser": true,
+            "prepaidBalance": {"val": 0},
+            "billingPeriodStart": "2026-11-01T00:00:00+00:00",
+            "billingPeriodEnd": "2026-11-08T00:00:00+00:00"
+        });
+        if let Some(percent) = percent {
+            config["creditUsagePercent"] = json!(percent);
+        }
+        json!({ "config": config })
+    }
+
+    #[test]
+    fn free_account_without_percent_gets_no_weekly_window() {
+        // 使用率の無い期間だけの窓は、常に空のバーと「待てば戻る」リセットに見えるので作らない。
+        let user = json!({"email": "y@x.test", "subscriptionTier": null});
+        let u = build_usage(&user, Some(&free_credits_billing(None)));
+        assert_eq!(u.plan.as_deref(), Some("Free"));
+        assert!(u.long.is_none());
+        assert!(u.short.is_none());
+    }
+
+    #[test]
+    fn free_account_keeps_an_explicit_percent_including_zero() {
+        let user = json!({"subscriptionTier": null});
+        for percent in [0.0, 37.5] {
+            let u = build_usage(&user, Some(&free_credits_billing(Some(percent))));
+            let w = u.long.expect("明示された使用率の窓は残す");
+            assert_eq!(w.kind, WindowKind::Weekly);
+            assert_eq!(w.used_percent, Some(percent));
+        }
+    }
+
+    #[test]
+    fn paid_or_unknown_tier_keeps_the_unknown_window() {
+        // Free と確定できないときは、使用率が欠けても期間とリセットを残す (表示は usage unknown)。
+        for user in [
+            json!({"subscriptionTier": "SuperGrok"}),
+            json!({"email": "y@x.test"}),
+        ] {
+            let w = build_usage(&user, Some(&free_credits_billing(None)))
+                .long
+                .expect("Free と確定しない行の窓は残す");
+            assert_eq!(w.used_percent, None);
+            assert!(w.resets_at.is_some());
+        }
     }
 
     #[test]

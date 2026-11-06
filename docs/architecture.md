@@ -59,13 +59,18 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
    `cli-chat-proxy.grok.com/v1/user?include=subscription` for the plan (`subscriptionTier`
    → falls back to `Free`) and `cli-chat-proxy.grok.com/v1/billing?format=credits` for the
    current credit period. The period type sets the `1w` or `1m` badge and its end sets the
-   reset countdown. Only `creditUsagePercent` supplies a usage percentage; when the API omits
-   it, the single wide bar shows `--%` rather than an invented 0%. The CLI's model-specific
-   free-tier rate limit is separate from this credit period. A model-specific
-   free-limit rejection in the CLI log from the last 24 hours adds a separate
-   observation with token counts and age. Successful inference logs lack a model
-   name, so they cannot safely clear a model-specific rejection. Historical token
-   counts are not treated as the current remaining quota.
+   reset countdown. Only `creditUsagePercent` supplies a usage percentage, and an explicit
+   `0` counts. When it is missing for a Free account (`subscriptionTier` is `null`), no
+   long window is built: Free accounts are limited by a model-specific rolling 24-hour
+   token limit, and nothing shows that this limit recovers when the credit period ends.
+   When it is missing for a paid plan, or the response has no `subscriptionTier`, the
+   period and reset stay and the usage reads `usage unknown` rather than an invented 0%.
+   A model-specific free-limit refusal in the CLI log from the last 24 hours is shown as
+   history: its age and time, and the token counts the server reported. That count is not
+   live; it stayed the same across refusals 21 hours apart. Checking the live state would
+   take a model request, which spends quota. The refusal is therefore never turned into a
+   usage rate, a reset time, or an estimated recovery time. Successful inference logs
+   lack a model name, so they cannot safely clear a model-specific rejection.
 
 ## Cloudflare and retries
 

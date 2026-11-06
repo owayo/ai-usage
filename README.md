@@ -37,7 +37,7 @@ It reads each Chrome profile's session straight from the browser, so it can repo
 
 - **Multi-Account**: Reports every Chrome profile signed into Claude, Codex, or PixelLab — no re-login needed. Account labels fall back from the provider email to the Chrome profile email and then the profile name, skipping empty or malformed email values (including missing or duplicate `@` separators)
 - **Multi-Provider**: Claude (`claude.ai`), Codex (`chatgpt.com`), Antigravity (Google's `agy` CLI/IDE), PixelLab (`pixellab.ai`), and Grok (xAI's `grok` CLI) in one view
-- **Typed Windows**: Each quota carries its real cycle (5-hour, daily, weekly, or monthly) with a usage bar, percentage when available, and reset countdown — each row's badge (`5h` / `1d` / `1w` / `1m`) comes from the quota itself. An unavailable percentage shows `--%` instead of 0%. Any row with only one window collapses both slots into a single wider bar. Older caches without cycle metadata retain provider-appropriate labels and reset-warning thresholds
+- **Typed Windows**: Each quota carries its real cycle (5-hour, daily, weekly, or monthly) with a usage bar, percentage when available, and reset countdown — each row's badge (`5h` / `1d` / `1w` / `1m`) comes from the quota itself. A window without a reported percentage reads `usage unknown` instead of an empty bar that would look like 0%. Any row with only one window collapses both slots into a single wider bar. Older caches without cycle metadata retain provider-appropriate labels and reset-warning thresholds
 - **Manual Resets**: Claude and Codex rows show how many manual usage resets remain and when each grant expires — the table and the TUI list every expiry, while the statusline shows the totals and the nearest date. The statusline and the TUI show a date in red once fewer than seven days remain. Kinds with no resets left are hidden, so a row with none left shows no reset entry. A count that could not be fetched reads `?`, and expired grants drop out even when rendering an older cache
 - **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
 - **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars. Labels are padded by display width and truncated at grapheme boundaries, preserving emoji and combining characters
@@ -162,7 +162,7 @@ ai-usage --sort weekly-usage      # closest to the cap first
 ai-usage --sort weekly-reset      # soonest reset first (default for --tui)
 ```
 
-The TUI groups quota bars under each account heading, with each window labeled `5h`, `1d`, `1w`, or `1m` and its reset countdown beside it. It shares the statusline's [color rules](#colors). Manual resets include each grant's expiry. Use `↑` / `↓` or `j` / `k` to scroll, and `q` / `Esc` / `Ctrl+C` to quit. Usage refreshes every minute. `--tui --input <PATH>` rereads the saved `--json` file every minute without network access. When the Grok CLI observed a model-specific free limit rejection within the last 24 hours, the TUI shows its model, observation age, and token counts separately from the weekly credit window. This observation is not a measurement of the current remaining quota.
+The TUI groups quota bars under each account heading, with each window labeled `5h`, `1d`, `1w`, or `1m` and its reset countdown beside it. It shares the statusline's [color rules](#colors). Manual resets include each grant's expiry. Use `↑` / `↓` or `j` / `k` to scroll, and `q` / `Esc` / `Ctrl+C` to quit. Usage refreshes every minute. `--tui --input <PATH>` rereads the saved `--json` file every minute without network access. Grok does not report current usage for Free accounts. If the Grok CLI was refused by a model's free limit within the last 24 hours, the TUI writes that model's usage as `usage unknown`. The next line gives the refusal's age and time and the token counts the server reported. The record shows a past refusal, not the current remaining quota.
 
 Without `--sort`, the TUI (including `--tui --input`) orders accounts by `weekly-reset`. The account whose long window (weekly or monthly) resets soonest comes first, and accounts with no known reset time or a failed fetch come last. `--sort provider` restores the fetch order, the same order as the table. The account list title shows the order in use, for example `Accounts · from 1/5 · sort: weekly-reset`.
 
@@ -179,7 +179,7 @@ Archive       unavailable: not mounted
 
 The command waits at most 2 seconds; a volume that has not answered by then shows `no response`. A volume that cannot be read does not change the exit status. `--disk --json` reports the values in bytes. The JSON fields and the options that `--disk` ignores: [Disk usage output](docs/cli-reference.md#disk-usage-output).
 
-If PixelLab supplies a generation limit but omits the generation count, its monthly window and reset time remain visible with an unknown percentage (`--%`). An explicit zero count still displays `0%`.
+If PixelLab supplies a generation limit but omits the generation count, its monthly window and reset time remain visible, with `usage unknown` in place of the bar and percentage. An explicit zero count still displays `0%`.
 
 Every command and option, including statusline active-row selection, `--input` for fast status-bar redraws from a cached `--json` file, and `--debug`: [docs/cli-reference.md](docs/cli-reference.md)
 
@@ -196,7 +196,7 @@ The filled part of a bar and its percentage follow these usage thresholds:
 | Orange | 80% to <90% | 90% to <95% |
 | Red | 90% or more | 95% or more |
 
-Quota percentages are also bold from 80%; disk percentages are bold from 90%. Unused quota bars and absolute reset dates are dim. Disk bars show purgeable space in gray and free space in dim gray.
+Quota percentages are also bold from 80%; disk percentages are bold from 90%. Unused quota bars and `usage unknown` are dim. Disk bars show purgeable space in gray and free space in dim gray.
 
 For a reset in the future, the countdown color depends on the quota window's period:
 
@@ -207,9 +207,9 @@ For a reset in the future, the countdown color depends on the quota window's per
 | Weekly (`1w`) | 4 days or more | 2 to <4 days | 1 to <2 days | Less than 1 day |
 | Monthly (`1m`) | 14 days or more | 7 to <14 days | 3 to <7 days | Less than 3 days |
 
-Weekly countdowns turn yellow once fewer than four days remain, including `3dxxh`; exactly four days is green. Colors use the remaining time before display rounding. A reset that is due or past is green; an unknown reset time is dim.
+Weekly countdowns turn yellow once fewer than four days remain, including `3dxxh`; exactly four days is green. Colors use the remaining time before display rounding. A reset that is due or past is green; an unknown reset time is dim. The absolute reset date after a countdown, such as `(11/03 火 09:00)`, uses the countdown's color.
 
-Manual-reset expiry dates turn red when fewer than seven days remain; exactly seven days stays gray. Disable colors and bold text with `--no-color`, a non-empty `NO_COLOR`, or `TERM=dumb`.
+Manual-reset expiry dates turn red when fewer than seven days remain; exactly seven days stays gray. A Grok refusal record is yellow, not red, because it reports a past refusal rather than a current block. Disable colors and bold text with `--no-color`, a non-empty `NO_COLOR`, or `TERM=dumb`.
 
 ## Configuration
 

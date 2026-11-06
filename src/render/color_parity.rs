@@ -193,7 +193,7 @@ fn shared_text_has_the_same_color_in_the_statusline_and_the_tui() {
     );
     assert_eq!(color_of(&tui, " 85%", 0).as_deref(), Some("1;38;5;208"));
 
-    // Codex の白い印、使用率が不明な枠、24 時間枠の制限。
+    // Codex の白い印、使用率が不明な枠、24 時間枠で拒否された記録。
     let grok = account(serde_json::json!({
         "provider": "grok",
         "weekly": {"kind":"monthly","used_percent":null,
@@ -202,13 +202,22 @@ fn shared_text_has_the_same_color_in_the_statusline_and_the_tui() {
                               "used_tokens":120,"limit_tokens":100}
     }));
     let (statusline, tui) = render_both(&grok, now);
-    for text in ["Grok", " --%", "LIMIT"] {
+    for text in ["Grok", "usage unknown", "refused 5m ago"] {
         assert_eq!(
             color_of(&statusline, text, 0),
             color_of(&tui, text, 0),
             "{text:?}"
         );
     }
+    assert_eq!(
+        color_of(&statusline, "usage unknown", 0).as_deref(),
+        Some("38;5;242")
+    );
+    // 拒否は過去の出来事なので、ALERT の赤ではなく REFUSAL の黄。
+    assert_eq!(
+        color_of(&statusline, "refused 5m ago", 0).as_deref(),
+        Some("38;5;178")
+    );
     let codex = account(serde_json::json!({"provider": "codex", "label": "work"}));
     let (statusline, tui) = render_both(&codex, now);
     assert_eq!(
