@@ -365,7 +365,9 @@ fold an unknown count into `0` — `0` is a confirmed "no resets left".
   page uses) and reads `cedar_ember = { eligible, grants: [{ id, resets_left,
   clears, gives_back_weekly, ends_at, paused }] }`. A grant with
   `gives_back_weekly: true` is `fable` whatever it `clears`: the settings page
-  checks that flag first and groups grants as full / fable / session / other.
+  checks that flag first and groups grants as full / fable / session / other,
+  and describes the Fable reset as resetting the Fable limit and leaving this
+  week's Fable usage out of the weekly limit.
   Those model-launch grants (first seen 2026-11-09) carry `type: "full"` and list
   only the windows in use — `five_hour` + `seven_day_overage_included`, or just the
   latter on an account whose five-hour window is idle — so classifying them by

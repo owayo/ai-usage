@@ -134,8 +134,8 @@ fn parse_manual_resets(
 
 /// 付与が回復する利用枠の種類。
 ///
-/// 週間枠を返す付与 (`gives_back_weekly`) は、claude.ai の設定画面と同じく `clears` を見ずに
-/// Fable のリセットとする。この付与の `clears` は `five_hour` / `seven_day_overage_included` の
+/// 今週の Fable の使用量を週間上限から外す付与 (`gives_back_weekly`) は、claude.ai の設定画面と
+/// 同じく `clears` を見ずに Fable のリセットとする。この付与の `clears` は `five_hour` / `seven_day_overage_included` の
 /// ように使用中の枠しか挙げず、同じ付与でも 5 時間枠を使っていないアカウントでは
 /// `five_hour` が消える。`clears` で分けると、同じ付与がアカウントによって `5h` や `other` になる。
 fn reset_kind(grant: &serde_json::Value, clears: &[serde_json::Value]) -> ResetKind {

@@ -84,8 +84,9 @@ pub struct LimitObservation {
 #[non_exhaustive]
 pub enum ResetKind {
     Full,
-    /// Claude の週間枠を返すリセット (`gives_back_weekly`)。新モデルの公開時に配られ、
-    /// claude.ai の設定画面は回復する枠に関係なく Fable のリセットとしてまとめる。
+    /// Claude の Fable のリセット (`gives_back_weekly`)。新モデルの公開時に配られる。claude.ai の
+    /// 説明では、Fable の上限をリセットし、今週の Fable の使用量を週間上限の計算から除外する。
+    /// 設定画面は回復する枠 (`clears`) に関係なくこの種類にまとめる。
     Fable,
     FiveHour,
     Weekly,

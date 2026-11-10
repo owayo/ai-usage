@@ -19,7 +19,7 @@ flowchart LR
 2. **Claude** — `sessionKey` Cookie で `claude.ai/api/organizations/{org}/usage` を呼び
    `five_hour` / `seven_day` の `{utilization, resets_at}` を取得。同じ呼び出しに
    `?cedar_ember=1` を付け、手動リセットの付与分 (`cedar_ember.grants[]` の `resets_left`、
-   回復する枠 `clears`、週間枠を戻す印 `gives_back_weekly`、期限 `ends_at`、一時停止 `paused`)
+   回復する枠 `clears`、Fable の使用量を週間上限から外す印 `gives_back_weekly`、期限 `ends_at`、一時停止 `paused`)
    も読みます。
 3. **Codex** — `__Secure-next-auth.session-token` Cookie を `chatgpt.com/api/auth/session` で
    Bearer トークンに交換し、`chatgpt.com/backend-api/wham/usage` を呼んで
