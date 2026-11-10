@@ -175,44 +175,42 @@ fn format_tui_deadline(expiry: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Str
 }
 
 fn summarize(resets: &[ManualResetOut], now: DateTime<Utc>) -> Vec<ResetGroup> {
+    // データにある種類を、表示順 (`ResetKind::rank`) と一時停止の有無で並べる。
+    // 種類の一覧を別に持たないので、種類を足しても描画から漏れない。
+    let mut keys: Vec<_> = resets.iter().map(|r| (r.kind, r.paused)).collect();
+    keys.sort_by_key(|&(kind, paused)| (kind.rank(), paused));
+    keys.dedup();
     let mut groups = Vec::new();
-    for kind in [
-        ResetKind::Full,
-        ResetKind::FiveHour,
-        ResetKind::Weekly,
-        ResetKind::Other,
-    ] {
-        for paused in [false, true] {
-            let mut total = Some(0_u64);
-            let mut deadlines = BTreeMap::<Option<DateTime<Utc>>, u64>::new();
-            for reset in resets
-                .iter()
-                .filter(|r| r.kind == kind && r.paused == paused)
-            {
-                let expiry = reset.expires_at.as_deref().and_then(parse_utc);
-                // JSON cache を読むたびに判定し、キャッシュ更新前でも失効分を数えない。
-                if expiry.is_some_and(|end| end <= now) {
-                    continue;
-                }
-                total = total
-                    .zip(reset.remaining)
-                    .and_then(|(sum, count)| sum.checked_add(count));
-                if let Some(count) = reset.remaining.filter(|count| *count > 0) {
-                    let slot = deadlines.entry(expiry).or_default();
-                    *slot = slot.saturating_add(count);
-                }
-            }
-            // 残りが 0 回の種類は出さない (失効しただけの付与も含む)。不明は 0 回と区別して残す。
-            if total == Some(0) {
+    for (kind, paused) in keys {
+        let mut total = Some(0_u64);
+        let mut deadlines = BTreeMap::<Option<DateTime<Utc>>, u64>::new();
+        for reset in resets
+            .iter()
+            .filter(|r| r.kind == kind && r.paused == paused)
+        {
+            let expiry = reset.expires_at.as_deref().and_then(parse_utc);
+            // JSON cache を読むたびに判定し、キャッシュ更新前でも失効分を数えない。
+            if expiry.is_some_and(|end| end <= now) {
                 continue;
             }
-            groups.push(ResetGroup {
-                kind,
-                paused,
-                total,
-                deadlines,
-            });
+            total = total
+                .zip(reset.remaining)
+                .and_then(|(sum, count)| sum.checked_add(count));
+            if let Some(count) = reset.remaining.filter(|count| *count > 0) {
+                let slot = deadlines.entry(expiry).or_default();
+                *slot = slot.saturating_add(count);
+            }
         }
+        // 残りが 0 回の種類は出さない (失効しただけの付与も含む)。不明は 0 回と区別して残す。
+        if total == Some(0) {
+            continue;
+        }
+        groups.push(ResetGroup {
+            kind,
+            paused,
+            total,
+            deadlines,
+        });
     }
     groups
 }
@@ -334,6 +332,59 @@ mod tests {
             assert_eq!(format_tui_deadline(Some(expiry), now), expected);
         }
         assert_eq!(format_tui_deadline(None, now), "?");
+    }
+
+    #[test]
+    fn fable_resets_keep_their_label_and_sit_between_full_and_session_resets() {
+        let now = parse_utc("2026-11-10T06:30:00Z").unwrap();
+        let end = "2027-03-09T07:59:00+00:00";
+        let expiry = parse_utc(end).unwrap();
+        // 期限が同じ 3 件の付与 (取得側は確定 0 回の full も補う)。
+        let fable = [
+            reset(ResetKind::Fable, Some(1), Some(end)),
+            reset(ResetKind::Fable, Some(1), Some(end)),
+            reset(ResetKind::Fable, Some(1), Some(end)),
+            reset(ResetKind::Full, Some(0), None),
+        ];
+        let date = format_deadline(Some(expiry), now);
+        // 種類名を省くのは full だけで、fable は statusline と TUI でも種類名を残す。
+        assert_eq!(compact(&fable, now), Some(format!("fable 3 ({date})")));
+        assert_eq!(
+            format_resets(&fable, now, false),
+            Some(format!("fable 3 (3@{date})"))
+        );
+        let tui: Vec<String> = format_resets_tui(&fable, now)
+            .iter()
+            .map(|line| match line {
+                TuiResetLine::Summary(text) => text.clone(),
+                TuiResetLine::Deadline { prefix, deadline } => {
+                    format!("{prefix}{}", deadline.text)
+                }
+            })
+            .collect();
+        assert_eq!(
+            tui,
+            [
+                "fable 3".to_string(),
+                format!("  3@{}", format_tui_deadline(Some(expiry), now))
+            ]
+        );
+        // 並びは claude.ai の設定画面と同じく full、fable、5h の順にし、1w と other を後に置く。
+        // 一時停止中の付与は、同じ種類の利用できる付与の直後に置く。
+        let mut held = reset(ResetKind::Fable, Some(1), None);
+        held.paused = true;
+        let mixed = [
+            reset(ResetKind::Other, Some(1), None),
+            held,
+            reset(ResetKind::Weekly, Some(1), None),
+            reset(ResetKind::FiveHour, Some(1), None),
+            reset(ResetKind::Fable, Some(2), None),
+            reset(ResetKind::Full, Some(1), None),
+        ];
+        assert_eq!(
+            compact(&mixed, now).as_deref(),
+            Some("1; fable 2; fable paused 1; 5h 1; 1w 1; other 1 (?)")
+        );
     }
 
     #[test]

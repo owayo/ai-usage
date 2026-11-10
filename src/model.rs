@@ -77,10 +77,16 @@ pub struct LimitObservation {
 }
 
 /// 手動で回復できる利用枠。通常の自動リセット時刻とは独立した情報。
+/// 提供元が種類を増やすたびに variant が増えるため、ライブラリの利用者には網羅的な
+/// match を求めない (未知の値は JSON でも `Other` として読む)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ResetKind {
     Full,
+    /// Claude の週間枠を返すリセット (`gives_back_weekly`)。新モデルの公開時に配られ、
+    /// claude.ai の設定画面は回復する枠に関係なく Fable のリセットとしてまとめる。
+    Fable,
     FiveHour,
     Weekly,
     #[serde(other)]
@@ -91,9 +97,21 @@ impl ResetKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Full => "full",
+            Self::Fable => "fable",
             Self::FiveHour => "5h",
             Self::Weekly => "1w",
             Self::Other => "other",
+        }
+    }
+
+    /// 表示する順。claude.ai の設定画面の並び (full, fable, session, other) に合わせる。
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Full => 0,
+            Self::Fable => 1,
+            Self::FiveHour => 2,
+            Self::Weekly => 3,
+            Self::Other => 4,
         }
     }
 }
@@ -219,5 +237,28 @@ mod tests {
             assert_eq!(serde_json::to_string(&kind).unwrap(), json);
             assert_eq!(serde_json::from_str::<WindowKind>(json).unwrap(), kind);
         }
+    }
+
+    #[test]
+    fn reset_kind_labels_json_names_and_ranks_cover_every_variant() {
+        // claude.ai の設定画面と同じく full、fable、セッション枠、その他の順に並べる。
+        let cases = [
+            (ResetKind::Full, "full", "\"full\"", 0),
+            (ResetKind::Fable, "fable", "\"fable\"", 1),
+            (ResetKind::FiveHour, "5h", "\"five_hour\"", 2),
+            (ResetKind::Weekly, "1w", "\"weekly\"", 3),
+            (ResetKind::Other, "other", "\"other\"", 4),
+        ];
+        for (kind, label, json, rank) in cases {
+            assert_eq!(kind.label(), label);
+            assert_eq!(kind.rank(), rank);
+            assert_eq!(serde_json::to_string(&kind).unwrap(), json);
+            assert_eq!(serde_json::from_str::<ResetKind>(json).unwrap(), kind);
+        }
+        // 後の版が足した種類は、旧版のキャッシュ描画でも捨てずに other として数える。
+        assert_eq!(
+            serde_json::from_str::<ResetKind>("\"future_kind\"").unwrap(),
+            ResetKind::Other
+        );
     }
 }

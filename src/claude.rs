@@ -110,14 +110,7 @@ fn parse_manual_resets(
                 continue;
             }
             let clears = grant.get("clears")?.as_array()?;
-            let short = clears.iter().any(|v| v.as_str() == Some("five_hour"));
-            let long = clears.iter().any(|v| v.as_str() == Some("seven_day"));
-            let kind = match (short, long) {
-                (true, true) => ResetKind::Full,
-                (true, false) => ResetKind::FiveHour,
-                (false, true) => ResetKind::Weekly,
-                _ => ResetKind::Other,
-            };
+            let kind = reset_kind(grant, clears);
             resets.push(ManualReset {
                 kind,
                 remaining: Some(remaining),
@@ -137,6 +130,30 @@ fn parse_manual_resets(
         });
     }
     Some(resets)
+}
+
+/// 付与が回復する利用枠の種類。
+///
+/// 週間枠を返す付与 (`gives_back_weekly`) は、claude.ai の設定画面と同じく `clears` を見ずに
+/// Fable のリセットとする。この付与の `clears` は `five_hour` / `seven_day_overage_included` の
+/// ように使用中の枠しか挙げず、同じ付与でも 5 時間枠を使っていないアカウントでは
+/// `five_hour` が消える。`clears` で分けると、同じ付与がアカウントによって `5h` や `other` になる。
+fn reset_kind(grant: &serde_json::Value, clears: &[serde_json::Value]) -> ResetKind {
+    if grant
+        .get("gives_back_weekly")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return ResetKind::Fable;
+    }
+    let short = clears.iter().any(|v| v.as_str() == Some("five_hour"));
+    let long = clears.iter().any(|v| v.as_str() == Some("seven_day"));
+    match (short, long) {
+        (true, true) => ResetKind::Full,
+        (true, false) => ResetKind::FiveHour,
+        (false, true) => ResetKind::Weekly,
+        _ => ResetKind::Other,
+    }
 }
 
 /// claude.ai の /api/account response から signed-in account email を取り出す。
@@ -275,6 +292,91 @@ mod tests {
                 summary(&parse_manual_resets(Some(&v), now).unwrap()),
                 vec![(ResetKind::Full, Some(0))]
             );
+        }
+    }
+
+    #[test]
+    fn weekly_give_back_grants_are_fable_resets_whatever_they_clear() {
+        let now = DateTime::parse_from_rfc3339("2026-11-10T06:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ends_at = DateTime::parse_from_rfc3339("2027-03-09T07:59:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        // 2026-11-09 に配られた付与の形。`type` は full のまま、週間枠を返す印だけが立つ。
+        let grant = |id: &str, clears: serde_json::Value| {
+            json!({
+                "id": id, "type": "full", "clears": clears, "gives_back_weekly": true,
+                "resets_left": 1, "resets_total": 1, "paused": false, "usable_now": true,
+                "starts_at": "2026-11-09T18:00:00+00:00", "ends_at": "2027-03-09T07:59:00+00:00"
+            })
+        };
+        // 5 時間枠を使っているアカウントでは、clears に five_hour も挙がる。
+        let in_session = json!({"eligible": true, "grants": [
+            grant("launch-fable", json!(["five_hour", "seven_day_overage_included"])),
+            grant("launch-fable-12mo", json!(["five_hour", "seven_day_overage_included"])),
+            grant("launch-fable-6mo", json!(["five_hour", "seven_day_overage_included"]))
+        ]});
+        let resets = parse_manual_resets(Some(&in_session), now).unwrap();
+        assert_eq!(
+            summary(&resets),
+            vec![
+                (ResetKind::Fable, Some(1)),
+                (ResetKind::Fable, Some(1)),
+                (ResetKind::Fable, Some(1)),
+                (ResetKind::Full, Some(0)),
+            ]
+        );
+        assert!(
+            resets[..3]
+                .iter()
+                .all(|reset| reset.expires_at == Some(ends_at) && !reset.paused)
+        );
+        // 5 時間枠を使っていないアカウントでは、同じ付与の clears から five_hour が消える。
+        // それでも 5h や other にせず、同じ Fable のリセットとして数える。
+        let idle = json!({"eligible": true, "grants": [
+            grant("launch-fable", json!(["seven_day_overage_included"]))
+        ]});
+        assert_eq!(
+            summary(&parse_manual_resets(Some(&idle), now).unwrap()),
+            vec![(ResetKind::Fable, Some(1)), (ResetKind::Full, Some(0))]
+        );
+        // 今すぐ使えない付与も、持っている回数としては数える。
+        let mut waiting = grant("launch-fable", json!(["seven_day_overage_included"]));
+        waiting["usable_now"] = json!(false);
+        waiting["use_requires_limit"] = json!(true);
+        let v = json!({"eligible": true, "grants": [waiting]});
+        assert_eq!(
+            summary(&parse_manual_resets(Some(&v), now).unwrap()),
+            vec![(ResetKind::Fable, Some(1)), (ResetKind::Full, Some(0))]
+        );
+        // 印が立っていても、回復する枠 (clears) の無い付与は従来どおり全体を不明にする。
+        let mut unscoped = grant("launch-fable", json!([]));
+        unscoped.as_object_mut().unwrap().remove("clears");
+        let v = json!({"eligible": true, "grants": [unscoped]});
+        assert!(parse_manual_resets(Some(&v), now).is_none());
+        // 印が false・null・欠落の付与は、従来どおり clears で分ける。`type` は見ない。
+        // seven_day_overage_included は 1w として描く seven_day とは別の枠なので、週間枠に数えない
+        // (同じ応答で seven_day が 57%、seven_day_overage_included が 0% だった)。
+        for flag in [json!(false), json!(null)] {
+            for (clears, kind) in [
+                (json!(["five_hour", "seven_day"]), ResetKind::Full),
+                (
+                    json!(["five_hour", "seven_day_overage_included"]),
+                    ResetKind::FiveHour,
+                ),
+                (json!(["seven_day_overage_included"]), ResetKind::Other),
+            ] {
+                let mut plain = grant("plain", clears);
+                plain["gives_back_weekly"] = flag.clone();
+                let mut absent = plain.clone();
+                absent.as_object_mut().unwrap().remove("gives_back_weekly");
+                for grant in [plain, absent] {
+                    let v = json!({"eligible": true, "grants": [grant]});
+                    let resets = parse_manual_resets(Some(&v), now).unwrap();
+                    assert_eq!(resets[0].kind, kind);
+                }
+            }
         }
     }
 

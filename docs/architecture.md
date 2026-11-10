@@ -19,7 +19,8 @@ For browser-backed profiles and CLI OAuth providers, `ai-usage`:
 2. **Claude** — uses the `sessionKey` cookie to call
    `claude.ai/api/organizations/{org}/usage` → `five_hour` / `seven_day` `{utilization, resets_at}`.
    The same request adds `?cedar_ember=1` to read manual reset grants
-   (`cedar_ember.grants[]` with `resets_left`, the windows they `clears`, `ends_at`, and `paused`).
+   (`cedar_ember.grants[]` with `resets_left`, the windows they `clears`, whether they give back
+   weekly usage (`gives_back_weekly`), `ends_at`, and `paused`).
 3. **Codex** — uses the `__Secure-next-auth.session-token` cookie to exchange for a Bearer
    token via `chatgpt.com/api/auth/session`, then calls `chatgpt.com/backend-api/wham/usage`
    → `rate_limit.primary_window` / `secondary_window`. Manual reset counts come from

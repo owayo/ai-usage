@@ -160,10 +160,13 @@ end-to-end `--init-config` generation from cookie stores (parsed back as TOML), 
 stdout pipe whose reader is already closed (broken pipe ends quietly with status 0).
 
 Later additions cover manual-reset parsing (Claude grants: empty, unknown scopes, missing
-`clears`, a `5h` entry only for a live five-hour grant, and the `full ?` fallback; Codex
+`clears`, a `5h` entry only for a live five-hour grant, the `full ?` fallback, and
+model-launch grants that are `fable` by `gives_back_weekly` with or without `five_hour`,
+ignoring `type` and still counted when `usable_now` is false; Codex
 credits: duplicate ids, missing status) and rendering (year display, failed
-rows, zero counts and rows with nothing left being omitted, the table column, and the `↻`
-column staying aligned with `--reset-at`), per-provider
+rows, zero counts and rows with nothing left being omitted, the table column, the `↻`
+column staying aligned with `--reset-at`, and the full / fable / 5h / 1w / other order
+with paused grants right after their kind), per-provider
 config rows under `--profile` / `--only` (`lib.rs`), `jwt::claims` with padded/unpadded
 payloads, `config::expand_home`, `cookies::load` end to end (schema v24 hash stripping,
 older schemas, unrelated hosts, a path with space/`?`/`#`), and `http.rs` response
@@ -273,6 +276,9 @@ accounts sharing a Chrome profile name are told apart by `profile_email`).
 - TUI では親の `Line` / `Paragraph` に太字や色を置かず、Span ごとに付ける。親に置いた装飾は、色を付けない Span にも引き継がれる。`--no-color` / `NO_COLOR` / `TERM=dumb` では色も太字も付けない。
 - 手動リセットは、残りが0回の種類を表示しない。1回も残っていない行には statusline の `↻` も TUI の `↻` 行も出さず、テーブルのセルは `—` にする。テーブルの列は、出すものがある行が1つも無ければ省く。この規則は `render/manual_resets.rs` の `summarize` の1か所に置き、取得できなかった回数 (`?`) は0回と区別して出す。
 - Claude の取得側で、付与が無いときに0回を補うのは `full` だけにする (`--json` に確定の0回を残すため)。`5h` は、5時間枠だけを回復する付与が届いたときだけ入れる。
+- Claude の付与のうち `gives_back_weekly` が `true` のものは、`clears` に関係なく `fable` にする。claude.ai の設定画面も、この印を先に見て Fable のリセットとしてまとめる。新モデルの公開時に配られるこの付与は、`clears` に使用中の枠しか挙げない。5時間枠を使っているアカウントでは `five_hour` と `seven_day_overage_included`、使っていないアカウントでは後者だけになる。`clears` で分けると、同じ付与が一方では `5h`、もう一方では `other` になる。`type` (この付与では `full`) は分類に使わない。
+- `seven_day_overage_included` は、`1w` として描く `seven_day` とは別の枠として扱う。同じ応答で `seven_day` が57%、`seven_day_overage_included` が0%だったため、`gives_back_weekly` の無い付与でも週間枠に数えない。
+- 手動リセットの表示順は `ResetKind::rank` (full・fable・5h・1w・other) で決める。`summarize` はデータにある種類をこの順に並べ、種類の一覧を別に持たない (一覧に足し忘れた種類は表示から消えるため)。`ResetKind` は提供元が種類を増やすたびに広がるので `#[non_exhaustive]` とし、未知の値は JSON でも `other` として読む。
 - TUI と statusline の利用枠のリセット日時は、`render/reset.rs` の同じ関数で日本語の曜日を付ける。TUI は別年の日時に年も残す。手動リセットは両方で `full` を省き、共通パレットのティールの `↻` を使う。`5h` / `1w` などの種類と `paused` は省かず、TUI は付与ごとの期限を下の行に残し、`1@12/01 火 04:49` のように括弧なしの曜日を付ける。
 - 手動リセットの期限の日時は、statusline と TUI のどちらも残り7日未満だけ赤にし、ちょうど7日は通常色のままにする。TUI は期限をすべて並べるため、日時ごとに判定する。
 - TUI は現在時刻を1回の描画につき1度だけ取り、並べ替え (既定の `weekly-reset`) と全アカウントの残り時間・期限の色に同じ時刻を使う。行ごとに取り直すと、期限の境界で行によって判定が食い違う。
@@ -357,8 +363,17 @@ fold an unknown count into `0` — `0` is a confirmed "no resets left".
 
 - **Claude** — the usage request adds `?cedar_ember=1` (the opt-in the settings
   page uses) and reads `cedar_ember = { eligible, grants: [{ id, resets_left,
-  clears, ends_at, paused }] }`. `clears` decides the kind: `five_hour` +
-  `seven_day` → `full`, one of them → `5h` / `1w`, anything else → `other`.
+  clears, gives_back_weekly, ends_at, paused }] }`. A grant with
+  `gives_back_weekly: true` is `fable` whatever it `clears`: the settings page
+  checks that flag first and groups grants as full / fable / session / other.
+  Those model-launch grants (first seen 2026-11-09) carry `type: "full"` and list
+  only the windows in use — `five_hour` + `seven_day_overage_included`, or just the
+  latter on an account whose five-hour window is idle — so classifying them by
+  `clears` made one grant read `5h` on one account and `other` on another.
+  Otherwise `clears` decides the kind: `five_hour` + `seven_day` → `full`, one of
+  them → `5h` / `1w`, anything else → `other`. `type` is ignored, and
+  `seven_day_overage_included` never counts as the weekly window: it is not the
+  `seven_day` window drawn as `1w` (the same response reported 57% and 0%).
   Expired grants (`ends_at <= now`), spent grants (`resets_left == 0`), and
   duplicate ids are skipped; paused grants stay with `paused = true`. A zero
   entry is added only for `full` when no grant of that kind exists, so
@@ -381,7 +396,10 @@ fold an unknown count into `0` — `0` is a confirmed "no resets left".
   kind whose count is a confirmed `0`, for all renderers: a row with nothing left
   gets no statusline `↻`, no TUI `↻` line, and `—` in the table, whose
   column appears only when some row has something to show. Unknown counts still
-  read `?`. The table lists every
+  read `?`. Groups follow `ResetKind::rank` (full, fable, 5h, 1w, other, each
+  kind's paused grants right after it) and come from the kinds present in the
+  data, so a new `ResetKind` cannot drop out of a hand-kept list; the enum is
+  `#[non_exhaustive]` for library users. The table lists every
   expiry (`full 2 (1@10/23 05:27, 1@10/30 03:57)`); the statusline appends only
   the counts (omitting the `full` label) and the nearest known expiry (available grants first, paused ones
   only when none are available) and paints the date red under seven days. The
