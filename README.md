@@ -38,7 +38,7 @@ It reads each Chrome profile's session straight from the browser, so it can repo
 - **Multi-Account**: Reports every Chrome profile signed into Claude, Codex, or PixelLab — no re-login needed. Account labels fall back from the provider email to the Chrome profile email and then the profile name, skipping empty or malformed email values (including missing or duplicate `@` separators)
 - **Multi-Provider**: Claude (`claude.ai`), Codex (`chatgpt.com`), Antigravity (Google's `agy` CLI/IDE), PixelLab (`pixellab.ai`), and Grok (xAI's `grok` CLI) in one view
 - **Typed Windows**: Each quota carries its real cycle (5-hour, daily, weekly, or monthly) with a usage bar, percentage when available, and reset countdown — each row's badge (`5h` / `1d` / `1w` / `1m`) comes from the quota itself. A window without a reported percentage reads `usage unknown` instead of an empty bar that would look like 0%. Any row with only one window collapses both slots into a single wider bar. Older caches without cycle metadata retain provider-appropriate labels and reset-warning thresholds
-- **Manual Resets**: Claude and Codex rows show how many manual usage resets remain and when each grant expires — the table and the TUI list every expiry, while the statusline shows the totals and the nearest date. The statusline and the TUI show a date in red once fewer than seven days remain. Kinds with no resets left are hidden, so a row with none left shows no reset entry. A count that could not be fetched reads `?`, and expired grants drop out even when rendering an older cache
+- **Manual Resets**: Claude and Codex rows show how many manual resets of the weekly limit remain and when each grant expires — the table and the TUI list every expiry, while the statusline shows the total and the nearest date. Full resets and weekly-only resets count as one number without a kind label, so the same grant reads the same on every account. Fable, five-hour-only, and other resets are not displayed; `--json` still lists them. The statusline and the TUI show a date in red once fewer than seven days remain. A row with no weekly resets left shows no reset entry. A count that could not be fetched reads `?`, and expired grants drop out even when rendering an older cache
 - **Cloudflare-Safe**: Emulates Chrome's TLS/HTTP2 fingerprint via [`wreq`](https://crates.io/crates/wreq) and replays `cf_clearance` cookies
 - **Statusline Mode**: Compact one-line-per-account output with brand logos for terminal status bars. Labels are padded by display width and truncated at grapheme boundaries, preserving emoji and combining characters
 - **Interactive Dashboard**: `--tui` groups quotas and manual resets by account, soonest long-window reset first, with a disk panel at the bottom showing the startup disk's used, purgeable, and free space. Short terminals show the visible part of each account; reset countdowns of 1–59 seconds show `1m`
@@ -107,23 +107,23 @@ Usage results are shared between processes for 120 seconds by default. Starting 
 Run `ai-usage` with no arguments to see every signed-in account:
 
 ```text
-┌─────────┬──────────┬──────────────────────────┬─────────────────────────────────┬───────────────────────────────────────────────┬───────────────────────────────────────┐
-│ Account ┆ Service  ┆ Plan                     ┆ Short window                    ┆ Long window                                   ┆ Manual resets                         │
-╞═════════╪══════════╪══════════════════════════╪═════════════════════════════════╪═══════════════════════════════════════════════╪═══════════════════════════════════════╡
-│ work    ┆ Claude   ┆ max                      ┆ 5h ░░░░░░░░░░    4%  · in 2h 0m ┆ 1w ░░░░░░░░░░    3%  · in 4d 0h               ┆ full 1 (1@10/23 05:27)                │
-├╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ work    ┆ Codex    ┆ team                     ┆ 5h ░░░░░░░░░░    1%  · in 5h 0m ┆ 1w ░░░░░░░░░░    0%  · in 6d 23h              ┆ full 2 (1@10/23 05:27, 1@10/30 03:57) │
-├╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ home    ┆ Claude   ┆ max                      ┆ 5h █░░░░░░░░░   12%  · in 1h 0m ┆ 1w ░░░░░░░░░░    3%  · in 5d 0h               ┆ —                                     │
-├╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ home    ┆ Codex    ┆ prolite                  ┆ 5h █░░░░░░░░░   10%  · in 4h 0m ┆ 1w ███░░░░░░░   31%  · in 4d 0h               ┆ —                                     │
-├╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ home    ┆ PixelLab ┆ Tier 1: Pixel Apprentice ┆ —                               ┆ 1m ███████████░░░░░░░░░░░░░   46%  · in 5d 0h ┆ —                                     │
-└─────────┴──────────┴──────────────────────────┴─────────────────────────────────┴───────────────────────────────────────────────┴───────────────────────────────────────┘
+┌─────────┬──────────┬──────────────────────────┬─────────────────────────────────┬───────────────────────────────────────────────┬──────────────────────────────────┐
+│ Account ┆ Service  ┆ Plan                     ┆ Short window                    ┆ Long window                                   ┆ Weekly resets                    │
+╞═════════╪══════════╪══════════════════════════╪═════════════════════════════════╪═══════════════════════════════════════════════╪══════════════════════════════════╡
+│ work    ┆ Claude   ┆ max                      ┆ 5h ░░░░░░░░░░    4%  · in 2h 0m ┆ 1w ░░░░░░░░░░    3%  · in 4d 0h               ┆ 1 (1@10/23 05:27)                │
+├╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ work    ┆ Codex    ┆ team                     ┆ 5h ░░░░░░░░░░    1%  · in 5h 0m ┆ 1w ░░░░░░░░░░    0%  · in 6d 23h              ┆ 2 (1@10/23 05:27, 1@10/30 03:57) │
+├╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ home    ┆ Claude   ┆ max                      ┆ 5h █░░░░░░░░░   12%  · in 1h 0m ┆ 1w ░░░░░░░░░░    3%  · in 5d 0h               ┆ —                                │
+├╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ home    ┆ Codex    ┆ prolite                  ┆ 5h █░░░░░░░░░   10%  · in 4h 0m ┆ 1w ███░░░░░░░   31%  · in 4d 0h               ┆ —                                │
+├╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ home    ┆ PixelLab ┆ Tier 1: Pixel Apprentice ┆ —                               ┆ 1m ███████████░░░░░░░░░░░░░   46%  · in 5d 0h ┆ —                                │
+└─────────┴──────────┴──────────────────────────┴─────────────────────────────────┴───────────────────────────────────────────────┴──────────────────────────────────┘
   updated 21:46 · bars = usage, time = until reset
 ```
 
-The **Manual resets** column appears when a Claude or Codex row has resets left or a count that could not be fetched; see [Manual usage resets](docs/cli-reference.md#manual-usage-resets) for the notation.
+The **Weekly resets** column counts the manual resets that restore the weekly limit, including those that also restore the five-hour window. It appears when a Claude or Codex row has such resets left or a count that could not be fetched; see [Manual usage resets](docs/cli-reference.md#manual-usage-resets) for the notation.
 
 ```bash
 # Basic usage

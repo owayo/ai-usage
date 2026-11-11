@@ -58,8 +58,9 @@ fn build_table(reports: &[AccountReport], sort: SortKey, color: bool, now: DateT
     let resets: Vec<_> = ordered.iter().map(|r| manual_reset_text(r, now)).collect();
     let show_resets = resets.iter().any(Option::is_some);
     let mut header = vec!["Account", "Service", "Plan", "Short window", "Long window"];
+    // 数えるのは週間枠をリセットする手動リセットだけなので、列名でもそう示す。
     if show_resets {
-        header.push("Manual resets");
+        header.push("Weekly resets");
     }
     table
         .load_style(UTF8_FULL)
@@ -279,7 +280,8 @@ mod tests {
     fn manual_resets_column_appears_only_when_a_row_has_resets_to_show() {
         use crate::model::{ManualReset, ResetKind, Usage};
         let now = fixed_utc("2026-06-15T00:00:00Z");
-        // 残りが 0 回の付与と、描画の時点で失効した付与だけを持つ行。
+        // 残りが 0 回の付与・描画の時点で失効した付与・週間枠をリセットしない Fable の付与
+        // だけを持つ行。
         let zero = || Usage {
             manual_resets: Some(vec![
                 ManualReset {
@@ -292,6 +294,12 @@ mod tests {
                     kind: ResetKind::Full,
                     remaining: Some(3),
                     expires_at: Some(now),
+                    paused: false,
+                },
+                ManualReset {
+                    kind: ResetKind::Fable,
+                    remaining: Some(3),
+                    expires_at: None,
                     paused: false,
                 },
             ]),
@@ -318,14 +326,22 @@ mod tests {
                 .cloned()
                 .unwrap_or_else(|| panic!("{text:?} が無い: {lines:#?}"))
         };
-        // 出す手動リセットを持つ行が無ければ、0 回だけの行があっても列自体を出さない。
+        let last_cell = |row: &str| {
+            row.trim_end_matches('│')
+                .rsplit('┆')
+                .next()
+                .unwrap()
+                .trim()
+                .to_string()
+        };
+        // 出す手動リセットを持つ行が無ければ、0 回や Fable だけの行があっても列自体を出さない。
         let without = render(&[
             report(Provider::PixelLab, Ok(Usage::default())),
             report(Provider::Claude, Ok(zero())),
             report(Provider::Claude, Err(anyhow::anyhow!("test failure"))),
         ]);
         assert!(
-            !without.iter().any(|line| line.contains("Manual resets")),
+            !without.iter().any(|line| line.contains("Weekly resets")),
             "{without:#?}"
         );
 
@@ -337,8 +353,8 @@ mod tests {
                 ..Default::default()
             }),
         )]);
-        line(&unknown, "Manual resets");
-        assert!(line(&unknown, "Claude").contains("full ?"), "{unknown:#?}");
+        line(&unknown, "Weekly resets");
+        assert_eq!(last_cell(&line(&unknown, "Claude")), "?", "{unknown:#?}");
 
         // 1 行でも出すものがあれば列を足し、ほかの行は "—" で埋める。
         let expiry = fixed_utc("2026-06-20T00:00:00Z");
@@ -359,18 +375,19 @@ mod tests {
             report(Provider::PixelLab, Ok(Usage::default())),
             report(Provider::Claude, Err(anyhow::anyhow!("test failure"))),
         ]);
-        line(&with, "Manual resets");
+        line(&with, "Weekly resets");
         let date = expiry.with_timezone(&Local).format("%m/%d %H:%M");
-        assert!(
-            line(&with, "Codex").contains(&format!("full 2 (2@{date})")),
+        // 種類名は付けない。
+        assert_eq!(
+            last_cell(&line(&with, "Codex")),
+            format!("2 (2@{date})"),
             "{with:#?}"
         );
-        // 0 回だけの行・手動リセットを持たない行・取得に失敗した行。
+        // 0 回と Fable だけの行・手動リセットを持たない行・取得に失敗した行。
         let rows: Vec<_> = with.iter().filter(|line| line.contains("Work")).collect();
         assert_eq!(rows.len(), 4, "{with:#?}");
         for row in rows.iter().filter(|line| !line.contains("Codex")) {
-            let last_cell = row.trim_end_matches('│').rsplit('┆').next().unwrap();
-            assert_eq!(last_cell.trim(), "—", "{with:#?}");
+            assert_eq!(last_cell(row), "—", "{with:#?}");
         }
     }
 

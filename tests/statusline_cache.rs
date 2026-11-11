@@ -176,15 +176,23 @@ fn cached_resets_show_count_and_expiry_without_credentials_or_network() {
     let path = cache.0.join("report.json");
     let mut report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    // 週間枠をリセットする full と weekly だけを、種類名を付けずにまとめて数える。
+    // Fable と 5 時間枠だけのリセットは、期限が近くても回数が不明でも表示しない。
     report["accounts"][1]["manual_resets"] = serde_json::json!([
         {"kind":"full","remaining":3,"expires_at":"2000-01-01T00:00:00Z"},
         {"kind":"full","remaining":3,"expires_at":"2099-07-30T00:00:00Z"},
-        {"kind":"full","remaining":2,"expires_at":"2099-06-20T00:00:00Z"},
+        {"kind":"weekly","remaining":2,"expires_at":"2099-06-20T00:00:00Z"},
+        {"kind":"fable","remaining":4,"expires_at":"2099-04-15T00:00:00Z"},
         {"kind":"five_hour","remaining":null,"expires_at":null}
     ]);
     std::fs::write(&path, report.to_string()).unwrap();
     let output = cache.render(&["--only", "codex"]);
-    assert!(output.contains("↻ 5; 5h ? (2099/06/"), "{output}");
+    assert!(output.contains("↻ 5 (2099/06/"), "{output}");
+    assert!(!output.contains("2099/04/"), "{output}");
+    assert!(
+        !output.contains("fable") && !output.contains("5h ?"),
+        "{output}"
+    );
     assert_eq!(output.matches("2099/").count(), 1, "{output}");
     assert!(!output.contains('@'), "{output}");
     assert!(!output.contains("2000/"));

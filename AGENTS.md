@@ -31,7 +31,7 @@ shows this Mac's disk usage at the bottom, and `--disk` prints it on its own.
 | `src/render.rs`   | Shared row resolution (display name, active highlight), JSON output, and `write_stdout`; re-exports the renderers. |
 | `src/render/disk.rs` | Disk rows shared by the TUI panel and `--disk`: bar cells, percentage, size breakdowns, and status text as `(text, Paint)` segments; the `--disk` text output and `--disk --json` (schema version 1). |
 | `src/render/sort.rs` / `src/render/table.rs` / `src/render/statusline.rs` | Row sorting (`SortableRow`), human table, compact statusline. |
-| `src/render/manual_resets.rs` | Manual-reset summaries shared by the table column, the statusline `↻` suffix, and the TUI lines (`TuiResetLine` keeps each expiry apart so the TUI can color its date). |
+| `src/render/manual_resets.rs` | Manual-reset summaries shared by the table's **Weekly resets** column, the statusline `↻` suffix, and the TUI lines. Only resets that restore the weekly window (`full` and `weekly`, per `ResetKind::restores_weekly_window`) are counted, as one number without a kind label (`TuiResetLine` keeps each expiry apart so the TUI can color its date). |
 | `src/render/palette.rs` | Colors shared by the statusline and the TUI: `Paint` (foreground + bold), the four-step `Level` scale, `LABEL` / `MUTED` / `ALERT`, the provider marker and brand RGB (also used by the table), and the reset-countdown and manual-reset-deadline colors. The statusline converts a `Paint` to ANSI SGR (`--disk` reuses that conversion), the TUI to a ratatui `Style`. |
 | `src/render/tui.rs` / `src/render/tui/disk.rs` | TUI event loop and layout; the disk panel's placement and the bar width and text detail chosen for the terminal width. |
 | `src/lib.rs`     | CLI, config-row binding and provider resolution, concurrent fetch, and the `--disk` branch with its target resolution. |
@@ -165,8 +165,10 @@ model-launch grants that are `fable` by `gives_back_weekly` with or without `fiv
 ignoring `type` and still counted when `usable_now` is false; Codex
 credits: duplicate ids, missing status) and rendering (year display, failed
 rows, zero counts and rows with nothing left being omitted, the table column, the `↻`
-column staying aligned with `--reset-at`, and the full / fable / 5h / 1w / other order
-with paused grants right after their kind), per-provider
+column staying aligned with `--reset-at`, only the weekly-restoring kinds being counted —
+`full` and `weekly` added into one number without a kind label, `fable` / `5h` / `other`
+hidden, and rows or tables holding only hidden kinds getting no `↻` and no column — and
+paused grants listed after the available ones), per-provider
 config rows under `--profile` / `--only` (`lib.rs`), `jwt::claims` with padded/unpadded
 payloads, `config::expand_home`, `cookies::load` end to end (schema v24 hash stripping,
 older schemas, unrelated hosts, a path with space/`?`/`#`), and `http.rs` response
@@ -274,12 +276,12 @@ accounts sharing a Chrome profile name are told apart by `profile_email`).
 - TUI と statusline に共通する要素の色は、`render/palette.rs` の同じ関数で決める。各レンダラーは `Paint` の変換 (statusline は ANSI SGR、TUI は ratatui の `Style`) だけを持ち、色番号を描画側に直接書かない。
 - statusline の出力はバイト単位で保つ。区間の区切りと末尾の `\x1b[0m` を変えず、同じ色の区間も結合しない。
 - TUI では親の `Line` / `Paragraph` に太字や色を置かず、Span ごとに付ける。親に置いた装飾は、色を付けない Span にも引き継がれる。`--no-color` / `NO_COLOR` / `TERM=dumb` では色も太字も付けない。
-- 手動リセットは、残りが0回の種類を表示しない。1回も残っていない行には statusline の `↻` も TUI の `↻` 行も出さず、テーブルのセルは `—` にする。テーブルの列は、出すものがある行が1つも無ければ省く。この規則は `render/manual_resets.rs` の `summarize` の1か所に置き、取得できなかった回数 (`?`) は0回と区別して出す。
+- 手動リセットの表示 (statusline・TUI・テーブル) は、通常の週間枠を回復するリセット (`full` と `weekly`) だけを数え、2つを1つの回数にまとめる。`fable`・`five_hour`・`other` は表示せず、`--json` にだけ残す。残りが0回なら表示しない。1回も残っていない行には statusline の `↻` も TUI の `↻` 行も出さず、テーブルのセルは `—` にする。テーブルの **Weekly resets** 列は、出すものがある行が1つも無ければ省く。この規則は `render/manual_resets.rs` の `summarize` の1か所に置き、取得できなかった回数 (`?`) は0回と区別して出す。回数が分かっている付与と分からない付与が1つの回数にまとまるときは、分かっている分だけを合計にせず `?` にする (テーブルと TUI は、そのとき期限の内訳を出さない)。
 - Claude の取得側で、付与が無いときに0回を補うのは `full` だけにする (`--json` に確定の0回を残すため)。`5h` は、5時間枠だけを回復する付与が届いたときだけ入れる。
-- Claude の付与のうち `gives_back_weekly` が `true` のものは、`clears` に関係なく `fable` にする。claude.ai の設定画面も、この印を先に見て Fable のリセットとしてまとめる。新モデルの公開時に配られるこの付与は、`clears` に使用中の枠しか挙げない。5時間枠を使っているアカウントでは `five_hour` と `seven_day_overage_included`、使っていないアカウントでは後者だけになる。`clears` で分けると、同じ付与が一方では `5h`、もう一方では `other` になる。`type` (この付与では `full`) は分類に使わない。
+- Claude の付与のうち `gives_back_weekly` が `true` のものは、`clears` に関係なく `fable` にする。claude.ai の設定画面も、この印を先に見て Fable のリセットとしてまとめる。新モデルの公開時に配られるこの付与は、`clears` に使用中の枠しか挙げない。5時間枠を使っているアカウントでは `five_hour` と `seven_day_overage_included`、使っていないアカウントでは後者だけになる。`clears` で分けると、同じ付与が一方では `5h`、もう一方では `other` になる。`type` (この付与では `full`) は分類に使わない。`fable` は週間枠そのものを回復しないので、表示では数えない (`--json` には残す)。
 - `seven_day_overage_included` は、`1w` として描く `seven_day` とは別の枠として扱う。同じ応答で `seven_day` が57%、`seven_day_overage_included` が0%だったため、`gives_back_weekly` の無い付与でも週間枠に数えない。
-- 手動リセットの表示順は `ResetKind::rank` (full・fable・5h・1w・other) で決める。`summarize` はデータにある種類をこの順に並べ、種類の一覧を別に持たない (一覧に足し忘れた種類は表示から消えるため)。`ResetKind` は提供元が種類を増やすたびに広がるので `#[non_exhaustive]` とし、未知の値は JSON でも `other` として読む。
-- TUI と statusline の利用枠のリセット日時は、`render/reset.rs` の同じ関数で日本語の曜日を付ける。TUI は別年の日時に年も残す。手動リセットは両方で `full` を省き、共通パレットのティールの `↻` を使う。`5h` / `1w` などの種類と `paused` は省かず、TUI は付与ごとの期限を下の行に残し、`1@12/01 火 04:49` のように括弧なしの曜日を付ける。
+- 手動リセットを表示で数えるかどうかは `ResetKind::restores_weekly_window` で決める。crate 内の網羅 match (`Full | Weekly` だけが true) にして、種類を足したら数えるかどうかをコンパイラが問うようにする。`full` と `weekly` を分けて出さないのは、Claude の付与が `clears` (と `type`) に今使っている枠しか挙げないため。同じ「One full limit reset」の付与が、5時間枠を使っているアカウントでは `full`、使っていないアカウントでは `weekly` になる (2026-11-11 に実応答で確認。claude.ai の設定画面も `clears` で分けるので、公式の分類も揺れる)。並びは、利用できる付与、一時停止中の付与の順の2グループだけにする。`ResetKind::rank` (claude.ai の設定画面の並び) はライブラリの公開 API として残すが、表示には使わない。消すのは、リリースで互換性を崩すと決めたときにする。`ResetKind` は提供元が種類を増やすたびに広がるので `#[non_exhaustive]` とし、未知の値は JSON でも `other` として読む (表示はしない)。
+- TUI と statusline の利用枠のリセット日時は、`render/reset.rs` の同じ関数で日本語の曜日を付ける。TUI は別年の日時に年も残す。手動リセットはどのレンダラーでも種類名を出さず (テーブルも `2 (1@10/23 05:27, 1@10/30 03:57)`)、statusline と TUI は共通パレットのティールの `↻` を使う。`paused` は省かず、TUI は付与ごとの期限を下の行に残し、`1@12/01 火 04:49` のように括弧なしの曜日を付ける。
 - 手動リセットの期限の日時は、statusline と TUI のどちらも残り7日未満だけ赤にし、ちょうど7日は通常色のままにする。TUI は期限をすべて並べるため、日時ごとに判定する。
 - TUI は現在時刻を1回の描画につき1度だけ取り、並べ替え (既定の `weekly-reset`) と全アカウントの残り時間・期限の色に同じ時刻を使う。行ごとに取り直すと、期限の境界で行によって判定が食い違う。
 - TUI のディスク欄は、描画と切り離した `std::thread` の切り離しスレッドで読む。パージ可能な量の問い合わせは1回40〜120msかかり、戻らないこともある。`tokio::task::spawn_blocking` は終了時に作業の完了を待つため使わない。2秒を過ぎた取得は `no response` の表示に切り替えるだけで打ち切らず、同じボリュームの次の取得は前回が戻ってから30秒後に始める。
@@ -383,7 +385,14 @@ fold an unknown count into `0` — `0` is a confirmed "no resets left".
   `5h` gets no zero entry and is listed only for a live grant that clears the
   five-hour window alone. A missing payload, or a grant that is still live but
   lacks `id` / `resets_left` / `clears`, makes the whole list unknown
-  (`full ?`).
+  (`full ?`). Regular grants follow the windows in use too: on 2026-11-11 the
+  same "One full limit reset" grant came back as `type: "full"` with
+  `five_hour` + `seven_day` on an account using its five-hour window, and as
+  `type: "weekly"` with `seven_day` alone on an account whose five-hour window
+  was idle, so it parses as `full` on one account and `1w` on the other. The
+  parser keeps that distinction for `--json`; the renderers count `full` and
+  `weekly` as one number and do not display `fable` / `5h` / `other` (see
+  **Rendering**).
 - **Codex** — `GET chatgpt.com/backend-api/wham/rate-limit-reset-credits` runs
   concurrently with `wham/usage` under a 5-second timeout, and its failure never
   fails the row. From `{ available_count, credits: [{ id, status, reset_type,
@@ -393,17 +402,23 @@ fold an unknown count into `0` — `0` is a confirmed "no resets left".
   any credit lacks `status` or a usable one lacks `reset_type`, when fewer
   credits are listed than `available_count`, or when more usable ones remain
   than it allows.
-- **Rendering** (`render/manual_resets.rs`) re-checks expiry against `now` on
-  every draw, so an old cache never shows expired grants. `summarize` drops every
-  kind whose count is a confirmed `0`, for all renderers: a row with nothing left
-  gets no statusline `↻`, no TUI `↻` line, and `—` in the table, whose
-  column appears only when some row has something to show. Unknown counts still
-  read `?`. Groups follow `ResetKind::rank` (full, fable, 5h, 1w, other, each
-  kind's paused grants right after it) and come from the kinds present in the
-  data, so a new `ResetKind` cannot drop out of a hand-kept list; the enum is
+- **Rendering** (`render/manual_resets.rs`) counts only the resets that restore
+  the regular weekly window. `ResetKind::restores_weekly_window` is an in-crate
+  exhaustive match (`Full | Weekly`), so adding a kind forces a decision on
+  whether it counts. `ResetKind::rank` (the claude.ai settings-page order) stays
+  as library API, but no renderer uses it. `full` and `weekly` add into one number with no kind label
+  in any renderer, and `fable` / `5h` / `other` are not displayed: `--json`
+  keeps them, so a missing `↻` does not mean there is no such grant. Expiry is
+  re-checked against `now` on every draw, so an old cache never shows expired
+  grants. `summarize` drops a confirmed `0` for all renderers: a row with
+  nothing left gets no statusline `↻`, no TUI `↻` line, and `—` in the table,
+  whose **Weekly resets** column appears only when some row has something to
+  show. Unknown counts still read `?`, and a known count added to an unknown
+  one reads `?` rather than the known part alone. There are only two groups, available
+  grants and then paused ones (`↻ 1; paused 1`); the enum stays
   `#[non_exhaustive]` for library users. The table lists every
-  expiry (`full 2 (1@10/23 05:27, 1@10/30 03:57)`); the statusline appends only
-  the counts (omitting the `full` label) and the nearest known expiry (available grants first, paused ones
+  expiry (`2 (1@10/23 05:27, 1@10/30 03:57)`); the statusline appends only
+  the counts and the nearest known expiry (available grants first, paused ones
   only when none are available) and paints the date red under seven days. The
   TUI, which lists every expiry, does the same for each date; both renderers
   take that color from `render/palette.rs`.

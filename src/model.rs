@@ -105,7 +105,9 @@ impl ResetKind {
         }
     }
 
-    /// 表示する順。claude.ai の設定画面の並び (full, fable, session, other) に合わせる。
+    /// claude.ai の設定画面の並び (full, fable, session, other) に合わせた種類の順。
+    /// ai-usage の表示は週間枠をリセットする種類だけを 1 つの回数にまとめるので、この順を使わない。
+    /// ライブラリの利用者向けに公開 API として残す。
     pub fn rank(self) -> u8 {
         match self {
             Self::Full => 0,
@@ -113,6 +115,17 @@ impl ResetKind {
             Self::FiveHour => 2,
             Self::Weekly => 3,
             Self::Other => 4,
+        }
+    }
+
+    /// 通常の週間枠 (`seven_day`、`1w` と描く枠) そのものをリセットする種類か。手動リセットの
+    /// 表示はこの種類だけを数える。Fable のリセットは、Fable の上限をリセットし、今週の Fable の
+    /// 使用量を週間上限の計算から外すもので、週間枠そのものはリセットしないため含めない。
+    /// 種類を足したら、ここで表示に含めるかを決める (網羅 match なのでコンパイラが求める)。
+    pub(crate) fn restores_weekly_window(self) -> bool {
+        match self {
+            Self::Full | Self::Weekly => true,
+            Self::Fable | Self::FiveHour | Self::Other => false,
         }
     }
 }
@@ -241,22 +254,24 @@ mod tests {
     }
 
     #[test]
-    fn reset_kind_labels_json_names_and_ranks_cover_every_variant() {
-        // claude.ai の設定画面と同じく full、fable、セッション枠、その他の順に並べる。
+    fn reset_kind_labels_json_names_ranks_and_weekly_resets_cover_every_variant() {
+        // 並びは claude.ai の設定画面と同じく full、fable、セッション枠、その他の順。
+        // 手動リセットの表示に数えるのは、週間枠そのものをリセットする full と weekly だけ。
         let cases = [
-            (ResetKind::Full, "full", "\"full\"", 0),
-            (ResetKind::Fable, "fable", "\"fable\"", 1),
-            (ResetKind::FiveHour, "5h", "\"five_hour\"", 2),
-            (ResetKind::Weekly, "1w", "\"weekly\"", 3),
-            (ResetKind::Other, "other", "\"other\"", 4),
+            (ResetKind::Full, "full", "\"full\"", 0, true),
+            (ResetKind::Fable, "fable", "\"fable\"", 1, false),
+            (ResetKind::FiveHour, "5h", "\"five_hour\"", 2, false),
+            (ResetKind::Weekly, "1w", "\"weekly\"", 3, true),
+            (ResetKind::Other, "other", "\"other\"", 4, false),
         ];
-        for (kind, label, json, rank) in cases {
+        for (kind, label, json, rank, weekly) in cases {
             assert_eq!(kind.label(), label);
             assert_eq!(kind.rank(), rank);
+            assert_eq!(kind.restores_weekly_window(), weekly, "{kind:?}");
             assert_eq!(serde_json::to_string(&kind).unwrap(), json);
             assert_eq!(serde_json::from_str::<ResetKind>(json).unwrap(), kind);
         }
-        // 後の版が足した種類は、旧版のキャッシュ描画でも捨てずに other として数える。
+        // 後の版が足した種類は、旧版のキャッシュ描画でも失敗させずに other として読む (表示はしない)。
         assert_eq!(
             serde_json::from_str::<ResetKind>("\"future_kind\"").unwrap(),
             ResetKind::Other
