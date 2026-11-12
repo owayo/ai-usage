@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "ai-usage"
-version = "26.10.101"
+version = "26.11.100"
 dependencies = [
  "aes",
  "anyhow",
