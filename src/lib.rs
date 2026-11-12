@@ -417,23 +417,35 @@ fn chrome_jobs(
     key: &ChromeKey,
     diagnostics: &diagnostics::Diagnostics,
 ) -> Result<Vec<Job>> {
-    if !targets.iter().any(|target| target.wants.any()) {
-        return Ok(Vec::new());
-    }
-
     let mut jobs = Vec::new();
     let mut credentials_by_source = HashMap::new();
+    let mut skipped_profiles = HashSet::new();
     for target in targets {
-        let Some(db) = profiles::cookies_db(root, &target.profile.dir) else {
+        if !target.wants.any() || skipped_profiles.contains(&target.profile.dir) {
             continue;
+        }
+        let db = match profiles::cookies_db(root, &target.profile.dir) {
+            Ok(Some(db)) => db,
+            Ok(None) => continue,
+            Err(error) => {
+                diagnostics.warn(format!(
+                    "ai-usage: skipping Chrome profile {}: {error:#}",
+                    target.profile.name
+                ));
+                skipped_profiles.insert(target.profile.dir.clone());
+                continue;
+            }
         };
-        let fingerprints = match cookies::session_fingerprints(&db) {
+        let fingerprints = match cookies::session_fingerprints(&db)
+            .with_context(|| format!("reading Chrome cookie store {}", db.display()))
+        {
             Ok(fingerprints) => fingerprints,
             Err(error) => {
                 diagnostics.warn(format!(
                     "ai-usage: skipping Chrome profile {}: {error:#}",
                     target.profile.name
                 ));
+                skipped_profiles.insert(target.profile.dir.clone());
                 continue;
             }
         };
@@ -748,7 +760,7 @@ fn toml_str(s: &str) -> String {
 
 /// 現在 signed-in 済みの profile から starter `config.toml` を組み立てる。
 /// Cookie の存在だけで判定し、network や Keychain は使わない。
-fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
+fn generate_config(root: &std::path::Path, all: &[Profile]) -> Result<String> {
     let mut out = String::from(
         "# `ai-usage --init-config` で生成しました。自由に編集できます。\n\
          # 並び替え、不要 profile の削除、label の変更を自由に行えます。\n\n",
@@ -757,7 +769,9 @@ fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
         out += &format!("active_email = {}\n\n", toml_str(&active));
     }
     for p in all {
-        let Some(db) = profiles::cookies_db(root, &p.dir) else {
+        let Some(db) = profiles::cookies_db(root, &p.dir)
+            .with_context(|| format!("checking Chrome profile {}", p.name))?
+        else {
             continue;
         };
         let sessions = cookies::detect_sessions(&db);
@@ -797,7 +811,7 @@ fn generate_config(root: &std::path::Path, all: &[Profile]) -> String {
     }
     out += "# 全表示モードから除外し、取得も省くプロバイダ。--only で一時的に表示できます。\n";
     out += "# [providers]\n# exclude = [\"antigravity\"]\n";
-    out
+    Ok(out)
 }
 
 /// 表示名が別のプロファイル名やディレクトリ名と衝突するときは、一意なディレクトリ名を使う。
@@ -962,10 +976,13 @@ fn build_targets(all: Vec<Profile>, cli: &Cli, cfg: &config::Config) -> Vec<Targ
 }
 
 /// `--list-profiles`: 検出 profile と Cookie store の有無を出力する。
-fn list_profiles(root: &std::path::Path, all: &[Profile]) -> std::io::Result<()> {
+fn list_profiles(root: &std::path::Path, all: &[Profile]) -> Result<()> {
     let mut text = String::new();
     for p in all {
-        let note = if profiles::cookies_db(root, &p.dir).is_some() {
+        let note = if profiles::cookies_db(root, &p.dir)
+            .with_context(|| format!("checking Chrome profile {}", p.name))?
+            .is_some()
+        {
             ""
         } else {
             "  (no cookie store)"
@@ -978,7 +995,8 @@ fn list_profiles(root: &std::path::Path, all: &[Profile]) -> std::io::Result<()>
             note
         );
     }
-    render::write_stdout(&text)
+    render::write_stdout(&text)?;
+    Ok(())
 }
 
 /// `--init-config`: starter config を書き込む。既に存在する場合は stdout に出す。
@@ -987,7 +1005,7 @@ fn write_init_config(
     all: &[Profile],
     explicit: Option<&std::path::Path>,
 ) -> Result<()> {
-    let text = generate_config(root, all);
+    let text = generate_config(root, all)?;
     let path = explicit
         .map(std::path::Path::to_path_buf)
         .or_else(config::default_path);
@@ -1686,6 +1704,124 @@ mod tests {
             Provider::Antigravity
         );
         assert_eq!(FetchSpec::Grok(None).provider(), Provider::Grok);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn chrome_discovery_reports_denied_profiles_and_keeps_other_targets() {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                for dir in ["Restricted", "Excluded"] {
+                    let _ = std::fs::set_permissions(
+                        self.0.join(dir).join("Network"),
+                        std::fs::Permissions::from_mode(0o700),
+                    );
+                }
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let fixture = Fixture(std::env::temp_dir().join(format!(
+            "ai-usage-discovery-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )));
+        for dir in ["Restricted", "Excluded", "Empty", "Healthy"] {
+            std::fs::create_dir_all(fixture.0.join(dir).join("Network")).unwrap();
+        }
+        let db = fixture.0.join("Healthy/Network/Cookies");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE cookies (host_key TEXT, name TEXT, encrypted_value BLOB);
+             INSERT INTO cookies VALUES ('.claude.ai', 'sessionKey', X'01');",
+        )
+        .unwrap();
+        drop(conn);
+        std::fs::copy(&db, fixture.0.join("Restricted/Cookies")).unwrap();
+        for dir in ["Restricted", "Excluded"] {
+            std::fs::set_permissions(
+                fixture.0.join(dir).join("Network"),
+                std::fs::Permissions::from_mode(0o000),
+            )
+            .unwrap();
+        }
+        let denied_path = fixture.0.join("Restricted/Network/Cookies");
+        let cause = std::fs::metadata(&denied_path).unwrap_err();
+        if cause.kind() != std::io::ErrorKind::PermissionDenied {
+            eprintln!("skipping permission test: directory permissions are not enforced");
+            return;
+        }
+        assert_eq!(cause.kind(), std::io::ErrorKind::PermissionDenied);
+
+        let targets: Vec<_> = [
+            "Restricted",
+            "Restricted",
+            "Excluded",
+            "Empty",
+            "Ghost",
+            "Healthy",
+        ]
+        .into_iter()
+        .map(|dir| Target {
+            profile: profile(dir, dir),
+            label: None,
+            wants: if dir == "Excluded" {
+                BrowserWants::none()
+            } else {
+                BrowserWants::all()
+            },
+        })
+        .collect();
+        let diagnostics = diagnostics::Diagnostics::new(true);
+        let key = ChromeKey::default();
+        // Discovery failures must be diagnosed again on the next collection, not cached.
+        for _ in 0..2 {
+            let jobs = chrome_jobs(&fixture.0, &targets, &key, &diagnostics).unwrap();
+            assert_eq!(jobs.len(), 1);
+            assert_eq!(jobs[0].meta.profile_name, "Healthy");
+            let warnings = diagnostics.take();
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert!(warnings[0].contains("Restricted"), "{warnings:?}");
+            assert!(warnings[0].contains(&denied_path.display().to_string()));
+            assert!(warnings[0].contains(&cause.to_string()));
+            assert!(key.get().is_none());
+        }
+
+        // An OAuth cache hit must still reach the caller with the captured warning.
+        let grok = config::GrokCfg {
+            auth_path: Some(fixture.0.join("auth.json").to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let job = Job::oauth("Grok", None, FetchSpec::Grok(Some(grok.clone())));
+        let mut cache = cache::Cache::at(fixture.0.join("cache"), Duration::from_secs(120), false);
+        cache.diagnostics = diagnostics.clone();
+        cache
+            .fetch(&job.cache_key, &job.fingerprint, async {
+                Ok(UsageRow::single(model::Usage::default()))
+            })
+            .await
+            .unwrap();
+        let reports = fetch_reports(
+            &fixture.0,
+            &targets[..5],
+            false,
+            None,
+            true,
+            Some(&grok),
+            &cache,
+        )
+        .await
+        .unwrap();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].provider, Provider::Grok);
+        assert!(reports[0].usage.is_ok());
+        assert_eq!(diagnostics.take().len(), 1);
     }
 
     #[test]

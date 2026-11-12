@@ -51,14 +51,18 @@ pub fn discover(root: &Path) -> Result<Vec<Profile>> {
 }
 
 /// profile の Cookies SQLite DB を探す。新しい Chrome は `Network/` subdirectory に移動済み。
-pub fn cookies_db(root: &Path, dir: &str) -> Option<PathBuf> {
+/// 不存在だけを None とし、権限拒否などは探索したパス付きで返す。
+/// Network 側を確かめられないときは、古いセッションを使わないよう旧 DB に落ちない。
+pub fn cookies_db(root: &Path, dir: &str) -> Result<Option<PathBuf>> {
     for sub in ["Network/Cookies", "Cookies"] {
         let p = root.join(dir).join(sub);
-        if p.exists() {
-            return Some(p);
+        if p.try_exists()
+            .with_context(|| format!("checking Chrome cookie store {}", p.display()))?
+        {
+            return Ok(Some(p));
         }
     }
-    None
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -159,9 +163,9 @@ mod tests {
     fn cookies_db_returns_none_when_neither_store_exists() {
         let root = temp_root("cookies-db-none");
         // profile directory 自体が無い場合も、存在するが Cookie DB が無い場合も None。
-        assert_eq!(cookies_db(&root, "Default"), None);
+        assert_eq!(cookies_db(&root, "Default").unwrap(), None);
         std::fs::create_dir_all(root.join("Default/Network")).unwrap();
-        assert_eq!(cookies_db(&root, "Default"), None);
+        assert_eq!(cookies_db(&root, "Default").unwrap(), None);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -171,13 +175,33 @@ mod tests {
         let profile = root.join("Default");
         std::fs::create_dir_all(profile.join("Network")).unwrap();
         std::fs::write(profile.join("Cookies"), []).unwrap();
-        assert_eq!(cookies_db(&root, "Default"), Some(profile.join("Cookies")));
+        assert_eq!(
+            cookies_db(&root, "Default").unwrap(),
+            Some(profile.join("Cookies"))
+        );
 
         std::fs::write(profile.join("Network/Cookies"), []).unwrap();
         assert_eq!(
-            cookies_db(&root, "Default"),
+            cookies_db(&root, "Default").unwrap(),
             Some(profile.join("Network/Cookies"))
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cookies_db_reports_probe_errors_without_falling_back_to_legacy_store() {
+        let root = temp_root("cookies-db-error");
+        let profile = root.join("Default");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::os::unix::fs::symlink("Network", profile.join("Network")).unwrap();
+        std::fs::write(profile.join("Cookies"), []).unwrap();
+        let path = profile.join("Network/Cookies");
+        let cause = path.try_exists().unwrap_err();
+        let error = cookies_db(&root, "Default").unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert!(message.contains(&cause.to_string()), "{message}");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

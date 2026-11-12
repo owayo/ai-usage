@@ -86,6 +86,16 @@ though neither reads a cookie. `chrome_jobs_or_degrade` turns that into the same
 the run**; when Chrome is the only target the original error survives, because
 that is the one telling the user to approve the prompt and retry.
 
+Cookie-store discovery distinguishes a missing store from a failed filesystem
+probe. `profiles::cookies_db` returns `Ok(None)` only for absence; permission
+errors and other probe failures retain the path and OS cause. Never fall back
+to legacy `Cookies` when `Network/Cookies` cannot be checked. Normal collection
+warns through `Diagnostics` and skips only the affected profile, once per
+directory per collection; other Chrome profiles and OAuth providers continue.
+Targets with no wanted providers are skipped before any cookie-store access.
+`--list-profiles` and `--init-config` return probe errors instead of claiming
+there is no store or writing an incomplete config.
+
 `config::load` degrades to auto mode on any unreadable config, but only stays
 silent for "the *default* path does not exist". An explicitly passed `--config`
 that is missing, a directory, or unreadable is reported on stderr, so a typo

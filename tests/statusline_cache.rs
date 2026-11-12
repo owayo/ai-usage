@@ -283,6 +283,46 @@ fn init_config_uses_explicit_path_and_never_overwrites_it() {
 }
 
 #[test]
+#[cfg(unix)]
+fn information_modes_report_cookie_probe_errors_without_creating_config() {
+    let fixture = CacheDir::new();
+    let chrome = fixture.0.join("Library/Application Support/Google/Chrome");
+    let profile = chrome.join("Default");
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::write(
+        chrome.join("Local State"),
+        r#"{"profile":{"info_cache":{"Default":{"name":"Work"}}}}"#,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("Network", profile.join("Network")).unwrap();
+    std::fs::write(profile.join("Cookies"), []).unwrap();
+    let cookie_path = profile.join("Network/Cookies");
+    let cause = cookie_path.try_exists().unwrap_err().to_string();
+    let config = fixture.0.join("generated.toml");
+
+    for mode in ["--list-profiles", "--init-config"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_ai-usage"))
+            .args([mode, "--config"])
+            .arg(&config)
+            .env("HOME", &fixture.0)
+            .env("CLAUDE_CONFIG_DIR", &fixture.0)
+            .env("AI_USAGE_CACHE_DIR", fixture.0.join("cache"))
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("Work"), "{stderr}");
+        assert!(
+            stderr.contains(&cookie_path.display().to_string()),
+            "{stderr}"
+        );
+        assert!(stderr.contains(&cause), "{stderr}");
+        assert!(!config.try_exists().unwrap());
+    }
+}
+
+#[test]
 fn init_config_lists_signed_in_profiles_with_their_providers() {
     let fixture = CacheDir::new();
     let chrome = fixture.0.join("Library/Application Support/Google/Chrome");
